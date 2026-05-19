@@ -1231,7 +1231,7 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
                 v11 = memref.reshape arg_v1 : memref.ranked <3x2 : builtin.integer i64> !3;
                 i_idx_v4 = index.from_integer i_res_v9 : index.index  !4;
                 j_idx_v6 = index.from_integer j_res_v10 : index.index  !5;
-                memref.load v11[i_idx_v4, j_idx_v6] : builtin.integer i64 !6;
+                v12 = memref.load v11[i_idx_v4, j_idx_v6] : builtin.integer i64 !6;
                 llvm.return v12 !7
             } !8
         }"#]].assert_eq(&after_tensor_to_memref);

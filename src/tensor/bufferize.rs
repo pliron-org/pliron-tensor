@@ -162,14 +162,14 @@ impl Verify for Alias {
 /// [Op]s implementing this can participate in bufferization.
 #[op_interface]
 pub trait BufferizableOpInterface {
-    /// Return true if this operand bufferizes to a memory read of that operand.
+    /// Return true if this operation bufferizes to a memory read of operand `opd`.
     /// It will only be called on operands that have a tensor type.
     ///
     /// It is always safe to return `true`, but that may introduce unnecessary
     /// allocations and / or copies.
     fn operand_bufferizes_to_memory_read(&self, ctx: &Context, opd: Use<Value>) -> bool;
 
-    /// Return true if this operand bufferizes to a memory write of that operand.
+    /// Return true if this operation bufferizes to a memory write of operand `opd`.
     /// It will only be called on operands that have a tensor type.
     ///
     /// It is always safe to return `true`, but that may introduce unnecessary
@@ -246,7 +246,7 @@ pub trait BufferizableOpInterface {
 pub trait MemrefAllocOpInterface:
     OneResultInterface + ResultNOfType<0, RankedMemrefType> + ToCFDialect
 {
-    /// Create a new [Self] to allocate a buffer for `tensor_ty` with given `dynamic_sizes`.
+    /// Create a new [Self] to allocate a buffer for `memref_ty` with given `dynamic_sizes`.
     /// Any IR static information that may be needed can be passed via `static_info`.
     fn try_new(
         ctx: &mut Context,

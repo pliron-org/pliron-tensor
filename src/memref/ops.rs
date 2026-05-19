@@ -502,7 +502,8 @@ impl Printable for LoadOp {
         let indices = self.get_indices(ctx);
         write!(
             f,
-            "{} {}[{}] : {}",
+            "{} = {} {}[{}] : {}",
+            self.get_result(ctx).disp(ctx),
             Self::get_opid_static(),
             memref.disp(ctx),
             iter_with_sep(indices.iter(), printable::ListSeparator::CharSpace(',')).disp(ctx),
