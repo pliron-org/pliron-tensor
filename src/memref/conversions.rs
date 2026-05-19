@@ -610,10 +610,9 @@ pub enum MemrefMatMulOpConversionErr {
     ExpectedMemrefTypeNotFound,
 }
 
-// Lowering for memref::MatMulOp -> two nested NDForOps:
-//   1. Zero-initialise the result memref with a 2D NDForOp over (i, j).
-//   2. Accumulate with a 3D NDForOp over (i, j, k):
-//      res[i,j] += lhs[i,k] * rhs[k,j]
+// Lowering for memref::MatMulOp -> 3D NDForOp over (i, j, k):
+//   result[i,j] = accum[i,j] + sum_k(lhs[i,k] * rhs[k,j])
+// The op result aliases with the accumulator memref.
 #[op_interface_impl]
 impl ToCFDialect for MemrefMatMulOp {
     fn rewrite(
@@ -622,13 +621,13 @@ impl ToCFDialect for MemrefMatMulOp {
         rewriter: &mut DialectConversionRewriter,
         operands_info: &OperandsInfo,
     ) -> Result<()> {
-        let memref_res = self.get_result_memref(ctx);
         let memref_lhs = self.get_lhs_memref(ctx);
         let memref_rhs = self.get_rhs_memref(ctx);
+        let memref_accum = self.get_accum_memref(ctx);
 
         // Recover the element type from before the memref descriptor conversion.
         let element_ty = operands_info
-            .lookup_most_recent_of_type::<RankedMemrefType>(ctx, memref_res)
+            .lookup_most_recent_of_type::<RankedMemrefType>(ctx, memref_accum)
             .ok_or_else(|| {
                 input_error!(
                     self.loc(ctx),
@@ -637,10 +636,10 @@ impl ToCFDialect for MemrefMatMulOp {
             })?
             .element_type();
 
-        // Unpack loop bounds: M, N from res sizes; K from lhs dim 1.
-        let res_sizes = descriptor::unpack_sizes(ctx, rewriter, memref_res);
-        let m_size = res_sizes[0];
-        let n_size = res_sizes[1];
+        // Unpack loop bounds: M, N from accum sizes; K from lhs dim 1.
+        let accum_sizes = descriptor::unpack_sizes(ctx, rewriter, memref_accum);
+        let m_size = accum_sizes[0];
+        let n_size = accum_sizes[1];
 
         let lhs_sizes = descriptor::unpack_sizes(ctx, rewriter, memref_lhs);
         let k_size = lhs_sizes[1];
@@ -652,46 +651,12 @@ impl ToCFDialect for MemrefMatMulOp {
         let lb0 = const_0.get_result(ctx);
         let step1 = const_1.get_result(ctx);
 
-        // Create a zero value of the element type to initialise the output.
-        let zero_op = pliron_llvm::ops::ZeroOp::new(ctx, element_ty);
-        rewriter.append_op(ctx, zero_op);
-        let zero_val = zero_op.get_result(ctx);
-
-        // --- Phase 1: zero-fill res[i,j] for all (i,j) ---
-        let ndfor_zero = {
-            let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
-            struct ZeroState<'a> {
-                rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
-                memref_res: Value,
-                zero_val: Value,
-            }
-            let mut state = ZeroState {
-                rewriter: scoped_rewriter,
-                memref_res,
-                zero_val,
-            };
-            NDForOp::new(
-                ctx,
-                vec![lb0, lb0],
-                vec![m_size, n_size],
-                vec![step1, step1],
-                |ctx, state, inserter, indices| {
-                    let rewriter = &mut state.rewriter;
-                    rewriter.set_insertion_point(inserter.get_insertion_point());
-                    let store = StoreOp::new(ctx, state.zero_val, state.memref_res, indices);
-                    rewriter.append_op(ctx, store);
-                },
-                &mut state,
-            )
-        };
-        rewriter.append_op(ctx, ndfor_zero);
-
-        // --- Phase 2: accumulate res[i,j] += lhs[i,k] * rhs[k,j] ---
-        let ndfor_accum = {
+        // Accumulate into the provided accumulator/result memref.
+        let ndfor = {
             let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
             struct AccumState<'a> {
                 rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
-                memref_res: Value,
+                memref_accum: Value,
                 memref_lhs: Value,
                 memref_rhs: Value,
                 elem_ty: Ptr<TypeObj>,
@@ -740,7 +705,7 @@ impl ToCFDialect for MemrefMatMulOp {
                 };
             let mut state = AccumState {
                 rewriter: scoped_rewriter,
-                memref_res,
+                memref_accum,
                 memref_lhs,
                 memref_rhs,
                 elem_ty: element_ty,
@@ -761,8 +726,8 @@ impl ToCFDialect for MemrefMatMulOp {
                     let k = indices[2];
                     let elem_ty = state.elem_ty;
 
-                    // Load accumulator: acc = res[i, j]
-                    let load_acc = LoadOp::new(ctx, elem_ty, state.memref_res, vec![i, j]);
+                    // Load accumulator: acc = accum[i, j]
+                    let load_acc = LoadOp::new(ctx, elem_ty, state.memref_accum, vec![i, j]);
                     rewriter.append_op(ctx, load_acc);
                     // Load a = lhs[i, k]
                     let load_a = LoadOp::new(ctx, elem_ty, state.memref_lhs, vec![i, k]);
@@ -786,16 +751,16 @@ impl ToCFDialect for MemrefMatMulOp {
                     let add = (state.add_fn)(ctx, load_acc_result, mul_result, elem_ty);
                     rewriter.append_operation(ctx, add);
 
-                    // Store res[i, j] = new_acc
+                    // Store accum[i, j] = new_acc
                     let add_result = add.deref(ctx).get_result(0);
-                    let store = StoreOp::new(ctx, add_result, state.memref_res, vec![i, j]);
+                    let store = StoreOp::new(ctx, add_result, state.memref_accum, vec![i, j]);
                     rewriter.append_op(ctx, store);
                 },
                 &mut state,
             )
         };
-        rewriter.append_op(ctx, ndfor_accum);
-        rewriter.replace_operation(ctx, self.get_operation(), ndfor_accum.get_operation());
+        rewriter.append_op(ctx, ndfor);
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![memref_accum]);
         Ok(())
     }
 }

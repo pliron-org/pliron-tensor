@@ -358,11 +358,12 @@ fn test_matmul_all_statics_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
                     arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
-                    res = tensor.matmul arg1, arg2 : tensor.ranked<4x4:builtin.integer i64>;
+                    arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
+                    res = tensor.matmul arg1, arg2, arg3 : tensor.ranked<4x4:builtin.integer i64>;
                     llvm.store *res_p <- res;
                     llvm.return
                 }
@@ -376,11 +377,12 @@ fn test_matmul_inner_dynamic_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
                     arg1 = llvm.load arg1_p : tensor.ranked<4x?:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<?x4:builtin.integer i64>;
-                    res = tensor.matmul arg1, arg2 : tensor.ranked<4x4:builtin.integer i64>;
+                    arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
+                    res = tensor.matmul arg1, arg2, arg3 : tensor.ranked<4x4:builtin.integer i64>;
                     llvm.store *res_p <- res;
                     llvm.return
                 }
@@ -394,11 +396,12 @@ fn test_matmul_all_dynamic_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
                     arg1 = llvm.load arg1_p : tensor.ranked<?x?:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<?x?:builtin.integer i64>;
-                    res = tensor.matmul arg1, arg2 : tensor.ranked<4x4:builtin.integer i64>;
+                    arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
+                    res = tensor.matmul arg1, arg2, arg3 : tensor.ranked<4x4:builtin.integer i64>;
                     llvm.store *res_p <- res;
                     llvm.return
                 }
@@ -470,14 +473,24 @@ fn test_int_tensor_matmul_from_rust(input_ir: &str) {
     );
 
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(symbol_addr)
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
     };
+
+    let mut accum_data = [1u64; 16];
+    let t3 = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        accum_data.as_mut_ptr() as *const u8,
+    );
 
     let mut res_ir_descr = res_descr.build_ir_descriptor();
 
     f(
         t1.build_ir_descriptor().as_ptr(),
         t2.build_ir_descriptor().as_ptr(),
+        t3.build_ir_descriptor().as_ptr(),
         res_ir_descr.as_mut_ptr(),
     );
 
@@ -495,7 +508,7 @@ fn test_int_tensor_matmul_from_rust(input_ir: &str) {
     assert_eq!(
         res_slice,
         &[
-            28u64, 32, 36, 40, 28, 32, 36, 40, 28, 32, 36, 40, 28, 32, 36, 40
+            29u64, 33, 37, 41, 29, 33, 37, 41, 29, 33, 37, 41, 29, 33, 37, 41
         ]
     );
 }
@@ -508,11 +521,12 @@ fn test_batch_matmul_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_batch_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_batch_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
                     arg1 = llvm.load arg1_p : tensor.ranked<2x2x3:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<2x3x2:builtin.integer i64>;
-                    res = tensor.batch_matmul arg1, arg2 : tensor.ranked<2x2x2:builtin.integer i64>;
+                    arg3 = llvm.load arg3_p : tensor.ranked<2x2x2:builtin.integer i64>;
+                    res = tensor.batch_matmul arg1, arg2, arg3 : tensor.ranked<2x2x2:builtin.integer i64>;
                     llvm.store *res_p <- res;
                     llvm.return
                 }
@@ -573,13 +587,23 @@ fn test_batch_matmul_from_rust() {
     );
 
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(symbol_addr)
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
     };
+
+    let mut accum_data = [1u64, 1, 1, 1, 2, 2, 2, 2];
+    let t3 = TensorDesciptor::new(
+        [2, 2, 2].to_vec(),
+        std::mem::size_of::<u64>(),
+        accum_data.as_mut_ptr() as *const u8,
+    );
 
     let mut res_ir_descr = res_descr.build_ir_descriptor();
     f(
         t1.build_ir_descriptor().as_ptr(),
         t2.build_ir_descriptor().as_ptr(),
+        t3.build_ir_descriptor().as_ptr(),
         res_ir_descr.as_mut_ptr(),
     );
 
@@ -593,7 +617,7 @@ fn test_batch_matmul_from_rust() {
         )
     };
 
-    assert_eq!(res_slice, &[22u64, 28, 49, 64, 220, 244, 301, 334]);
+    assert_eq!(res_slice, &[23u64, 29, 50, 65, 222, 246, 303, 336]);
 }
 
 #[test]
@@ -1286,11 +1310,12 @@ fn test_tracked_tmm_complex_tensor_computation_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_complex_tracked: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_complex_tracked: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
                     arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
-                    mat = tensor.matmul arg1, arg2 : tensor.ranked<4x4:builtin.integer i64>;
+                    arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
+                    mat = tensor.matmul arg1, arg2, arg3 : tensor.ranked<4x4:builtin.integer i64>;
                     sum = tensor.add mat, arg1 : tensor.ranked<4x4:builtin.integer i64>;
                     diff = tensor.sub sum, arg2 : tensor.ranked<4x4:builtin.integer i64>;
                     res = tensor.mul diff, arg1 : tensor.ranked<4x4:builtin.integer i64>;
@@ -1361,9 +1386,17 @@ fn test_tracked_tmm_complex_tensor_computation_from_rust() {
         std::mem::size_of::<i64>(),
         std::ptr::null::<u8>(),
     );
+    let mut accum_data = [0i64; 16];
+    let t3 = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<i64>(),
+        accum_data.as_mut_ptr() as *const u8,
+    );
 
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(symbol_addr)
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
     };
 
     let mut res_ir_descr = res_descr.build_ir_descriptor();
@@ -1372,12 +1405,13 @@ fn test_tracked_tmm_complex_tensor_computation_from_rust() {
     f(
         t1.build_ir_descriptor().as_ptr(),
         t2.build_ir_descriptor().as_ptr(),
+        t3.build_ir_descriptor().as_ptr(),
         res_ir_descr.as_mut_ptr(),
     );
 
     assert!(
-        tmm.tracked_allocations().len() >= 4,
-        "expected tracked allocations for matmul result, intermediates, and final result"
+        tmm.tracked_allocations().len() >= 3,
+        "expected tracked allocations for intermediates and final result"
     );
 
     let res_tensor_descr = unsafe {

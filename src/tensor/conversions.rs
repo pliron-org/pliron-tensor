@@ -399,19 +399,24 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
     }
 }
 
-// Lowering for tensor::MatMulOp -> AllocOp + memref::MatMulOp
+// Lowering for tensor::MatMulOp -> memref::MatMulOp with accumulator aliasing.
 #[op_interface_impl]
 impl BufferizableOpInterface for MatMulOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
         true
     }
 
-    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
-        false
+    fn operand_bufferizes_to_memory_write(&self, ctx: &Context, opd: Use<Value>) -> bool {
+        self.get_operation().deref(ctx).get_operand_as_use(2) == opd
     }
 
-    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
-        vec![]
+    fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
+        vec![Alias {
+            operand: self.get_operation().deref(ctx).get_operand_as_use(2),
+            result: self.get_result(ctx),
+            kind: AliasKind::Must,
+            relation: BufferRelation::Equivalent,
+        }]
     }
 
     fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
@@ -422,66 +427,40 @@ impl BufferizableOpInterface for MatMulOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let lhs = self.get_operation().deref(ctx).get_operand(0);
         let rhs = self.get_operation().deref(ctx).get_operand(1);
+        let accum = self.get_operation().deref(ctx).get_operand(2);
 
-        let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
-        let elem_ty = result_ty.deref(ctx).element_type();
-
-        // Build the dynamic dimension operands for the result allocation.
-        // Result shape: [M, N] where M = lhs dim 0, N = rhs dim 1.
-        let result_shape = result_ty.deref(ctx).shape().clone();
-        let dynamic_dim_operands = result_shape
-            .iter()
-            .enumerate()
-            .filter_map(|(i, dim)| {
-                if let Dimension::Dynamic = dim {
-                    let val = if i == 0 {
-                        descriptor::unpack_size(ctx, rewriter, lhs, 0)
-                    } else {
-                        descriptor::unpack_size(ctx, rewriter, rhs, 1)
-                    };
-                    Some(val)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let result_memref_ty = RankedMemrefType::get(ctx, elem_ty, result_shape);
-        let alloc = bufferizer_callbacks.create_memref_alloc(
-            ctx,
-            result_memref_ty,
-            dynamic_dim_operands,
-        )?;
-        rewriter.append_operation(ctx, alloc.get_operation());
-
-        let matmul = MemrefMatMulOp::new(ctx, alloc.get_result(ctx), lhs, rhs);
+        let matmul = MemrefMatMulOp::new(ctx, lhs, rhs, accum);
         rewriter.append_operation(ctx, matmul.get_operation());
 
-        rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
+        rewriter.replace_operation(ctx, self.get_operation(), matmul.get_operation());
         Ok(())
     }
 }
 
-// Lowering for tensor::BatchMatMulOp.
-// Creates a destination memref and then iterates over batch dimensions using NDForOp.
-// For each batch index, it creates subviews of lhs/rhs/result and performs 2D matmul.
+// Lowering for tensor::BatchMatMulOp using accumulator aliasing.
+// For each batch index, it creates subviews of lhs/rhs/accum and performs 2D memref.matmul.
 #[op_interface_impl]
 impl BufferizableOpInterface for BatchMatMulOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
         true
     }
 
-    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
-        false
+    fn operand_bufferizes_to_memory_write(&self, ctx: &Context, opd: Use<Value>) -> bool {
+        self.get_operation().deref(ctx).get_operand_as_use(2) == opd
     }
 
-    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
-        vec![]
+    fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
+        vec![Alias {
+            operand: self.get_operation().deref(ctx).get_operand_as_use(2),
+            result: self.get_result(ctx),
+            kind: AliasKind::Must,
+            relation: BufferRelation::Equivalent,
+        }]
     }
 
     fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
@@ -492,28 +471,28 @@ impl BufferizableOpInterface for BatchMatMulOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         use crate::memref::type_interfaces::Dimension;
 
         let lhs = self.get_operation().deref(ctx).get_operand(0);
         let rhs = self.get_operation().deref(ctx).get_operand(1);
-
-        let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
+        let accum = self.get_operation().deref(ctx).get_operand(2);
 
         let lhs_memref_ty = TypePtr::<RankedMemrefType>::from_ptr(lhs.get_type(ctx), ctx)
             .expect("BatchMatMulOp lhs must be a ranked memref after conversion");
         let rhs_memref_ty = TypePtr::<RankedMemrefType>::from_ptr(rhs.get_type(ctx), ctx)
             .expect("BatchMatMulOp rhs must be a ranked memref after conversion");
+        let accum_memref_ty = TypePtr::<RankedMemrefType>::from_ptr(accum.get_type(ctx), ctx)
+            .expect("BatchMatMulOp accum must be a ranked memref after conversion");
 
         let rank = lhs_memref_ty.deref(ctx).rank();
         let batch_rank = rank - 2;
 
         let lhs_shape = lhs_memref_ty.deref(ctx).shape().clone();
         let rhs_shape = rhs_memref_ty.deref(ctx).shape().clone();
-        let result_shape = result_ty.deref(ctx).shape().clone();
-        let elem_ty = result_ty.deref(ctx).element_type();
+        let elem_ty = accum_memref_ty.deref(ctx).element_type();
 
         let lhs_sizes = lhs_shape
             .iter()
@@ -540,35 +519,10 @@ impl BufferizableOpInterface for BatchMatMulOp {
             })
             .collect::<Vec<_>>();
 
-        let result_dynamic_dim_operands = result_shape
-            .iter()
-            .enumerate()
-            .filter_map(|(i, dim)| {
-                if let Dimension::Dynamic = dim {
-                    if i < batch_rank {
-                        Some(lhs_sizes[i])
-                    } else if i == batch_rank {
-                        Some(lhs_sizes[rank - 2])
-                    } else {
-                        Some(rhs_sizes[rank - 1])
-                    }
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        let alloc = bufferizer_callbacks.create_memref_alloc(
-            ctx,
-            result_ty,
-            result_dynamic_dim_operands,
-        )?;
-        rewriter.append_operation(ctx, alloc.get_operation());
-
         if batch_rank == 0 {
-            let matmul = MemrefMatMulOp::new(ctx, alloc.get_result(ctx), lhs, rhs);
+            let matmul = MemrefMatMulOp::new(ctx, lhs, rhs, accum);
             rewriter.append_operation(ctx, matmul.get_operation());
-            rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
+            rewriter.replace_operation(ctx, self.get_operation(), matmul.get_operation());
             return Ok(());
         }
 
@@ -589,7 +543,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                 rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
                 lhs: Value,
                 rhs: Value,
-                dst: Value,
+                accum: Value,
                 lhs_shape: Vec<Dimension>,
                 rhs_shape: Vec<Dimension>,
                 lhs_sizes: Vec<Value>,
@@ -603,7 +557,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                 rewriter: scoped_rewriter,
                 lhs,
                 rhs,
-                dst: alloc.get_result(ctx),
+                accum,
                 lhs_shape,
                 rhs_shape,
                 lhs_sizes,
@@ -686,19 +640,24 @@ impl BufferizableOpInterface for BatchMatMulOp {
                     );
                     rewriter.append_op(ctx, rhs_subview);
 
-                    let mut dst_offsets = indices
+                    let mut accum_offsets = indices
                         .iter()
                         .copied()
                         .map(SliceParam::Dynamic)
                         .collect::<Vec<_>>();
-                    dst_offsets.extend(zero_offsets);
-                    let mut dst_sizes = one_sizes;
-                    dst_sizes.push(lhs_m_dim.clone());
-                    dst_sizes.push(rhs_n_dim.clone());
+                    accum_offsets.extend(zero_offsets);
+                    let mut accum_sizes = one_sizes;
+                    accum_sizes.push(lhs_m_dim.clone());
+                    accum_sizes.push(rhs_n_dim.clone());
 
-                    let dst_subview =
-                        MemrefSubviewOp::new(ctx, state.dst, dst_offsets, dst_sizes, unit_steps);
-                    rewriter.append_op(ctx, dst_subview);
+                    let accum_subview = MemrefSubviewOp::new(
+                        ctx,
+                        state.accum,
+                        accum_offsets,
+                        accum_sizes,
+                        unit_steps,
+                    );
+                    rewriter.append_op(ctx, accum_subview);
 
                     let m_dim = match &lhs_m_dim {
                         SliceParam::Static(v) => Dimension::Static(*v),
@@ -723,7 +682,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         state.elem_ty,
                         vec![k_dim.clone(), n_dim.clone()],
                     );
-                    let dst_2d_ty = RankedMemrefType::get(
+                    let accum_2d_ty = RankedMemrefType::get(
                         ctx,
                         state.elem_ty,
                         vec![m_dim.clone(), n_dim.clone()],
@@ -750,12 +709,12 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         rhs_2d_dyn.push(v);
                     }
 
-                    let mut dst_2d_dyn = Vec::new();
+                    let mut accum_2d_dyn = Vec::new();
                     if let Some(v) = dyn_value(&lhs_m_dim) {
-                        dst_2d_dyn.push(v);
+                        accum_2d_dyn.push(v);
                     }
                     if let Some(v) = dyn_value(&rhs_n_dim) {
-                        dst_2d_dyn.push(v);
+                        accum_2d_dyn.push(v);
                     }
 
                     let lhs_2d = MemrefReshapeOp::new(
@@ -774,19 +733,19 @@ impl BufferizableOpInterface for BatchMatMulOp {
                     );
                     rewriter.append_op(ctx, rhs_2d);
 
-                    let dst_2d = MemrefReshapeOp::new(
+                    let accum_2d = MemrefReshapeOp::new(
                         ctx,
-                        dst_subview.get_result(ctx),
-                        dst_2d_dyn,
-                        dst_2d_ty,
+                        accum_subview.get_result(ctx),
+                        accum_2d_dyn,
+                        accum_2d_ty,
                     );
-                    rewriter.append_op(ctx, dst_2d);
+                    rewriter.append_op(ctx, accum_2d);
 
                     let matmul = MemrefMatMulOp::new(
                         ctx,
-                        dst_2d.get_result(ctx),
                         lhs_2d.get_result(ctx),
                         rhs_2d.get_result(ctx),
+                        accum_2d.get_result(ctx),
                     );
                     rewriter.append_operation(ctx, matmul.get_operation());
                 },
@@ -795,7 +754,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
         };
 
         rewriter.append_op(ctx, ndfor);
-        rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![accum]);
         Ok(())
     }
 }
