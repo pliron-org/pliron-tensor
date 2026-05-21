@@ -38,6 +38,7 @@ use pliron::{
     derive::{op_interface, op_interface_impl},
     graph::walkers::{self, IRNode},
     irbuild::{
+        IRStatus,
         dialect_conversion::{
             DialectConversion, DialectConversionRewriter, OperandsInfo, apply_dialect_conversion,
         },
@@ -443,7 +444,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
     tmm: &mut TMM,
     op: Ptr<Operation>,
     ctx: &mut Context,
-) -> Result<()> {
+) -> Result<IRStatus> {
     struct InPlaceBufferizationAnalysis {
         liveness: Liveness<LivenessTq>,
         in_place_bufferizable_operands: FxHashSet<Use<Value>>,
