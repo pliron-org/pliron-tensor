@@ -15,8 +15,7 @@ use pliron::{
     irbuild::{
         dialect_conversion::{DialectConversion, DialectConversionRewriter, OperandsInfo},
         inserter::{BlockInsertionPoint, Inserter, OpInsertionPoint},
-        listener::Recorder,
-        rewriter::{IRRewriter, Rewriter, ScopedRewriter},
+        rewriter::{Rewriter, ScopedRewriter},
     },
     linked_list::LinkedList,
     op::{Op, op_cast, op_impls},
@@ -95,7 +94,7 @@ impl ToCFDialect for AllocOp {
             num_elems,
             IntegerOverflowFlagsAttr::default(),
         );
-        rewriter.append_op(ctx, alloc_size);
+        rewriter.append_op(ctx, &alloc_size);
 
         let symbol_table_op = nearest_symbol_table(ctx, self.get_operation()).ok_or_else(|| {
             input_error!(
@@ -114,11 +113,11 @@ impl ToCFDialect for AllocOp {
             malloc.get_type(ctx),
             vec![alloc_size.get_result(ctx)],
         );
-        rewriter.append_op(ctx, call_malloc_op);
+        rewriter.append_op(ctx, &call_malloc_op);
         let allocated_ptr = call_malloc_op.get_result(ctx);
 
         let offset = IndexConstantOp::new(ctx, 0);
-        rewriter.append_op(ctx, offset);
+        rewriter.append_op(ctx, &offset);
 
         // Build the memref descriptor.
         let descriptor = descriptor::pack_descriptor(
@@ -174,7 +173,7 @@ impl ToCFDialect for DeallocOp {
             free_fn.get_type(ctx),
             vec![allocated_ptr],
         );
-        rewriter.append_op(ctx, call_free_op);
+        rewriter.append_op(ctx, &call_free_op);
         rewriter.replace_operation(ctx, self.get_operation(), call_free_op.get_operation());
         Ok(())
     }
@@ -202,8 +201,8 @@ impl ToCFDialect for GenerateOp {
 
         let const_index_0 = IndexConstantOp::new(ctx, 0);
         let const_index_1 = IndexConstantOp::new(ctx, 1);
-        rewriter.append_op(ctx, const_index_0);
-        rewriter.append_op(ctx, const_index_1);
+        rewriter.append_op(ctx, &const_index_0);
+        rewriter.append_op(ctx, &const_index_1);
 
         let lbs = vec![const_index_0.get_result(ctx); sizes.len()];
         let steps = vec![const_index_1.get_result(ctx); sizes.len()];
@@ -211,7 +210,7 @@ impl ToCFDialect for GenerateOp {
         let ndforop = {
             let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
             struct State<'a> {
-                rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
+                rewriter: ScopedRewriter<'a>,
                 generate_op_region: Ptr<Region>,
                 yield_op: YieldOp,
                 memref_opd: Value,
@@ -251,7 +250,7 @@ impl ToCFDialect for GenerateOp {
                         .get_next()
                         .expect("Failed to get next block for NDForOp entry block");
                     let branch = BrOp::new(ctx, branch_to, indices);
-                    rewriter.append_op(ctx, branch);
+                    rewriter.append_op(ctx, &branch);
 
                     // Store the generated value to the memref.
                     let yield_operation = state.yield_op.get_operation();
@@ -264,14 +263,14 @@ impl ToCFDialect for GenerateOp {
                     );
                     rewriter
                         .set_insertion_point(OpInsertionPoint::BeforeOperation(yield_operation));
-                    rewriter.append_op(ctx, store_op);
+                    rewriter.append_op(ctx, &store_op);
                     rewriter.replace_operation(ctx, yield_operation, store_op.get_operation());
                 },
                 &mut state,
             )
         };
 
-        rewriter.append_op(ctx, ndforop);
+        rewriter.append_op(ctx, &ndforop);
         rewriter.replace_operation(ctx, self.get_operation(), ndforop.get_operation());
         Ok(())
     }
@@ -294,7 +293,7 @@ impl ToCFDialect for StoreOp {
         let indices = self.get_indices(ctx);
         let ptr = descriptor::get_strided_element_ptr(ctx, rewriter, elem_ty, memref, indices);
         let store_op = pliron_llvm::ops::StoreOp::new(ctx, value, ptr);
-        rewriter.append_op(ctx, store_op);
+        rewriter.append_op(ctx, &store_op);
         rewriter.replace_operation(ctx, self.get_operation(), store_op.get_operation());
         Ok(())
     }
@@ -316,7 +315,7 @@ impl ToCFDialect for LoadOp {
         let indices = self.get_indices(ctx);
         let ptr = descriptor::get_strided_element_ptr(ctx, rewriter, elem_ty, memref, indices);
         let load_op = pliron_llvm::ops::LoadOp::new(ctx, ptr, elem_ty);
-        rewriter.append_op(ctx, load_op);
+        rewriter.append_op(ctx, &load_op);
         rewriter.replace_operation(ctx, self.get_operation(), load_op.get_operation());
         Ok(())
     }
@@ -369,8 +368,8 @@ trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
 
         let const_index_0 = IndexConstantOp::new(ctx, 0);
         let const_index_1 = IndexConstantOp::new(ctx, 1);
-        rewriter.append_op(ctx, const_index_0);
-        rewriter.append_op(ctx, const_index_1);
+        rewriter.append_op(ctx, &const_index_0);
+        rewriter.append_op(ctx, &const_index_1);
 
         let lbs = vec![const_index_0.get_result(ctx); sizes.len()];
         let steps = vec![const_index_1.get_result(ctx); sizes.len()];
@@ -378,7 +377,7 @@ trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
         let ndforop = {
             let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
             struct State<'a> {
-                rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
+                rewriter: ScopedRewriter<'a>,
                 memref_result: Value,
                 memref_lhs: Value,
                 memref_rhs: Value,
@@ -417,8 +416,8 @@ trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
                         LoadOp::new(ctx, element_ty, state.memref_lhs, indices.clone());
                     let rhs_loaded =
                         LoadOp::new(ctx, element_ty, state.memref_rhs, indices.clone());
-                    rewriter.append_op(ctx, lhs_loaded);
-                    rewriter.append_op(ctx, rhs_loaded);
+                    rewriter.append_op(ctx, &lhs_loaded);
+                    rewriter.append_op(ctx, &rhs_loaded);
 
                     let result = (state.op_fn)(
                         ctx,
@@ -430,13 +429,13 @@ trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
                     let result = result.deref(ctx).get_result(0);
 
                     let store_op = StoreOp::new(ctx, result, state.memref_result, indices);
-                    rewriter.append_op(ctx, store_op);
+                    rewriter.append_op(ctx, &store_op);
                 },
                 &mut state,
             )
         };
 
-        rewriter.append_op(ctx, ndforop);
+        rewriter.append_op(ctx, &ndforop);
         rewriter.replace_operation(ctx, self.get_operation(), ndforop.get_operation());
         Ok(())
     }
@@ -646,8 +645,8 @@ impl ToCFDialect for MemrefMatMulOp {
 
         let const_0 = IndexConstantOp::new(ctx, 0);
         let const_1 = IndexConstantOp::new(ctx, 1);
-        rewriter.append_op(ctx, const_0);
-        rewriter.append_op(ctx, const_1);
+        rewriter.append_op(ctx, &const_0);
+        rewriter.append_op(ctx, &const_1);
         let lb0 = const_0.get_result(ctx);
         let step1 = const_1.get_result(ctx);
 
@@ -655,7 +654,7 @@ impl ToCFDialect for MemrefMatMulOp {
         let ndfor = {
             let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
             struct AccumState<'a> {
-                rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
+                rewriter: ScopedRewriter<'a>,
                 memref_accum: Value,
                 memref_lhs: Value,
                 memref_rhs: Value,
@@ -728,13 +727,13 @@ impl ToCFDialect for MemrefMatMulOp {
 
                     // Load accumulator: acc = accum[i, j]
                     let load_acc = LoadOp::new(ctx, elem_ty, state.memref_accum, vec![i, j]);
-                    rewriter.append_op(ctx, load_acc);
+                    rewriter.append_op(ctx, &load_acc);
                     // Load a = lhs[i, k]
                     let load_a = LoadOp::new(ctx, elem_ty, state.memref_lhs, vec![i, k]);
-                    rewriter.append_op(ctx, load_a);
+                    rewriter.append_op(ctx, &load_a);
                     // Load b = rhs[k, j]
                     let load_b = LoadOp::new(ctx, elem_ty, state.memref_rhs, vec![k, j]);
-                    rewriter.append_op(ctx, load_b);
+                    rewriter.append_op(ctx, &load_b);
 
                     // mul = a * b
                     let mul = (state.mul_fn)(
@@ -754,12 +753,12 @@ impl ToCFDialect for MemrefMatMulOp {
                     // Store accum[i, j] = new_acc
                     let add_result = add.deref(ctx).get_result(0);
                     let store = StoreOp::new(ctx, add_result, state.memref_accum, vec![i, j]);
-                    rewriter.append_op(ctx, store);
+                    rewriter.append_op(ctx, &store);
                 },
                 &mut state,
             )
         };
-        rewriter.append_op(ctx, ndfor);
+        rewriter.append_op(ctx, &ndfor);
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![memref_accum]);
         Ok(())
     }
@@ -779,7 +778,7 @@ pub enum SubviewOpConversionErr {
 
 fn materialize_slice_params(
     ctx: &mut Context,
-    rewriter: &mut impl Rewriter<Recorder>,
+    rewriter: &mut dyn Rewriter,
     params: &[SliceParam],
 ) -> Vec<Value> {
     params
@@ -787,7 +786,7 @@ fn materialize_slice_params(
         .map(|param| match param {
             SliceParam::Static(val) => {
                 let op = IndexConstantOp::new(ctx, *val);
-                rewriter.append_op(ctx, op);
+                rewriter.append_op(ctx, &op);
                 op.get_result(ctx)
             }
             SliceParam::Dynamic(value) => *value,
@@ -799,7 +798,7 @@ fn materialize_slice_params(
 /// handling index<->integer casts as needed.
 fn cast_value_to_type(
     ctx: &mut Context,
-    rewriter: &mut impl Rewriter<Recorder>,
+    rewriter: &mut dyn Rewriter,
     value: Value,
     target_ty: Ptr<TypeObj>,
 ) -> Value {
@@ -809,13 +808,13 @@ fn cast_value_to_type(
 
     if value.get_type(ctx).deref(ctx).is::<IndexType>() {
         let cast = IndexToIntegerOp::new(ctx, value, target_ty);
-        rewriter.append_op(ctx, cast);
+        rewriter.append_op(ctx, &cast);
         return cast.get_result(ctx);
     }
 
     if target_ty.deref(ctx).is::<IndexType>() {
         let cast = IntegerToIndexOp::new(ctx, value, target_ty);
-        rewriter.append_op(ctx, cast);
+        rewriter.append_op(ctx, &cast);
         return cast.get_result(ctx);
     }
 
@@ -844,8 +843,8 @@ impl ToCFDialect for CopyOp {
 
         let const_zero = IndexConstantOp::new(ctx, 0);
         let const_one = IndexConstantOp::new(ctx, 1);
-        rewriter.append_op(ctx, const_zero);
-        rewriter.append_op(ctx, const_one);
+        rewriter.append_op(ctx, &const_zero);
+        rewriter.append_op(ctx, &const_one);
         let lb0 = const_zero.get_result(ctx);
         let step1 = const_one.get_result(ctx);
         let lbs = vec![lb0; rank];
@@ -854,7 +853,7 @@ impl ToCFDialect for CopyOp {
         let ndfor = {
             let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
             struct State<'a> {
-                rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
+                rewriter: ScopedRewriter<'a>,
                 memref_dst: Value,
                 memref_src: Value,
                 elem_ty: Ptr<TypeObj>,
@@ -875,16 +874,16 @@ impl ToCFDialect for CopyOp {
                     rewriter.set_insertion_point(inserter.get_insertion_point());
                     let load =
                         LoadOp::new(ctx, state.elem_ty, state.memref_src, dst_indices.clone());
-                    rewriter.append_op(ctx, load);
+                    rewriter.append_op(ctx, &load);
                     let store =
                         StoreOp::new(ctx, load.get_result(ctx), state.memref_dst, dst_indices);
-                    rewriter.append_op(ctx, store);
+                    rewriter.append_op(ctx, &store);
                 },
                 &mut state,
             )
         };
 
-        rewriter.append_op(ctx, ndfor);
+        rewriter.append_op(ctx, &ndfor);
         rewriter.replace_operation(ctx, self.get_operation(), ndfor.get_operation());
         Ok(())
     }
@@ -933,14 +932,14 @@ impl ToCFDialect for SubviewOp {
                     *stride,
                     IntegerOverflowFlagsAttr::default(),
                 );
-                rewriter.append_op(ctx, scaled_offset);
+                rewriter.append_op(ctx, &scaled_offset);
                 let sum = pliron_llvm::ops::AddOp::new_with_overflow_flag(
                     ctx,
                     current_offset,
                     scaled_offset.get_result(ctx),
                     IntegerOverflowFlagsAttr::default(),
                 );
-                rewriter.append_op(ctx, sum);
+                rewriter.append_op(ctx, &sum);
                 sum.get_result(ctx)
             },
         );
@@ -956,7 +955,7 @@ impl ToCFDialect for SubviewOp {
                     *step,
                     IntegerOverflowFlagsAttr::default(),
                 );
-                rewriter.append_op(ctx, new_stride);
+                rewriter.append_op(ctx, &new_stride);
                 new_stride.get_result(ctx)
             })
             .collect();

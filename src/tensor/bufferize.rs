@@ -385,7 +385,7 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
                         continue;
                     }
                     let dim_const = IndexConstantOp::new(ctx, dim_idx);
-                    rewriter.append_op(ctx, dim_const);
+                    rewriter.append_op(ctx, &dim_const);
                     let dim_size = DimOp::new(ctx, opd.get_def(ctx), dim_const.get_result(ctx))
                         .get_result(ctx);
                     dynamic_sizes.push(dim_size);
@@ -400,7 +400,7 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
 
             // Copy the operand buffer to the new buffer.
             let copy_op = CopyOp::new(ctx, new_buffer, opd.get_def(ctx));
-            rewriter.append_op(ctx, copy_op);
+            rewriter.append_op(ctx, &copy_op);
             // Replace the operand with the new buffer.
             Operation::replace_operand(op, ctx, opd.find_index(ctx), new_buffer);
         }

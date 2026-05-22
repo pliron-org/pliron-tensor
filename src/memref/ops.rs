@@ -218,7 +218,7 @@ impl GenerateOp {
         body_builder: fn(
             ctx: &mut Context,
             state: State,
-            inserter: &mut IRInserter<DummyListener>,
+            inserter: &mut dyn Inserter,
             indices: Vec<Value>,
         ) -> Value,
         body_builder_state: State,
@@ -245,7 +245,7 @@ impl GenerateOp {
         // Create the initializer region.
         let index_ty = IndexType::get(ctx);
         let region = opop.get_region(ctx);
-        let op_inserter = &mut IRInserter::default();
+        let op_inserter = &mut IRInserter::<DummyListener>::default();
         let entry_block = op_inserter.create_block(
             ctx,
             BlockInsertionPoint::AtRegionStart(region),
@@ -257,7 +257,7 @@ impl GenerateOp {
         let yield_value = body_builder(ctx, body_builder_state, op_inserter, indices);
         let yield_op = YieldOp::new(ctx, yield_value);
         op_inserter.set_insertion_point(OpInsertionPoint::AtBlockEnd(opop.get_exit(ctx)));
-        op_inserter.append_op(ctx, yield_op);
+        op_inserter.append_op(ctx, &yield_op);
         opop
     }
 

@@ -11,8 +11,7 @@ use pliron::{
     irbuild::{
         dialect_conversion::{DialectConversionRewriter, OperandsInfo},
         inserter::{BlockInsertionPoint, Inserter, OpInsertionPoint},
-        listener::Recorder,
-        rewriter::{IRRewriter, Rewriter, ScopedRewriter},
+        rewriter::{Rewriter, ScopedRewriter},
     },
     linked_list::ContainsLinkedList,
     op::Op,
@@ -157,7 +156,7 @@ impl BufferizableOpInterface for GenerateOp {
                     ),
                 );
                 let branch = pliron_llvm::ops::BrOp::new(ctx, previos_entry, indices);
-                inserter.append_op(ctx, branch);
+                inserter.append_op(ctx, &branch);
                 let yield_value = state.yield_op.get_operand(ctx);
                 // Remove the previous yield as the memref GenerateOp will add a new one.
                 state
@@ -171,7 +170,7 @@ impl BufferizableOpInterface for GenerateOp {
                 inline_region: region,
             },
         );
-        rewriter.append_op(ctx, generate_op);
+        rewriter.append_op(ctx, &generate_op);
         rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
 
         Ok(())
@@ -209,7 +208,7 @@ impl BufferizableOpInterface for ExtractOp {
 
         // Create a LoadOp to extract the value from the memref.
         let load_op = memref::ops::LoadOp::new(ctx, result_ty, operand, indices.clone());
-        rewriter.append_op(ctx, load_op);
+        rewriter.append_op(ctx, &load_op);
         rewriter.replace_operation(ctx, self.get_operation(), load_op.get_operation());
         Ok(())
     }
@@ -501,7 +500,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                 Dimension::Dynamic => descriptor::unpack_size(ctx, rewriter, lhs, i),
                 Dimension::Static(v) => {
                     let c = IndexConstantOp::new(ctx, *v);
-                    rewriter.append_op(ctx, c);
+                    rewriter.append_op(ctx, &c);
                     c.get_result(ctx)
                 }
             })
@@ -513,7 +512,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                 Dimension::Dynamic => descriptor::unpack_size(ctx, rewriter, rhs, i),
                 Dimension::Static(v) => {
                     let c = IndexConstantOp::new(ctx, *v);
-                    rewriter.append_op(ctx, c);
+                    rewriter.append_op(ctx, &c);
                     c.get_result(ctx)
                 }
             })
@@ -528,8 +527,8 @@ impl BufferizableOpInterface for BatchMatMulOp {
 
         let const_index_0 = IndexConstantOp::new(ctx, 0);
         let const_index_1 = IndexConstantOp::new(ctx, 1);
-        rewriter.append_op(ctx, const_index_0);
-        rewriter.append_op(ctx, const_index_1);
+        rewriter.append_op(ctx, &const_index_0);
+        rewriter.append_op(ctx, &const_index_1);
 
         let lb0 = const_index_0.get_result(ctx);
         let step1 = const_index_1.get_result(ctx);
@@ -540,7 +539,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
             let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
 
             struct State<'a> {
-                rewriter: ScopedRewriter<'a, Recorder, IRRewriter<Recorder>>,
+                rewriter: ScopedRewriter<'a>,
                 lhs: Value,
                 rhs: Value,
                 accum: Value,
@@ -619,7 +618,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         lhs_sizes,
                         unit_steps.clone(),
                     );
-                    rewriter.append_op(ctx, lhs_subview);
+                    rewriter.append_op(ctx, &lhs_subview);
 
                     let mut rhs_offsets = indices
                         .iter()
@@ -638,7 +637,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         rhs_sizes,
                         unit_steps.clone(),
                     );
-                    rewriter.append_op(ctx, rhs_subview);
+                    rewriter.append_op(ctx, &rhs_subview);
 
                     let mut accum_offsets = indices
                         .iter()
@@ -657,7 +656,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         accum_sizes,
                         unit_steps,
                     );
-                    rewriter.append_op(ctx, accum_subview);
+                    rewriter.append_op(ctx, &accum_subview);
 
                     let m_dim = match &lhs_m_dim {
                         SliceParam::Static(v) => Dimension::Static(*v),
@@ -723,7 +722,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         lhs_2d_dyn,
                         lhs_2d_ty,
                     );
-                    rewriter.append_op(ctx, lhs_2d);
+                    rewriter.append_op(ctx, &lhs_2d);
 
                     let rhs_2d = MemrefReshapeOp::new(
                         ctx,
@@ -731,7 +730,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         rhs_2d_dyn,
                         rhs_2d_ty,
                     );
-                    rewriter.append_op(ctx, rhs_2d);
+                    rewriter.append_op(ctx, &rhs_2d);
 
                     let accum_2d = MemrefReshapeOp::new(
                         ctx,
@@ -739,7 +738,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                         accum_2d_dyn,
                         accum_2d_ty,
                     );
-                    rewriter.append_op(ctx, accum_2d);
+                    rewriter.append_op(ctx, &accum_2d);
 
                     let matmul = MemrefMatMulOp::new(
                         ctx,
@@ -753,7 +752,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
             )
         };
 
-        rewriter.append_op(ctx, ndfor);
+        rewriter.append_op(ctx, &ndfor);
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![accum]);
         Ok(())
     }
@@ -847,7 +846,7 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
             self.slice_sizes(ctx),
             self.slice_steps(ctx),
         );
-        rewriter.append_op(ctx, subview);
+        rewriter.append_op(ctx, &subview);
         rewriter.replace_operation(ctx, self.get_operation(), subview.get_operation());
         Ok(())
     }
@@ -892,10 +891,10 @@ impl BufferizableOpInterface for TensorInsertSliceOp {
             self.slice_sizes(ctx),
             self.slice_steps(ctx),
         );
-        rewriter.append_op(ctx, view);
+        rewriter.append_op(ctx, &view);
 
         let copy_source = MemrefCopyOp::new(ctx, view.get_result(ctx), self.source(ctx));
-        rewriter.append_op(ctx, copy_source);
+        rewriter.append_op(ctx, &copy_source);
 
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![destination]);
         Ok(())
@@ -940,7 +939,7 @@ impl BufferizableOpInterface for TensorReshapeOp {
             TensorReshapeOp::get_dynamic_dimensions(self, ctx),
             result_ty,
         );
-        rewriter.append_op(ctx, memref_reshape);
+        rewriter.append_op(ctx, &memref_reshape);
         rewriter.replace_operation(ctx, self.get_operation(), memref_reshape.get_operation());
         Ok(())
     }

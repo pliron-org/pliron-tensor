@@ -19,7 +19,7 @@ use pliron::{
         types::{IntegerType, Signedness},
     },
     context::{Context, Ptr},
-    irbuild::{inserter::Inserter, listener::InsertionListener},
+    irbuild::inserter::Inserter,
     result::Result,
     r#type::{TypeObj, TypePtr, Typed},
     utils::apint::APInt,
@@ -46,9 +46,9 @@ use crate::memref::{
 /// compute the sizes of each dimension as [Value]s, and the strides of each dimension as
 /// [Value]s. Also return the total number of elements in the memref (the product of the sizes
 /// of each dimension).
-pub fn compute_sizes_strides<L: InsertionListener, I: Inserter<L>>(
+pub fn compute_sizes_strides(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     memref: TypePtr<RankedMemrefType>,
     dynamic_sizes: Vec<Value>,
 ) -> (Vec<Value>, Vec<Value>, Value) {
@@ -63,7 +63,7 @@ pub fn compute_sizes_strides<L: InsertionListener, I: Inserter<L>>(
         .map(|d| match d {
             Dimension::Static(size) => {
                 let v = IndexConstantOp::new(ctx, *size);
-                inserter.append_op(ctx, v);
+                inserter.append_op(ctx, &v);
                 v.get_result(ctx)
             }
             Dimension::Dynamic => dynamic_size_iter
@@ -84,40 +84,40 @@ pub fn compute_sizes_strides<L: InsertionListener, I: Inserter<L>>(
     let mut strides = Vec::new();
     let mut running_stride = Stride::Static(1);
     let last_stride = IndexConstantOp::new(ctx, 1);
-    inserter.append_op(ctx, last_stride);
+    inserter.append_op(ctx, &last_stride);
     strides.push(last_stride.get_result(ctx));
     for (size_val, dim) in sizes.iter().zip(shape.iter()).rev() {
         match (running_stride, dim) {
             (Stride::Static(s), Dimension::Static(d)) => {
                 let next_stride = s * d;
                 let next_stride_val = IndexConstantOp::new(ctx, next_stride);
-                inserter.append_op(ctx, next_stride_val);
+                inserter.append_op(ctx, &next_stride_val);
                 running_stride = Stride::Static(next_stride);
                 strides.push(next_stride_val.get_result(ctx));
             }
             (Stride::Dynamic(v), Dimension::Static(d)) => {
                 let d_val = IndexConstantOp::new(ctx, *d);
-                inserter.append_op(ctx, d_val);
+                inserter.append_op(ctx, &d_val);
                 let next_stride = MulOp::new_with_overflow_flag(
                     ctx,
                     v,
                     d_val.get_result(ctx),
                     IntegerOverflowFlagsAttr::default(),
                 );
-                inserter.append_op(ctx, next_stride);
+                inserter.append_op(ctx, &next_stride);
                 running_stride = Stride::Dynamic(next_stride.get_result(ctx));
                 strides.push(next_stride.get_result(ctx));
             }
             (Stride::Static(s), Dimension::Dynamic) => {
                 let s_val = IndexConstantOp::new(ctx, s);
-                inserter.append_op(ctx, s_val);
+                inserter.append_op(ctx, &s_val);
                 let next_stride = MulOp::new_with_overflow_flag(
                     ctx,
                     s_val.get_result(ctx),
                     *size_val,
                     IntegerOverflowFlagsAttr::default(),
                 );
-                inserter.append_op(ctx, next_stride);
+                inserter.append_op(ctx, &next_stride);
                 running_stride = Stride::Dynamic(next_stride.get_result(ctx));
                 strides.push(next_stride.get_result(ctx));
             }
@@ -128,7 +128,7 @@ pub fn compute_sizes_strides<L: InsertionListener, I: Inserter<L>>(
                     *size_val,
                     IntegerOverflowFlagsAttr::default(),
                 );
-                inserter.append_op(ctx, next_stride);
+                inserter.append_op(ctx, &next_stride);
                 running_stride = Stride::Dynamic(next_stride.get_result(ctx));
                 strides.push(next_stride.get_result(ctx));
             }
@@ -152,9 +152,9 @@ pub struct Descriptor {
 }
 
 /// Unpack / extract the allocated pointer, aligned pointer, offset, sizes, and strides from a memref descriptor.
-pub fn unpack_descriptor<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_descriptor(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
 ) -> Descriptor {
     let allocated_ptr = unpack_allocated_ptr(ctx, inserter, descriptor);
@@ -172,9 +172,9 @@ pub fn unpack_descriptor<L: InsertionListener, I: Inserter<L>>(
 }
 
 /// Unpack / extract the sizes from a memref descriptor.
-pub fn unpack_sizes<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_sizes(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
 ) -> Vec<Value> {
     let rank = {
@@ -190,23 +190,23 @@ pub fn unpack_sizes<L: InsertionListener, I: Inserter<L>>(
     };
     let sizes_arr = ExtractValueOp::new(ctx, descriptor, vec![3])
         .expect("Expected sizes array field in memref descriptor");
-    inserter.append_op(ctx, sizes_arr);
+    inserter.append_op(ctx, &sizes_arr);
     let sizes_arr_val = sizes_arr.get_result(ctx);
 
     (0..rank)
         .map(|dim| {
             let size = ExtractValueOp::new(ctx, sizes_arr_val, vec![dim.try_into().unwrap()])
                 .expect("Expected size field in sizes array");
-            inserter.append_op(ctx, size);
+            inserter.append_op(ctx, &size);
             size.get_result(ctx)
         })
         .collect()
 }
 
 /// Unpack / extract the strides from a memref descriptor.
-pub fn unpack_strides<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_strides(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
 ) -> Vec<Value> {
     let rank = {
@@ -222,72 +222,68 @@ pub fn unpack_strides<L: InsertionListener, I: Inserter<L>>(
     };
     let strides_arr = ExtractValueOp::new(ctx, descriptor, vec![4])
         .expect("Expected strides array field in memref descriptor");
-    inserter.append_op(ctx, strides_arr);
+    inserter.append_op(ctx, &strides_arr);
     let strides_array_val = strides_arr.get_result(ctx);
     (0..rank)
         .map(|dim| {
             let stride = ExtractValueOp::new(ctx, strides_array_val, vec![dim.try_into().unwrap()])
                 .expect("Expected stride field in strides array");
-            inserter.append_op(ctx, stride);
+            inserter.append_op(ctx, &stride);
             stride.get_result(ctx)
         })
         .collect()
 }
 
 /// Unpack / extract the allocated pointer from a memref descriptor.
-pub fn unpack_allocated_ptr<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_allocated_ptr(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
 ) -> Value {
     let extracter = ExtractValueOp::new(ctx, descriptor, vec![0])
         .expect("Expected allocated pointer field in memref descriptor");
-    inserter.append_op(ctx, extracter);
+    inserter.append_op(ctx, &extracter);
     extracter.get_result(ctx)
 }
 
 /// Unpack / extract the aligned pointer from a memref descriptor.
-pub fn unpack_aligned_ptr<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_aligned_ptr(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
 ) -> Value {
     let extracter = ExtractValueOp::new(ctx, descriptor, vec![1])
         .expect("Expected aligned pointer field in memref descriptor");
-    inserter.append_op(ctx, extracter);
+    inserter.append_op(ctx, &extracter);
     extracter.get_result(ctx)
 }
 
 /// Unpack / extract the offset from a memref descriptor.
-pub fn unpack_offset<L: InsertionListener, I: Inserter<L>>(
-    ctx: &mut Context,
-    inserter: &mut I,
-    descriptor: Value,
-) -> Value {
+pub fn unpack_offset(ctx: &mut Context, inserter: &mut dyn Inserter, descriptor: Value) -> Value {
     let extracter = ExtractValueOp::new(ctx, descriptor, vec![2])
         .expect("Expected offset field in memref descriptor");
 
-    inserter.append_op(ctx, extracter);
+    inserter.append_op(ctx, &extracter);
     extracter.get_result(ctx)
 }
 
 /// Unpack / extract the size of a specific dimension from a memref descriptor.
-pub fn unpack_size<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_size(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
     dim: usize,
 ) -> Value {
     let sizes_arr = ExtractValueOp::new(ctx, descriptor, vec![3])
         .expect("Expected sizes array field in memref descriptor");
-    inserter.append_op(ctx, sizes_arr);
+    inserter.append_op(ctx, &sizes_arr);
     let size = ExtractValueOp::new(
         ctx,
         sizes_arr.get_result(ctx),
         vec![dim.try_into().unwrap()],
     )
     .expect("Expected size field in sizes array");
-    inserter.append_op(ctx, size);
+    inserter.append_op(ctx, &size);
     size.get_result(ctx)
 }
 
@@ -298,9 +294,9 @@ pub fn unpack_size<L: InsertionListener, I: Inserter<L>>(
 /// GEP + Load to access `descriptor.sizes[dim_idx]`.
 ///
 /// We can't just re-use [unpack_size] because `ExtractValueOp` requires constant indices.
-pub fn unpack_size_dynamic_dim_idx<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_size_dynamic_dim_idx(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
     dim_idx: Value,
 ) -> Value {
@@ -314,14 +310,14 @@ pub fn unpack_size_dynamic_dim_idx<L: InsertionListener, I: Inserter<L>>(
         ),
     );
     let one = ConstantOp::new(ctx, Box::new(one_attr));
-    inserter.append_op(ctx, one);
+    inserter.append_op(ctx, &one);
 
     let descriptor_slot = AllocaOp::new(ctx, descriptor_ty, one.get_result(ctx));
-    inserter.append_op(ctx, descriptor_slot);
+    inserter.append_op(ctx, &descriptor_slot);
     let descriptor_slot_ptr = descriptor_slot.get_result(ctx);
 
     let store_descriptor = StoreOp::new(ctx, descriptor, descriptor_slot_ptr);
-    inserter.append_op(ctx, store_descriptor);
+    inserter.append_op(ctx, &store_descriptor);
 
     let size_ptr = GetElementPtrOp::new(
         ctx,
@@ -333,37 +329,37 @@ pub fn unpack_size_dynamic_dim_idx<L: InsertionListener, I: Inserter<L>>(
         ],
         descriptor_ty,
     );
-    inserter.append_op(ctx, size_ptr);
+    inserter.append_op(ctx, &size_ptr);
 
     let load_size = LoadOp::new(ctx, size_ptr.get_result(ctx), size_elem_ty.into());
-    inserter.append_op(ctx, load_size);
+    inserter.append_op(ctx, &load_size);
     load_size.get_result(ctx)
 }
 
 /// Unpack / extract the stride of a specific dimension from a memref descriptor.
-pub fn unpack_stride<L: InsertionListener, I: Inserter<L>>(
+pub fn unpack_stride(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     descriptor: Value,
     dim: usize,
 ) -> Value {
     let strides_arr = ExtractValueOp::new(ctx, descriptor, vec![4])
         .expect("Expected strides array field in memref descriptor");
-    inserter.append_op(ctx, strides_arr);
+    inserter.append_op(ctx, &strides_arr);
     let stride = ExtractValueOp::new(
         ctx,
         strides_arr.get_result(ctx),
         vec![dim.try_into().unwrap()],
     )
     .expect("Expected stride field in strides array");
-    inserter.append_op(ctx, stride);
+    inserter.append_op(ctx, &stride);
     stride.get_result(ctx)
 }
 
 /// Pack the allocated pointer, aligned pointer, offset, sizes, and strides into a memref descriptor.
-pub fn pack_descriptor<L: InsertionListener, I: Inserter<L>>(
+pub fn pack_descriptor(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     memref_type: TypePtr<RankedMemrefType>,
     descriptor: Descriptor,
 ) -> Result<Value> {
@@ -374,7 +370,7 @@ pub fn pack_descriptor<L: InsertionListener, I: Inserter<L>>(
 
     // Begin with an undef value of the LLVM struct type, and insert the fields one by one using InsertValueOp.
     let undef_struct = UndefOp::new(ctx, llvm_struct_ty);
-    inserter.append_op(ctx, undef_struct);
+    inserter.append_op(ctx, &undef_struct);
 
     // Insert the allocated pointer
     let allocated_ptr_struct = InsertValueOp::new(
@@ -383,7 +379,7 @@ pub fn pack_descriptor<L: InsertionListener, I: Inserter<L>>(
         descriptor.allocated_ptr,
         vec![0],
     );
-    inserter.append_op(ctx, allocated_ptr_struct);
+    inserter.append_op(ctx, &allocated_ptr_struct);
 
     // Insert the aligned pointer
     let aligned_ptr_struct = InsertValueOp::new(
@@ -392,7 +388,7 @@ pub fn pack_descriptor<L: InsertionListener, I: Inserter<L>>(
         descriptor.aligned_ptr,
         vec![1],
     );
-    inserter.append_op(ctx, aligned_ptr_struct);
+    inserter.append_op(ctx, &aligned_ptr_struct);
 
     // Insert the offset
     let offset_struct = InsertValueOp::new(
@@ -401,38 +397,38 @@ pub fn pack_descriptor<L: InsertionListener, I: Inserter<L>>(
         descriptor.offset,
         vec![2],
     );
-    inserter.append_op(ctx, offset_struct);
+    inserter.append_op(ctx, &offset_struct);
 
     // Insert the sizes array
     let sizes_array_ty = llvm_struct_ty_detail.deref(ctx).field_type(3);
     // Start with an undef value for the sizes array, and insert each size into it.
     // Then insert the sizes array into the struct.
     let sizes_array = UndefOp::new(ctx, sizes_array_ty);
-    inserter.append_op(ctx, sizes_array);
+    inserter.append_op(ctx, &sizes_array);
     let mut sizes_array = sizes_array.get_result(ctx);
     for (i, size) in descriptor.sizes.into_iter().enumerate() {
         let insert_op = InsertValueOp::new(ctx, sizes_array, size, vec![i.try_into().unwrap()]);
         sizes_array = insert_op.get_result(ctx);
-        inserter.append_op(ctx, insert_op);
+        inserter.append_op(ctx, &insert_op);
     }
     let sizes_struct = InsertValueOp::new(ctx, offset_struct.get_result(ctx), sizes_array, vec![3]);
-    inserter.append_op(ctx, sizes_struct);
+    inserter.append_op(ctx, &sizes_struct);
 
     // Insert the strides array
     let strides_array_ty = llvm_struct_ty_detail.deref(ctx).field_type(4);
     // Start with an undef value for the strides array, and insert each stride into it.
     // Then insert the strides array into the struct.
     let strides_array = UndefOp::new(ctx, strides_array_ty);
-    inserter.append_op(ctx, strides_array);
+    inserter.append_op(ctx, &strides_array);
     let mut strides_array = strides_array.get_result(ctx);
     for (i, stride) in descriptor.strides.into_iter().enumerate() {
         let insert_op = InsertValueOp::new(ctx, strides_array, stride, vec![i.try_into().unwrap()]);
         strides_array = insert_op.get_result(ctx);
-        inserter.append_op(ctx, insert_op);
+        inserter.append_op(ctx, &insert_op);
     }
     let strides_struct =
         InsertValueOp::new(ctx, sizes_struct.get_result(ctx), strides_array, vec![4]);
-    inserter.append_op(ctx, strides_struct);
+    inserter.append_op(ctx, &strides_struct);
 
     Ok(strides_struct.get_result(ctx))
 }
@@ -440,9 +436,9 @@ pub fn pack_descriptor<L: InsertionListener, I: Inserter<L>>(
 /// Performs the index computation to get to the element at `indices` of the
 /// memref descriptor pointed to by `memref`. The indices are linearized as:
 ///   `base_offset + index_0 * stride_0 + ... + index_n * stride_n`.
-pub fn get_strided_element_ptr<L: InsertionListener, I: Inserter<L>>(
+pub fn get_strided_element_ptr(
     ctx: &mut Context,
-    inserter: &mut I,
+    inserter: &mut dyn Inserter,
     elem_ty: Ptr<TypeObj>,
     memref: Value,
     indices: Vec<Value>,
@@ -457,7 +453,7 @@ pub fn get_strided_element_ptr<L: InsertionListener, I: Inserter<L>>(
         vec![GepIndex::Value(offset)],
         elem_ty,
     );
-    inserter.append_op(ctx, offsetted_ptr);
+    inserter.append_op(ctx, &offsetted_ptr);
     let offsetted_ptr = offsetted_ptr.get_result(ctx);
     let products: Vec<_> = indices
         .into_iter()
@@ -469,7 +465,7 @@ pub fn get_strided_element_ptr<L: InsertionListener, I: Inserter<L>>(
                 index,
                 IntegerOverflowFlagsAttr::default(),
             );
-            inserter.append_op(ctx, index_offset);
+            inserter.append_op(ctx, &index_offset);
             index_offset.get_result(ctx)
         })
         .collect();
@@ -482,7 +478,7 @@ pub fn get_strided_element_ptr<L: InsertionListener, I: Inserter<L>>(
                 sum_of_products,
                 IntegerOverflowFlagsAttr::default(),
             );
-            inserter.append_op(ctx, sum);
+            inserter.append_op(ctx, &sum);
             sum.get_result(ctx)
         })
         .expect("Zero rank not handled");
@@ -493,7 +489,7 @@ pub fn get_strided_element_ptr<L: InsertionListener, I: Inserter<L>>(
         vec![GepIndex::Value(indexed_offset)],
         elem_ty,
     );
-    inserter.append_op(ctx, final_gep);
+    inserter.append_op(ctx, &final_gep);
     final_gep.get_result(ctx)
 }
 
@@ -549,7 +545,7 @@ mod tests {
         let (sizes, strides, total_elements) =
             super::compute_sizes_strides(ctx, &mut inserter, memref_type, vec![]);
         let ret_op = ReturnOp::new(ctx, None);
-        inserter.append_op(ctx, ret_op);
+        inserter.append_op(ctx, &ret_op);
         expect![[r#"
             builtin.module @test_module 
             {
@@ -607,8 +603,8 @@ mod tests {
 
         let dyn_size1 = IndexConstantOp::new(ctx, 4);
         let dyn_size2 = IndexConstantOp::new(ctx, 8);
-        inserter.append_op(ctx, dyn_size1);
-        inserter.append_op(ctx, dyn_size2);
+        inserter.append_op(ctx, &dyn_size1);
+        inserter.append_op(ctx, &dyn_size2);
         inserter.set_insertion_point_to_block_end(entry);
 
         // Use dynamic sizes of 4 and 8 for the two dimensions.
@@ -619,7 +615,7 @@ mod tests {
             vec![dyn_size1.get_result(ctx), dyn_size2.get_result(ctx)],
         );
         let ret_op = ReturnOp::new(ctx, None);
-        inserter.append_op(ctx, ret_op);
+        inserter.append_op(ctx, &ret_op);
         expect![[r#"
             builtin.module @test_module 
             {

@@ -24,7 +24,6 @@ use pliron::{
     irbuild::{
         dialect_conversion::{DialectConversionRewriter, OperandsInfo},
         inserter::Inserter,
-        listener::InsertionListener,
         rewriter::Rewriter,
     },
     op::Op,
@@ -171,19 +170,15 @@ fn lookup_or_create_tracked_dealloc_fn(
 
 /// Emit IR ops that materialise the TMM self pointer attribute value as an LLVM `ptr`.
 /// Appends a `ConstantOp` (i64) and an `IntToPtrOp` to `inserter`.
-fn emit_tmm_state_ptr<L: InsertionListener, I: Inserter<L>>(
-    ctx: &mut Context,
-    inserter: &mut I,
-    tmm_ptr: *const (),
-) -> Value {
+fn emit_tmm_state_ptr(ctx: &mut Context, inserter: &mut dyn Inserter, tmm_ptr: *const ()) -> Value {
     let i64_ty = IntegerType::get(ctx, 64, Signedness::Signless);
     let addr = tmm_ptr as u64;
     let addr_attr = IntegerAttr::new(i64_ty, APInt::from_u64(addr, NonZero::new(64).unwrap()));
     let const_op = ConstantOp::new(ctx, Box::new(addr_attr));
-    inserter.append_op(ctx, const_op);
+    inserter.append_op(ctx, &const_op);
     let ptr_ty = PointerType::get(ctx).into();
     let inttoptr_op = IntToPtrOp::new(ctx, const_op.get_result(ctx), ptr_ty);
-    inserter.append_op(ctx, inttoptr_op);
+    inserter.append_op(ctx, &inttoptr_op);
     inttoptr_op.get_result(ctx)
 }
 
@@ -315,7 +310,7 @@ impl ToCFDialect for TrackedAllocOp {
             num_elems,
             IntegerOverflowFlagsAttr::default(),
         );
-        rewriter.append_op(ctx, alloc_size);
+        rewriter.append_op(ctx, &alloc_size);
 
         let symbol_table_op = nearest_symbol_table(ctx, self.get_operation()).ok_or_else(|| {
             input_error!(
@@ -338,11 +333,11 @@ impl ToCFDialect for TrackedAllocOp {
             tracked_malloc_fn.get_type(ctx),
             vec![state_ptr_ir, alloc_size.get_result(ctx)],
         );
-        rewriter.append_op(ctx, call_op);
+        rewriter.append_op(ctx, &call_op);
         let allocated_ptr = call_op.get_result(ctx);
 
         let offset = IndexConstantOp::new(ctx, 0);
-        rewriter.append_op(ctx, offset);
+        rewriter.append_op(ctx, &offset);
 
         let descriptor = descriptor::pack_descriptor(
             ctx,
@@ -483,7 +478,7 @@ impl ToCFDialect for TrackedDeallocOp {
             tracked_dealloc_fn.get_type(ctx),
             vec![state_ptr_ir, allocated_ptr],
         );
-        rewriter.append_op(ctx, call_op);
+        rewriter.append_op(ctx, &call_op);
         Rewriter::replace_operation(rewriter, ctx, self.get_operation(), call_op.get_operation());
         Ok(())
     }
