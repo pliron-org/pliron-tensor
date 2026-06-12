@@ -71,34 +71,34 @@ fn test_alloc_generate() {
               [] 
             {
               ^entry_block2v1(i_res_v13: builtin.integer i64, j_res_v14: builtin.integer i64) !1:
-                v66 = llvm.constant <builtin.integer <16: i64>> : builtin.integer i64;
-                v67 = llvm.constant <builtin.integer <16: i64>> : builtin.integer i64;
-                v68 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
-                v69 = llvm.constant <builtin.integer <16: i64>> : builtin.integer i64;
-                v70 = llvm.constant <builtin.integer <256: i64>> : builtin.integer i64;
-                v20 = llvm.zero : llvm.ptr ;
-                v21 = llvm.gep <builtin.integer i64> (v20)[Constant(1)] : llvm.ptr ;
+                v66 = builtin.constant <builtin.integer <16: i64>> : builtin.integer i64;
+                v67 = builtin.constant <builtin.integer <16: i64>> : builtin.integer i64;
+                v68 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                v69 = builtin.constant <builtin.integer <16: i64>> : builtin.integer i64;
+                v70 = builtin.constant <builtin.integer <256: i64>> : builtin.integer i64;
+                v20 = llvm.zero : llvm.ptr (0);
+                v21 = llvm.gep <builtin.integer i64> (v20)[Constant(1)] : llvm.ptr (0);
                 v22 = llvm.ptrtoint v21 to builtin.integer i64;
                 v23 = llvm.mul v22, v70 <{nsw=false,nuw=false}>: builtin.integer i64;
-                v24 = llvm.call @malloc (v23) : llvm.func <llvm.ptr (builtin.integer i64) variadic = false>;
-                v71 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
-                v26 = llvm.undef : llvm.struct <{ llvm.ptr , llvm.ptr , builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
-                v27 = llvm.insert_value v26[0], v24 : llvm.struct <{ llvm.ptr , llvm.ptr , builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
-                v28 = llvm.insert_value v27[1], v24 : llvm.struct <{ llvm.ptr , llvm.ptr , builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
-                v29 = llvm.insert_value v28[2], v71 : llvm.struct <{ llvm.ptr , llvm.ptr , builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
+                v24 = llvm.call @malloc (v23) : llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>;
+                v71 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                v26 = llvm.undef : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
+                v27 = llvm.insert_value v26[0], v24 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
+                v28 = llvm.insert_value v27[1], v24 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
+                v29 = llvm.insert_value v28[2], v71 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
                 v30 = llvm.undef : llvm.array [2 x builtin.integer i64];
                 v31 = llvm.insert_value v30[0], v66 : llvm.array [2 x builtin.integer i64];
                 v32 = llvm.insert_value v31[1], v67 : llvm.array [2 x builtin.integer i64];
-                v33 = llvm.insert_value v29[3], v32 : llvm.struct <{ llvm.ptr , llvm.ptr , builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
+                v33 = llvm.insert_value v29[3], v32 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
                 v34 = llvm.undef : llvm.array [2 x builtin.integer i64];
                 v35 = llvm.insert_value v34[0], v69 : llvm.array [2 x builtin.integer i64];
                 v36 = llvm.insert_value v35[1], v68 : llvm.array [2 x builtin.integer i64];
-                v37 = llvm.insert_value v33[4], v36 : llvm.struct <{ llvm.ptr , llvm.ptr , builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
+                v37 = llvm.insert_value v33[4], v36 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] }>;
                 v38 = llvm.extract_value v37[3] : llvm.array [2 x builtin.integer i64];
                 v39 = llvm.extract_value v38[0] : builtin.integer i64;
                 v40 = llvm.extract_value v38[1] : builtin.integer i64;
-                v72 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
-                v73 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                v72 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                v73 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
                 llvm.br ^for_op_header_block10v1(v72)
 
               ^for_op_header_block10v1(v79: builtin.integer i64) !2:
@@ -120,16 +120,16 @@ fn test_alloc_generate() {
 
               ^entry_block1v1(i_v7: builtin.integer i64, j_v8: builtin.integer i64) !5:
                 sum_v6 = llvm.add i_v7, j_res_v14 <{nsw=false,nuw=false}>: builtin.integer i64 !6;
-                v56 = llvm.extract_value v37[1] : llvm.ptr ;
+                v56 = llvm.extract_value v37[1] : llvm.ptr (0);
                 v57 = llvm.extract_value v37[4] : llvm.array [2 x builtin.integer i64];
                 v58 = llvm.extract_value v57[0] : builtin.integer i64;
                 v59 = llvm.extract_value v57[1] : builtin.integer i64;
                 v60 = llvm.extract_value v37[2] : builtin.integer i64;
-                v61 = llvm.gep <builtin.integer i64> (v56, v60)[OperandIdx(1)] : llvm.ptr ;
+                v61 = llvm.gep <builtin.integer i64> (v56, v60)[OperandIdx(1)] : llvm.ptr (0);
                 v62 = llvm.mul v58, i_v7 <{nsw=false,nuw=false}>: builtin.integer i64;
                 v63 = llvm.mul v59, j_v8 <{nsw=false,nuw=false}>: builtin.integer i64;
                 v64 = llvm.add v63, v62 <{nsw=false,nuw=false}>: builtin.integer i64;
-                v65 = llvm.gep <builtin.integer i64> (v61, v64)[OperandIdx(1)] : llvm.ptr ;
+                v65 = llvm.gep <builtin.integer i64> (v61, v64)[OperandIdx(1)] : llvm.ptr (0);
                 llvm.store *v65 <- sum_v6  !7;
                 v78 = llvm.add iv_v74, v73 <{nsw=false,nuw=false}>: builtin.integer i64;
                 llvm.br ^for_op_header_block8v1(v78)
@@ -139,20 +139,20 @@ fn test_alloc_generate() {
                 llvm.br ^for_op_header_block10v1(v81)
 
               ^entry_split_block9v1():
-                v45 = llvm.extract_value v37[1] : llvm.ptr ;
+                v45 = llvm.extract_value v37[1] : llvm.ptr (0);
                 v46 = llvm.extract_value v37[4] : llvm.array [2 x builtin.integer i64];
                 v47 = llvm.extract_value v46[0] : builtin.integer i64;
                 v48 = llvm.extract_value v46[1] : builtin.integer i64;
                 v49 = llvm.extract_value v37[2] : builtin.integer i64;
-                v50 = llvm.gep <builtin.integer i64> (v45, v49)[OperandIdx(1)] : llvm.ptr ;
+                v50 = llvm.gep <builtin.integer i64> (v45, v49)[OperandIdx(1)] : llvm.ptr (0);
                 v51 = llvm.mul v47, i_res_v13 <{nsw=false,nuw=false}>: builtin.integer i64;
                 v52 = llvm.mul v48, j_res_v14 <{nsw=false,nuw=false}>: builtin.integer i64;
                 v53 = llvm.add v52, v51 <{nsw=false,nuw=false}>: builtin.integer i64;
-                v54 = llvm.gep <builtin.integer i64> (v50, v53)[OperandIdx(1)] : llvm.ptr ;
+                v54 = llvm.gep <builtin.integer i64> (v50, v53)[OperandIdx(1)] : llvm.ptr (0);
                 v55 = llvm.load v54  : builtin.integer i64 !8;
                 llvm.return v55 !9
             } !10;
-            llvm.func @malloc: llvm.func <llvm.ptr (builtin.integer i64) variadic = false>
+            llvm.func @malloc: llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>
               []
         }"#]].assert_eq(&print_parsed);
 
@@ -340,7 +340,7 @@ fn test_memref_dim_const_index() {
             dim1 = memref.dim memref, idx1 : index.index;
             dim0_i64 = index.to_integer dim0 to builtin.integer i64;
             dim1_i64 = index.to_integer dim1 to builtin.integer i64;
-            thousand = llvm.constant <builtin.integer <1000: i64>> : builtin.integer i64;
+            thousand = builtin.constant <builtin.integer <1000: i64>> : builtin.integer i64;
             scaled = llvm.mul dim0_i64, thousand <{nsw = false, nuw = false}> : builtin.integer i64;
             encoded = llvm.add scaled, dim1_i64 <{nsw = false, nuw = false}> : builtin.integer i64;
             llvm.return encoded
@@ -412,7 +412,7 @@ fn test_subview() {
                       ^entry(i : index.index, j : index.index):
                         i_int = index.to_integer i to builtin.integer i64;
                         j_int = index.to_integer j to builtin.integer i64;
-                        three = llvm.constant <builtin.integer <3: i64>> : builtin.integer i64;
+                        three = builtin.constant <builtin.integer <3: i64>> : builtin.integer i64;
                         row = llvm.mul i_int, three <{nsw = false, nuw = false}> : builtin.integer i64;
                         val = llvm.add row, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
                         memref.yield val
@@ -488,7 +488,7 @@ fn test_copy() {
               ^entry(i : index.index, j : index.index):
               i_int = index.to_integer i to builtin.integer i64;
               j_int = index.to_integer j to builtin.integer i64;
-              ten = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64;
+              ten = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64;
               row = llvm.mul i_int, ten <{nsw = false, nuw = false}> : builtin.integer i64;
               val = llvm.add row, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
               memref.yield val
@@ -573,7 +573,7 @@ fn test_insert_slice_sequence() {
               ^entry(i : index.index, j : index.index):
               i_int = index.to_integer i to builtin.integer i64;
               j_int = index.to_integer j to builtin.integer i64;
-              ten = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64;
+              ten = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64;
               row = llvm.mul i_int, ten <{nsw = false, nuw = false}> : builtin.integer i64;
               val = llvm.add row, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
               memref.yield val
@@ -583,8 +583,8 @@ fn test_insert_slice_sequence() {
                       ^entry(di : index.index, dj : index.index):
                         di_int = index.to_integer di to builtin.integer i64;
                         dj_int = index.to_integer dj to builtin.integer i64;
-              four = llvm.constant <builtin.integer <4: i64>> : builtin.integer i64;
-              hundred = llvm.constant <builtin.integer <100: i64>> : builtin.integer i64;
+              four = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
+              hundred = builtin.constant <builtin.integer <100: i64>> : builtin.integer i64;
                         drow = llvm.mul di_int, four <{nsw = false, nuw = false}> : builtin.integer i64;
                         dbase = llvm.add hundred, drow <{nsw = false, nuw = false}> : builtin.integer i64;
                         dval = llvm.add dbase, dj_int <{nsw = false, nuw = false}> : builtin.integer i64;

@@ -997,7 +997,7 @@ impl ToLLVMType for RankedMemrefType {
 
                 self_ty.rank().try_into().expect("Rank should fit into u64")
             };
-            let ptr = pliron_llvm::types::PointerType::get(ctx);
+            let ptr = pliron_llvm::types::PointerType::get(ctx, 0);
             let i64 = pliron::builtin::types::IntegerType::get(ctx, 64, Signedness::Signless);
             let sizes_array = pliron_llvm::types::ArrayType::get(ctx, i64.into(), rank);
             let strides_array = sizes_array;

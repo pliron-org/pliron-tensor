@@ -15,6 +15,7 @@ use pliron::{
             NOpdsInterface, NResultsInterface, OneOpdInterface, OneResultInterface, OperandNOfType,
             ResultNOfType, SameResultsType, SymbolOpInterface, SymbolTableInterface,
         },
+        ops::ConstantOp,
         types::{IntegerType, Signedness},
     },
     common_traits::Verify,
@@ -41,7 +42,7 @@ use pliron_llvm::{
     function_call_utils::{compute_type_size_in_bytes, get_size_type, lookup_or_insert_function},
     llvm_sys::lljit::JITSymbolGenericFlags,
     op_interfaces::{CastOpInterface, IntBinArithOpWithOverflowFlag},
-    ops::{CallOp, ConstantOp, FuncOp, IntToPtrOp, MulOp},
+    ops::{CallOp, FuncOp, IntToPtrOp, MulOp},
     types::{PointerType, VoidType},
 };
 
@@ -137,7 +138,7 @@ fn lookup_or_create_tracked_malloc_fn(
     symbol_table_collection: &mut SymbolTableCollection,
     symbol_table_op: Box<dyn SymbolTableInterface>,
 ) -> Result<FuncOp> {
-    let ptr_ty = PointerType::get(ctx).into();
+    let ptr_ty = PointerType::get(ctx, 0).into();
     let size_ty = get_size_type(ctx);
     lookup_or_insert_function(
         ctx,
@@ -156,7 +157,7 @@ fn lookup_or_create_tracked_dealloc_fn(
     symbol_table_collection: &mut SymbolTableCollection,
     symbol_table_op: Box<dyn SymbolTableInterface>,
 ) -> Result<FuncOp> {
-    let ptr_ty = PointerType::get(ctx).into();
+    let ptr_ty = PointerType::get(ctx, 0).into();
     lookup_or_insert_function(
         ctx,
         symbol_table_collection,
@@ -176,7 +177,7 @@ fn emit_tmm_state_ptr(ctx: &mut Context, inserter: &mut dyn Inserter, tmm_ptr: *
     let addr_attr = IntegerAttr::new(i64_ty, APInt::from_u64(addr, NonZero::new(64).unwrap()));
     let const_op = ConstantOp::new(ctx, Box::new(addr_attr));
     inserter.append_op(ctx, &const_op);
-    let ptr_ty = PointerType::get(ctx).into();
+    let ptr_ty = PointerType::get(ctx, 0).into();
     let inttoptr_op = IntToPtrOp::new(ctx, const_op.get_result(ctx), ptr_ty);
     inserter.append_op(ctx, &inttoptr_op);
     inttoptr_op.get_result(ctx)

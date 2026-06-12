@@ -172,7 +172,7 @@ fn test_successor_operand_aliasing_needs_copy_0() {
                         x = tensor.generate : tensor.ranked<4:builtin.integer i64> {
                             ^entry(i_1 : index.index):
                                 i_int = index.to_integer i_1 to builtin.integer i64;
-                                one = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                                one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
                                 x_elem = llvm.add i_int, one <{nsw = false, nuw = false}> : builtin.integer i64;
                                 memref.yield x_elem
                         };
@@ -181,12 +181,12 @@ fn test_successor_operand_aliasing_needs_copy_0() {
                     ^block_b(z: tensor.ranked<4:builtin.integer i64>):
                         src = tensor.generate : tensor.ranked<1:builtin.integer i64> {
                             ^entry(i_2 : index.index):
-                                ten = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64;
+                                ten = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64;
                                 memref.yield ten
                         };
                         y = tensor.insert_slice src into z [0] [1] [1] : tensor.ranked<4:builtin.integer i64>;
                         sum = tensor.add x, y : tensor.ranked<4:builtin.integer i64>;
-                        zero_idx_i64 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                        zero_idx_i64 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
                         zero_idx = index.from_integer zero_idx_i64 : index.index;
                         res = tensor.extract sum[zero_idx]: builtin.integer i64;
                         llvm.return res
@@ -206,7 +206,7 @@ fn test_successor_operand_aliasing_needs_copy_1() {
                         x = tensor.generate : tensor.ranked<4:builtin.integer i64> {
                             ^entry(i_1 : index.index):
                                 i_int = index.to_integer i_1 to builtin.integer i64;
-                                one = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                                one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
                                 x_elem = llvm.add i_int, one <{nsw = false, nuw = false}> : builtin.integer i64;
                                 memref.yield x_elem
                         };
@@ -215,7 +215,7 @@ fn test_successor_operand_aliasing_needs_copy_1() {
                     ^block_c(z_c: tensor.ranked<4:builtin.integer i64>, x_c: tensor.ranked<4:builtin.integer i64>):
                         src = tensor.generate : tensor.ranked<1:builtin.integer i64> {
                             ^entry(i_2 : index.index):
-                                ten = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64;
+                                ten = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64;
                                 memref.yield ten
                         };
                         y = tensor.insert_slice src into x_c [0] [1] [1] : tensor.ranked<4:builtin.integer i64>;
@@ -223,7 +223,7 @@ fn test_successor_operand_aliasing_needs_copy_1() {
 
                     ^block_b(z: tensor.ranked<4:builtin.integer i64>, y_b: tensor.ranked<4:builtin.integer i64>):
                         sum = tensor.add z, y_b : tensor.ranked<4:builtin.integer i64>;
-                        zero_idx_i64 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                        zero_idx_i64 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
                         zero_idx = index.from_integer zero_idx_i64 : index.index;
                         res = tensor.extract sum[zero_idx]: builtin.integer i64;
                         llvm.return res
@@ -241,8 +241,8 @@ fn test_int_tensor_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_add: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_add: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), res_p: llvm.ptr(0)):
                     arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
                     res = tensor.add arg1, arg2 : tensor.ranked<4x4:builtin.integer i64>;
@@ -358,8 +358,8 @@ fn test_matmul_all_statics_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), arg3_p: llvm.ptr(0), res_p: llvm.ptr(0)):
                     arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
                     arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
@@ -377,8 +377,8 @@ fn test_matmul_inner_dynamic_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), arg3_p: llvm.ptr(0), res_p: llvm.ptr(0)):
                     arg1 = llvm.load arg1_p : tensor.ranked<4x?:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<?x4:builtin.integer i64>;
                     arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
@@ -396,8 +396,8 @@ fn test_matmul_all_dynamic_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_matmul: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), arg3_p: llvm.ptr(0), res_p: llvm.ptr(0)):
                     arg1 = llvm.load arg1_p : tensor.ranked<?x?:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<?x?:builtin.integer i64>;
                     arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
@@ -521,8 +521,8 @@ fn test_batch_matmul_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_batch_matmul: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_batch_matmul: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), arg3_p: llvm.ptr(0), res_p: llvm.ptr(0)):
                     arg1 = llvm.load arg1_p : tensor.ranked<2x2x3:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<2x3x2:builtin.integer i64>;
                     arg3 = llvm.load arg3_p : tensor.ranked<2x2x2:builtin.integer i64>;
@@ -628,8 +628,8 @@ fn test_float_tensor_from_rust() {
     let input_ir = r#"
       builtin.module @test_module {
         ^entry():
-        llvm.func @test_tensor_add_float: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-          ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+        llvm.func @test_tensor_add_float: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+          ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), res_p: llvm.ptr(0)):
           arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.fp64>;
           arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.fp64>;
           res = tensor.add arg1, arg2 : tensor.ranked<4x4:builtin.fp64>;
@@ -739,8 +739,8 @@ fn test_float_tensor_all_binary_ops_from_rust() {
     let input_ir = r#"
       builtin.module @test_module {
         ^entry():
-        llvm.func @test_tensor_all_binops_float: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-          ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, res_p: llvm.ptr):
+        llvm.func @test_tensor_all_binops_float: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+          ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), res_p: llvm.ptr(0)):
           arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.fp64>;
           arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.fp64>;
           zero = tensor.sub arg2, arg2 : tensor.ranked<4x4:builtin.fp64>;
@@ -860,8 +860,8 @@ fn test_extract_slice_tensor_to_memref() {
     let exec_ir = r#"
                 builtin.module @test_module {
                     ^entry():
-                        llvm.func @test_extract_slice_runtime: llvm.func <llvm.void (llvm.ptr, llvm.ptr) variadic = false> [] {
-                            ^entry(src_p: llvm.ptr, out_p: llvm.ptr):
+                        llvm.func @test_extract_slice_runtime: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                            ^entry(src_p: llvm.ptr(0), out_p: llvm.ptr(0)):
                                 src = llvm.load src_p : tensor.ranked<10x20:builtin.integer i64>;
                                 slice = tensor.extract_slice src [0, 2] [5, 10] [1, 2] : tensor.ranked<5x10:builtin.integer i64>;
                                 llvm.store *out_p <- slice;
@@ -888,10 +888,10 @@ fn test_extract_slice_tensor_to_memref() {
         builtin.module @test_module 
         {
           ^entry_block2v1() !0:
-            llvm.func @test_extract_slice_runtime: llvm.func <llvm.void (llvm.ptr , llvm.ptr ) variadic = false>
+            llvm.func @test_extract_slice_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
               [] 
             {
-              ^entry_block1v1(src_p_v4: llvm.ptr , out_p_v5: llvm.ptr ) !1:
+              ^entry_block1v1(src_p_v4: llvm.ptr (0), out_p_v5: llvm.ptr (0)) !1:
                 src_v1 = llvm.load src_p_v4  : memref.ranked <10x20 : builtin.integer i64> !2;
                 $v6 = memref.subview src_v1 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !3;
                 llvm.store *out_p_v5 <- v6  !4;
@@ -968,8 +968,8 @@ fn test_extract_slice_tensor_to_memref_sequential() {
     let exec_ir = r#"
                 builtin.module @test_module {
                     ^entry():
-                        llvm.func @test_extract_slice_runtime_sequential: llvm.func <llvm.void (llvm.ptr, llvm.ptr) variadic = false> [] {
-                            ^entry(src_p: llvm.ptr, out_p: llvm.ptr):
+                        llvm.func @test_extract_slice_runtime_sequential: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                            ^entry(src_p: llvm.ptr(0), out_p: llvm.ptr(0)):
                                 src = llvm.load src_p : tensor.ranked<10x20:builtin.integer i64>;
                                 first = tensor.extract_slice src [1, 2] [6, 8] [1, 2] : tensor.ranked<6x8:builtin.integer i64>;
                                 second = tensor.extract_slice first [1, 1] [3, 4] [2, 2] : tensor.ranked<3x4:builtin.integer i64>;
@@ -1072,8 +1072,8 @@ fn test_insert_slice_tensor_to_memref() {
     let input_ir = r#"
                 builtin.module @test_module {
                     ^entry():
-                        llvm.func @test_insert_slice_runtime: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                            ^entry(src_p: llvm.ptr, dst_p: llvm.ptr, out_p: llvm.ptr):
+                        llvm.func @test_insert_slice_runtime: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                            ^entry(src_p: llvm.ptr(0), dst_p: llvm.ptr(0), out_p: llvm.ptr(0)):
                                 src = llvm.load src_p : tensor.ranked<5x10:builtin.integer i64>;
                                 dst = llvm.load dst_p : tensor.ranked<10x20:builtin.integer i64>;
                                 updated = tensor.insert_slice src into dst [0, 2] [5, 10] [1, 2] : tensor.ranked<10x20:builtin.integer i64>;
@@ -1102,10 +1102,10 @@ fn test_insert_slice_tensor_to_memref() {
         builtin.module @test_module 
         {
           ^entry_block2v1() !0:
-            llvm.func @test_insert_slice_runtime: llvm.func <llvm.void (llvm.ptr , llvm.ptr , llvm.ptr ) variadic = false>
+            llvm.func @test_insert_slice_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
               [] 
             {
-              ^entry_block1v1(src_p_v6: llvm.ptr , dst_p_v7: llvm.ptr , out_p_v8: llvm.ptr ) !1:
+              ^entry_block1v1(src_p_v6: llvm.ptr (0), dst_p_v7: llvm.ptr (0), out_p_v8: llvm.ptr (0)) !1:
                 src_v1 = llvm.load src_p_v6  : memref.ranked <5x10 : builtin.integer i64> !2;
                 dst_v3 = llvm.load dst_p_v7  : memref.ranked <10x20 : builtin.integer i64> !3;
                 $v9 = memref.subview dst_v3 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
@@ -1214,8 +1214,8 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64 (llvm.ptr, builtin.integer i64, builtin.integer i64) variadic = false> [] {
-                  ^entry(arg_p: llvm.ptr, i_res: builtin.integer i64, j_res: builtin.integer i64):
+                llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+                  ^entry(arg_p: llvm.ptr(0), i_res: builtin.integer i64, j_res: builtin.integer i64):
                     arg = llvm.load arg_p : tensor.ranked<2x3:builtin.integer i64>;
                     reshaped = tensor.reshape arg() : tensor.ranked<3x2:builtin.integer i64>;
                     i_idx = index.from_integer i_res : index.index;
@@ -1247,10 +1247,10 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
         builtin.module @test_module 
         {
           ^entry_block2v1() !0:
-            llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64(llvm.ptr , builtin.integer i64, builtin.integer i64) variadic = false>
+            llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
               [] 
             {
-              ^entry_block1v1(arg_p_v8: llvm.ptr , i_res_v9: builtin.integer i64, j_res_v10: builtin.integer i64) !1:
+              ^entry_block1v1(arg_p_v8: llvm.ptr (0), i_res_v9: builtin.integer i64, j_res_v10: builtin.integer i64) !1:
                 arg_v1 = llvm.load arg_p_v8  : memref.ranked <2x3 : builtin.integer i64> !2;
                 v11 = memref.reshape arg_v1 : memref.ranked <3x2 : builtin.integer i64> !3;
                 i_idx_v4 = index.from_integer i_res_v9 : index.index  !4;
@@ -1310,8 +1310,8 @@ fn test_tracked_tmm_complex_tensor_computation_from_rust() {
     let input_ir = r#"
             builtin.module @test_module {
               ^entry():
-                llvm.func @test_tensor_complex_tracked: llvm.func <llvm.void (llvm.ptr, llvm.ptr, llvm.ptr, llvm.ptr) variadic = false> [] {
-                  ^entry(arg1_p: llvm.ptr, arg2_p: llvm.ptr, arg3_p: llvm.ptr, res_p: llvm.ptr):
+                llvm.func @test_tensor_complex_tracked: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), arg3_p: llvm.ptr(0), res_p: llvm.ptr(0)):
                     arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
                     arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
                     arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;

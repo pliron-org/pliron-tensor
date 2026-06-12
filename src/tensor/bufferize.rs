@@ -36,7 +36,10 @@ use pliron::{
     common_traits::Verify,
     context::{Context, Ptr},
     derive::{op_interface, op_interface_impl},
-    graph::walkers::{self, IRNode},
+    graph::{
+        dominance::DomInfo,
+        walkers::{self, IRNode},
+    },
     irbuild::{
         IRStatus,
         dialect_conversion::{
@@ -447,6 +450,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
 ) -> Result<IRStatus> {
     struct InPlaceBufferizationAnalysis {
         liveness: Liveness<LivenessTq>,
+        dom_info: DomInfo,
         in_place_bufferizable_operands: FxHashSet<Use<Value>>,
         successor_operands_needing_copy: FxHashSet<Use<Value>>,
     }
@@ -480,6 +484,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
                         let succ_block = op.deref(ctx).get_successor(succ_idx);
                         if state.liveness.is_live_at_point(
                             ctx,
+                            &mut state.dom_info,
                             val,
                             OpInsertionPoint::AtBlockStart(succ_block),
                         ) {
@@ -545,6 +550,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
 
             if !state.liveness.is_live_at_point(
                 ctx,
+                &mut state.dom_info,
                 opd.get_def(ctx),
                 OpInsertionPoint::AfterOperation(op),
             ) {
@@ -555,6 +561,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
 
     let mut analysis = InPlaceBufferizationAnalysis {
         liveness: Liveness::<LivenessTq>::default(),
+        dom_info: DomInfo::default(),
         in_place_bufferizable_operands: FxHashSet::default(),
         successor_operands_needing_copy: FxHashSet::default(),
     };

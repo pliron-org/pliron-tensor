@@ -16,6 +16,7 @@ use pliron::{
     builtin::{
         attributes::IntegerAttr,
         op_interfaces::OneResultInterface,
+        ops::ConstantOp,
         types::{IntegerType, Signedness},
     },
     context::{Context, Ptr},
@@ -31,8 +32,8 @@ use pliron_llvm::{
     attributes::IntegerOverflowFlagsAttr,
     op_interfaces::IntBinArithOpWithOverflowFlag,
     ops::{
-        AddOp, AllocaOp, ConstantOp, ExtractValueOp, GepIndex, GetElementPtrOp, InsertValueOp,
-        LoadOp, MulOp, StoreOp, UndefOp,
+        AddOp, AllocaOp, ExtractValueOp, GepIndex, GetElementPtrOp, InsertValueOp, LoadOp, MulOp,
+        StoreOp, UndefOp,
     },
     types::StructType,
 };
