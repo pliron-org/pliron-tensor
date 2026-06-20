@@ -15,7 +15,7 @@ use pliron::{
         parser::char::{self, spaces},
     },
     common_traits::Verify,
-    context::{Context, Ptr},
+    context::Context,
     derive::pliron_op,
     identifier::Identifier,
     irbuild::{
@@ -25,6 +25,7 @@ use pliron::{
     irfmt::{
         parsers::{
             delimited_list_parser, int_parser, process_parsed_ssa_defs, spaced, ssa_opd_parser,
+            type_parser,
         },
         printers::{iter_with_sep, list_with_sep},
     },
@@ -34,7 +35,7 @@ use pliron::{
     parsable::{self, IntoParseResult, Parsable},
     printable::{self, ListSeparator, Printable},
     result::Result,
-    r#type::{TypeObj, TypePtr, Typed, type_cast},
+    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
     value::Value,
     verify_err, verify_error,
 };
@@ -88,7 +89,7 @@ impl AllocOp {
     /// Create a new `AllocOp` with the specified result type and dynamic dimension operands.
     pub fn new(
         ctx: &mut Context,
-        result_ty: TypePtr<RankedMemrefType>,
+        result_ty: TypedHandle<RankedMemrefType>,
         dynamic_dimensions: Vec<Value>,
     ) -> Self {
         let op = Operation::new(
@@ -267,9 +268,10 @@ impl GenerateOp {
     }
 
     /// Get the ranked memref type of the memref operand.
-    pub fn get_destination_memref_type(&self, ctx: &Context) -> TypePtr<RankedMemrefType> {
+    pub fn get_destination_memref_type(&self, ctx: &Context) -> TypedHandle<RankedMemrefType> {
         let memref_ty = self.get_destination_memref(ctx).get_type(ctx);
-        TypePtr::from_ptr(memref_ty, ctx).expect("The memref operand must be of ranked memref type")
+        TypedHandle::from_handle(memref_ty, ctx)
+            .expect("The memref operand must be of ranked memref type")
     }
 }
 
@@ -523,7 +525,7 @@ impl Parsable for LoadOp {
         let (memref, indices, res_ty) = (
             ssa_opd_parser().skip(spaces()),
             delimited_list_parser('[', ']', ',', ssa_opd_parser()),
-            spaced(char::string(":")).with(Ptr::<TypeObj>::parser(())),
+            spaced(char::string(":")).with(type_parser()),
         );
 
         let ((memref, indices, res_ty), _) = (memref, indices, res_ty)
@@ -591,7 +593,7 @@ impl LoadOp {
     /// Create a new `LoadOp` with the specified operands and result type.
     pub fn new(
         ctx: &mut Context,
-        element_ty: Ptr<TypeObj>,
+        element_ty: TypeHandle,
         memref: Value,
         indices: Vec<Value>,
     ) -> Self {
@@ -1177,7 +1179,7 @@ impl Parsable for SubviewOp {
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())),
-            spaced(char::string(":")).with(TypePtr::<RankedMemrefType>::parser(())),
+            spaced(char::string(":")).with(TypedHandle::<RankedMemrefType>::parser(())),
         );
 
         let ((source, offsets, sizes, steps, result_ty), _) =
@@ -1374,7 +1376,7 @@ impl SubviewOp {
         offsets: Vec<SliceParam>,
         sizes: Vec<SliceParam>,
         steps: Vec<SliceParam>,
-        result_type: TypePtr<RankedMemrefType>,
+        result_type: TypedHandle<RankedMemrefType>,
     ) -> Self {
         let mut operands = vec![source];
         let mut offset_attrs = Vec::new();
@@ -1614,7 +1616,7 @@ impl ReshapeOp {
         ctx: &mut Context,
         source: Value,
         dynamic_dimensions: Vec<Value>,
-        result_type: TypePtr<RankedMemrefType>,
+        result_type: TypedHandle<RankedMemrefType>,
     ) -> Self {
         let mut operands = vec![source];
         operands.extend(dynamic_dimensions);

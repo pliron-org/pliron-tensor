@@ -23,7 +23,7 @@ use pliron::{
     region::Region,
     result::Result,
     symbol_table::{SymbolTableCollection, nearest_symbol_table},
-    r#type::{TypeObj, TypePtr, Typed, type_cast, type_impls},
+    r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
     value::{DefiningEntity, Value},
 };
 use pliron_common_dialects::{
@@ -79,7 +79,7 @@ impl ToCFDialect for AllocOp {
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let result_ty = self.result_type(ctx);
-        let memref_ty = TypePtr::<RankedMemrefType>::from_ptr(result_ty, ctx)
+        let memref_ty = TypedHandle::<RankedMemrefType>::from_handle(result_ty, ctx)
             .expect("Expected the result type of AllocOp to be a RankedMemrefType");
         let dyn_dimensions: Vec<_> = self.get_dynamic_dimensions(ctx);
 
@@ -381,8 +381,8 @@ trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
                 memref_result: Value,
                 memref_lhs: Value,
                 memref_rhs: Value,
-                op_fn: fn(&mut Context, Value, Value, Ptr<TypeObj>) -> Ptr<Operation>,
-                elem_ty: Ptr<TypeObj>,
+                op_fn: fn(&mut Context, Value, Value, TypeHandle) -> Ptr<Operation>,
+                elem_ty: TypeHandle,
             }
             let memref_result = self.get_result_memref(ctx);
             let element_ty = operands_info
@@ -440,15 +440,15 @@ trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
         Ok(())
     }
 
-    fn build_llvm_op(&self) -> fn(&mut Context, Value, Value, Ptr<TypeObj>) -> Ptr<Operation>;
+    fn build_llvm_op(&self) -> fn(&mut Context, Value, Value, TypeHandle) -> Ptr<Operation>;
 }
 
 impl ElementWiseBinaryMemrefOpToCF for AddOp {
     fn build_llvm_op(
         &self,
-    ) -> fn(&mut Context, Value, Value, elem_ty: Ptr<TypeObj>) -> Ptr<Operation> {
+    ) -> fn(&mut Context, Value, Value, elem_ty: TypeHandle) -> Ptr<Operation> {
         |ctx, lhs, rhs, elem_ty| {
-            if type_impls::<dyn FloatTypeInterface>(&**elem_ty.deref(ctx)) {
+            if type_impls::<dyn FloatTypeInterface>(&*elem_ty.deref(ctx)) {
                 pliron_llvm::ops::FAddOp::new_with_fast_math_flags(
                     ctx,
                     lhs,
@@ -484,9 +484,9 @@ impl ToCFDialect for AddOp {
 impl ElementWiseBinaryMemrefOpToCF for SubOp {
     fn build_llvm_op(
         &self,
-    ) -> fn(&mut Context, Value, Value, elem_ty: Ptr<TypeObj>) -> Ptr<Operation> {
+    ) -> fn(&mut Context, Value, Value, elem_ty: TypeHandle) -> Ptr<Operation> {
         |ctx, lhs, rhs, elem_ty| {
-            if type_impls::<dyn FloatTypeInterface>(&**elem_ty.deref(ctx)) {
+            if type_impls::<dyn FloatTypeInterface>(&*elem_ty.deref(ctx)) {
                 pliron_llvm::ops::FSubOp::new_with_fast_math_flags(
                     ctx,
                     lhs,
@@ -522,9 +522,9 @@ impl ToCFDialect for SubOp {
 impl ElementWiseBinaryMemrefOpToCF for MemrefMulOp {
     fn build_llvm_op(
         &self,
-    ) -> fn(&mut Context, Value, Value, elem_ty: Ptr<TypeObj>) -> Ptr<Operation> {
+    ) -> fn(&mut Context, Value, Value, elem_ty: TypeHandle) -> Ptr<Operation> {
         |ctx, lhs, rhs, elem_ty| {
-            if type_impls::<dyn FloatTypeInterface>(&**elem_ty.deref(ctx)) {
+            if type_impls::<dyn FloatTypeInterface>(&*elem_ty.deref(ctx)) {
                 pliron_llvm::ops::FMulOp::new_with_fast_math_flags(
                     ctx,
                     lhs,
@@ -560,9 +560,9 @@ impl ToCFDialect for MemrefMulOp {
 impl ElementWiseBinaryMemrefOpToCF for DivOp {
     fn build_llvm_op(
         &self,
-    ) -> fn(&mut Context, Value, Value, elem_ty: Ptr<TypeObj>) -> Ptr<Operation> {
+    ) -> fn(&mut Context, Value, Value, elem_ty: TypeHandle) -> Ptr<Operation> {
         |ctx, lhs, rhs, elem_ty| {
-            if type_impls::<dyn FloatTypeInterface>(&**elem_ty.deref(ctx)) {
+            if type_impls::<dyn FloatTypeInterface>(&*elem_ty.deref(ctx)) {
                 pliron_llvm::ops::FDivOp::new_with_fast_math_flags(
                     ctx,
                     lhs,
@@ -658,13 +658,13 @@ impl ToCFDialect for MemrefMatMulOp {
                 memref_accum: Value,
                 memref_lhs: Value,
                 memref_rhs: Value,
-                elem_ty: Ptr<TypeObj>,
-                mul_fn: fn(&mut Context, Value, Value, Ptr<TypeObj>) -> Ptr<Operation>,
-                add_fn: fn(&mut Context, Value, Value, Ptr<TypeObj>) -> Ptr<Operation>,
+                elem_ty: TypeHandle,
+                mul_fn: fn(&mut Context, Value, Value, TypeHandle) -> Ptr<Operation>,
+                add_fn: fn(&mut Context, Value, Value, TypeHandle) -> Ptr<Operation>,
             }
-            let mul_fn: fn(&mut Context, Value, Value, Ptr<TypeObj>) -> Ptr<Operation> =
+            let mul_fn: fn(&mut Context, Value, Value, TypeHandle) -> Ptr<Operation> =
                 |ctx, a, b, elem_ty| {
-                    if type_impls::<dyn FloatTypeInterface>(&**elem_ty.deref(ctx)) {
+                    if type_impls::<dyn FloatTypeInterface>(&*elem_ty.deref(ctx)) {
                         pliron_llvm::ops::FMulOp::new_with_fast_math_flags(
                             ctx,
                             a,
@@ -682,9 +682,9 @@ impl ToCFDialect for MemrefMatMulOp {
                         .get_operation()
                     }
                 };
-            let add_fn: fn(&mut Context, Value, Value, Ptr<TypeObj>) -> Ptr<Operation> =
+            let add_fn: fn(&mut Context, Value, Value, TypeHandle) -> Ptr<Operation> =
                 |ctx, a, b, elem_ty| {
-                    if type_impls::<dyn FloatTypeInterface>(&**elem_ty.deref(ctx)) {
+                    if type_impls::<dyn FloatTypeInterface>(&*elem_ty.deref(ctx)) {
                         pliron_llvm::ops::FAddOp::new_with_fast_math_flags(
                             ctx,
                             a,
@@ -800,7 +800,7 @@ fn cast_value_to_type(
     ctx: &mut Context,
     rewriter: &mut dyn Rewriter,
     value: Value,
-    target_ty: Ptr<TypeObj>,
+    target_ty: TypeHandle,
 ) -> Value {
     if value.get_type(ctx) == target_ty {
         return value;
@@ -856,7 +856,7 @@ impl ToCFDialect for CopyOp {
                 rewriter: ScopedRewriter<'a>,
                 memref_dst: Value,
                 memref_src: Value,
-                elem_ty: Ptr<TypeObj>,
+                elem_ty: TypeHandle,
             }
             let mut state = State {
                 rewriter: scoped_rewriter,
@@ -898,7 +898,7 @@ impl ToCFDialect for SubviewOp {
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let source = self.source(ctx);
-        let result_ty = TypePtr::<RankedMemrefType>::from_ptr(self.result_type(ctx), ctx)
+        let result_ty = TypedHandle::<RankedMemrefType>::from_handle(self.result_type(ctx), ctx)
             .expect("SubviewOp result must be a RankedMemrefType");
 
         let source_descriptor = descriptor::unpack_descriptor(ctx, rewriter, source);
@@ -988,7 +988,7 @@ impl ToLLVMType for RankedMemrefType {
         // * offset (i64)
         // * sizes (i64 array of length rank)
         // * strides (i64 array of length rank)
-        |self_ty: Ptr<TypeObj>, ctx: &mut Context| -> Result<Ptr<TypeObj>> {
+        |self_ty: TypeHandle, ctx: &mut Context| -> Result<TypeHandle> {
             let rank: u64 = {
                 let self_ty = self_ty.deref(ctx);
                 let self_ty = self_ty
@@ -1021,7 +1021,7 @@ fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     let func_ty = func_op.get_type(ctx);
     let res_ty = func_ty.deref(ctx).result_type();
     let res_ty_converter =
-        type_cast::<dyn ToLLVMType>(&**res_ty.deref(ctx)).map(|to_llvm_ty| to_llvm_ty.converter());
+        type_cast::<dyn ToLLVMType>(&*res_ty.deref(ctx)).map(|to_llvm_ty| to_llvm_ty.converter());
     let res_ty = if let Some(res_ty_converter) = res_ty_converter {
         (res_ty_converter)(res_ty, ctx)?
     } else {
@@ -1031,7 +1031,7 @@ fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     let arg_tys = arg_tys
         .iter()
         .map(|arg_ty| {
-            let arg_ty_converter = type_cast::<dyn ToLLVMType>(&**arg_ty.deref(ctx))
+            let arg_ty_converter = type_cast::<dyn ToLLVMType>(&*arg_ty.deref(ctx))
                 .map(|to_llvm_ty| to_llvm_ty.converter());
             if let Some(arg_ty_converter) = arg_ty_converter {
                 (arg_ty_converter)(*arg_ty, ctx)
@@ -1050,7 +1050,7 @@ fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     let args = entry_block.deref(ctx).arguments().collect::<Vec<_>>();
     for arg in args {
         let arg_ty = arg.get_type(ctx);
-        let arg_ty_converter = type_cast::<dyn ToLLVMType>(&**arg_ty.deref(ctx))
+        let arg_ty_converter = type_cast::<dyn ToLLVMType>(&*arg_ty.deref(ctx))
             .map(|to_llvm_ty| to_llvm_ty.converter());
         let arg_ty = if let Some(arg_ty_converter) = arg_ty_converter {
             (arg_ty_converter)(arg_ty, ctx)?
@@ -1068,7 +1068,7 @@ fn lower_llvm_load_op_to_llvm(
     rewriter: &mut DialectConversionRewriter,
 ) -> Result<()> {
     let loaded_ty = load_op.get_result(ctx).get_type(ctx);
-    let to_memref_ty = type_cast::<dyn ToLLVMType>(&**loaded_ty.deref(ctx)).map(|t| t.converter());
+    let to_memref_ty = type_cast::<dyn ToLLVMType>(&*loaded_ty.deref(ctx)).map(|t| t.converter());
     let memref_ty = if let Some(to_memref_ty) = to_memref_ty {
         (to_memref_ty)(loaded_ty, ctx)?
     } else {
@@ -1092,8 +1092,9 @@ impl ToCFDialect for ReshapeOp {
         let source = self.get_source(ctx);
         let dynamic_dimensions = self.get_dynamic_dimensions(ctx);
 
-        let result_memref_ty = TypePtr::<RankedMemrefType>::from_ptr(self.result_type(ctx), ctx)
-            .expect("ReshapeOp result type must be RankedMemrefType");
+        let result_memref_ty =
+            TypedHandle::<RankedMemrefType>::from_handle(self.result_type(ctx), ctx)
+                .expect("ReshapeOp result type must be RankedMemrefType");
 
         let (sizes, strides, _num_elems) =
             descriptor::compute_sizes_strides(ctx, rewriter, result_memref_ty, dynamic_dimensions);
@@ -1130,13 +1131,13 @@ impl DialectConversion for MemrefToCF {
             || Operation::get_op::<pliron_llvm::ops::LoadOp>(op, ctx).is_some()
     }
 
-    fn can_convert_type(&self, ctx: &Context, ty: Ptr<TypeObj>) -> bool {
-        type_impls::<dyn ToLLVMType>(&**ty.deref(ctx))
+    fn can_convert_type(&self, ctx: &Context, ty: TypeHandle) -> bool {
+        type_impls::<dyn ToLLVMType>(&*ty.deref(ctx))
     }
 
-    fn convert_type(&mut self, ctx: &mut Context, ty: Ptr<TypeObj>) -> Result<Ptr<TypeObj>> {
+    fn convert_type(&mut self, ctx: &mut Context, ty: TypeHandle) -> Result<TypeHandle> {
         let Some(ty_converter) =
-            type_cast::<dyn ToLLVMType>(&**ty.deref(ctx)).map(|t| t.converter())
+            type_cast::<dyn ToLLVMType>(&*ty.deref(ctx)).map(|t| t.converter())
         else {
             return Ok(ty);
         };

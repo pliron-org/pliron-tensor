@@ -50,7 +50,7 @@ use pliron::{
     op::{Op, op_cast, op_impls},
     operation::Operation,
     result::Result,
-    r#type::{TypeObj, TypePtr, Typed, type_cast, type_impls},
+    r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
     value::{DefiningEntity, Use, Value},
     verify_err_noloc,
 };
@@ -223,7 +223,7 @@ pub trait BufferizableOpInterface {
             alias.verify(ctx)?;
             let opd_ty = alias.operand.get_type(ctx);
             let opd_ty = opd_ty.deref(ctx);
-            let Some(shaped_ty) = type_cast::<dyn ShapedType>(&**opd_ty) else {
+            let Some(shaped_ty) = type_cast::<dyn ShapedType>(&*opd_ty) else {
                 return verify_err_noloc!(AliasErr::InvalidOperandType);
             };
             let dynamic_dims_opt = op.get_dynamic_dimensions(ctx, alias.operand);
@@ -255,7 +255,7 @@ pub trait MemrefAllocOpInterface:
     fn try_new(
         ctx: &mut Context,
         static_info: Option<AttrObj>,
-        memref_ty: TypePtr<RankedMemrefType>,
+        memref_ty: TypedHandle<RankedMemrefType>,
         dynamic_sizes: Vec<Value>,
     ) -> Result<Self>
     where
@@ -295,7 +295,7 @@ pub trait TensorMemoryManager {
     fn create_memref_alloc(
         &mut self,
         ctx: &mut Context,
-        memref_ty: TypePtr<RankedMemrefType>,
+        memref_ty: TypedHandle<RankedMemrefType>,
         dynamic_sizes: Vec<Value>,
     ) -> Result<Box<dyn MemrefAllocOpInterface>>;
 
@@ -371,7 +371,8 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
         for opd in opds_needing_copy {
             // Create a new buffer for the operand.
             let opd_ty = opd.get_type(ctx);
-            let ranked_memref_ty: TypePtr<RankedMemrefType> = TypePtr::from_ptr(opd_ty, ctx)?;
+            let ranked_memref_ty: TypedHandle<RankedMemrefType> =
+                TypedHandle::from_handle(opd_ty, ctx)?;
             let dynamic_sizes = if let Some(dynamic_sizes) =
                 op_iface_opt.and_then(|iface| iface.get_dynamic_dimensions(ctx, opd))
             {
@@ -415,12 +416,12 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
         Ok(())
     }
 
-    fn can_convert_type(&self, ctx: &Context, ty: Ptr<TypeObj>) -> bool {
-        type_impls::<dyn ToMemrefType>(&**ty.deref(ctx))
+    fn can_convert_type(&self, ctx: &Context, ty: TypeHandle) -> bool {
+        type_impls::<dyn ToMemrefType>(&*ty.deref(ctx))
     }
 
-    fn convert_type(&mut self, ctx: &mut Context, ty: Ptr<TypeObj>) -> Result<Ptr<TypeObj>> {
-        let to_memref_ty = type_cast::<dyn ToMemrefType>(&**ty.deref(ctx)).map(|t| t.converter());
+    fn convert_type(&mut self, ctx: &mut Context, ty: TypeHandle) -> Result<TypeHandle> {
+        let to_memref_ty = type_cast::<dyn ToMemrefType>(&*ty.deref(ctx)).map(|t| t.converter());
         if let Some(to_memref_ty) = to_memref_ty {
             to_memref_ty(ty, ctx)
         } else {
@@ -471,7 +472,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
             if let Some(branch_iface) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) {
                 for opd_use in op.deref(ctx).operands_as_uses() {
                     let val = opd_use.get_def(ctx);
-                    if !type_impls::<dyn ToMemrefType>(&**val.get_type(ctx).deref(ctx)) {
+                    if !type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
                         continue;
                     }
                     let mut needs_copy = false;
@@ -506,7 +507,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
                 // operands, so conservatively copy all tensor-typed operands.
                 for opd_use in op.deref(ctx).operands_as_uses() {
                     let val = opd_use.get_def(ctx);
-                    if type_impls::<dyn ToMemrefType>(&**val.get_type(ctx).deref(ctx)) {
+                    if type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
                         state.successor_operands_needing_copy.insert(opd_use);
                     }
                 }
@@ -525,7 +526,7 @@ pub fn bufferize<TMM: TensorMemoryManager>(
 
         for opd in op.deref(ctx).operands_as_uses() {
             let opd_ty = opd.get_type(ctx);
-            if !type_impls::<dyn ToMemrefType>(&**opd_ty.deref(ctx)) {
+            if !type_impls::<dyn ToMemrefType>(&*opd_ty.deref(ctx)) {
                 continue;
             }
 
@@ -587,7 +588,7 @@ impl MemrefAllocOpInterface for AllocOp {
     fn try_new(
         ctx: &mut Context,
         _static_info: Option<AttrObj>,
-        memref_ty: TypePtr<RankedMemrefType>,
+        memref_ty: TypedHandle<RankedMemrefType>,
         dynamic_sizes: Vec<Value>,
     ) -> Result<Self> {
         Ok(Self::new(ctx, memref_ty, dynamic_sizes))
@@ -609,7 +610,7 @@ impl TensorMemoryManager for MallocFreeTMM {
     fn create_memref_alloc(
         &mut self,
         ctx: &mut Context,
-        memref_ty: TypePtr<RankedMemrefType>,
+        memref_ty: TypedHandle<RankedMemrefType>,
         dynamic_sizes: Vec<Value>,
     ) -> Result<Box<dyn MemrefAllocOpInterface>> {
         let alloc_op = crate::memref::ops::AllocOp::try_new(ctx, None, memref_ty, dynamic_sizes)?;

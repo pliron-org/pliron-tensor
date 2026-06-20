@@ -13,7 +13,7 @@ use pliron::{
         parser::char::{self, spaces},
     },
     common_traits::Verify,
-    context::{Context, Ptr},
+    context::Context,
     derive::pliron_op,
     identifier::Identifier,
     irbuild::{
@@ -21,7 +21,9 @@ use pliron::{
         listener::DummyListener,
     },
     irfmt::{
-        parsers::{delimited_list_parser, process_parsed_ssa_defs, spaced, ssa_opd_parser},
+        parsers::{
+            delimited_list_parser, process_parsed_ssa_defs, spaced, ssa_opd_parser, type_parser,
+        },
         printers::{iter_with_sep, list_with_sep},
     },
     location::Location,
@@ -30,7 +32,7 @@ use pliron::{
     parsable::{self, IntoParseResult, Parsable},
     printable::{self, ListSeparator, Printable},
     result::Result,
-    r#type::{TypeObj, TypePtr, Typed, type_cast},
+    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
     value::Value,
     verify_err, verify_error,
 };
@@ -120,8 +122,7 @@ impl GenerateOpInterface for GenerateOp {
     fn get_generated_shape<'a>(&'a self, ctx: &'a Context) -> Ref<'a, dyn ShapedType> {
         let result_ty = self.result_type(ctx).deref(ctx);
         Ref::map(result_ty, |result_ty| {
-            type_cast::<dyn ShapedType>(&**result_ty)
-                .expect("The result type must be a shaped type")
+            type_cast::<dyn ShapedType>(result_ty).expect("The result type must be a shaped type")
         })
     }
 }
@@ -135,7 +136,7 @@ impl GenerateOp {
     pub fn new<State>(
         ctx: &mut Context,
         dynamic_dimensions: Vec<Value>,
-        result_type: TypePtr<RankedTensorType>,
+        result_type: TypedHandle<RankedTensorType>,
         body_builder: fn(
             ctx: &mut Context,
             state: State,
@@ -239,7 +240,7 @@ impl Parsable for ExtractOp {
         let (memref, indices, res_ty) = (
             ssa_opd_parser().skip(spaces()),
             delimited_list_parser('[', ']', ',', ssa_opd_parser()),
-            spaced(char::string(":")).with(Ptr::<TypeObj>::parser(())),
+            spaced(char::string(":")).with(type_parser()),
         );
 
         let ((memref, indices, res_ty), _) = (memref, indices, res_ty)
@@ -255,12 +256,7 @@ impl Parsable for ExtractOp {
 
 impl ExtractOp {
     /// Create a new ExtractOp with the given operand and result type.
-    pub fn new(
-        ctx: &mut Context,
-        res_ty: Ptr<TypeObj>,
-        tensor: Value,
-        indices: Vec<Value>,
-    ) -> Self {
+    pub fn new(ctx: &mut Context, res_ty: TypeHandle, tensor: Value, indices: Vec<Value>) -> Self {
         let (operands, operand_segments) = Self::compute_segment_sizes(vec![vec![tensor], indices]);
         let op = Operation::new(
             ctx,
@@ -1058,7 +1054,7 @@ impl Parsable for ExtractSliceOp {
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())),
-            spaced(char::string(":")).with(TypePtr::<RankedTensorType>::parser(())),
+            spaced(char::string(":")).with(TypedHandle::<RankedTensorType>::parser(())),
         );
 
         let ((source, offsets, sizes, steps, result_ty), _) =
@@ -1282,7 +1278,7 @@ impl ExtractSliceOp {
         offsets: Vec<SliceParam>,
         sizes: Vec<SliceParam>,
         steps: Vec<SliceParam>,
-        result_type: TypePtr<RankedTensorType>,
+        result_type: TypedHandle<RankedTensorType>,
     ) -> Self {
         let mut operands = vec![source];
         let mut offset_attrs = Vec::new();
@@ -1489,7 +1485,7 @@ impl Parsable for InsertSliceOp {
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())),
-            spaced(char::string(":")).with(TypePtr::<RankedTensorType>::parser(())),
+            spaced(char::string(":")).with(TypedHandle::<RankedTensorType>::parser(())),
         );
 
         let ((source, destination, offsets, sizes, steps, result_ty), _) =
@@ -1724,8 +1720,9 @@ impl InsertSliceOp {
         sizes: Vec<SliceParam>,
         steps: Vec<SliceParam>,
     ) -> Self {
-        let result_type = TypePtr::<RankedTensorType>::from_ptr(destination.get_type(ctx), ctx)
-            .expect("InsertSliceOp destination must be a RankedTensorType");
+        let result_type =
+            TypedHandle::<RankedTensorType>::from_handle(destination.get_type(ctx), ctx)
+                .expect("InsertSliceOp destination must be a RankedTensorType");
 
         Self::new_with_result_type(ctx, source, destination, offsets, sizes, steps, result_type)
     }
@@ -1738,7 +1735,7 @@ impl InsertSliceOp {
         offsets: Vec<SliceParam>,
         sizes: Vec<SliceParam>,
         steps: Vec<SliceParam>,
-        result_type: TypePtr<RankedTensorType>,
+        result_type: TypedHandle<RankedTensorType>,
     ) -> Self {
         let mut operands = vec![source, destination];
         let mut offset_attrs = Vec::new();
@@ -1910,7 +1907,7 @@ impl Parsable for ReshapeOp {
         let (source, dyn_dims, result_ty) = (
             ssa_opd_parser().skip(spaces()),
             delimited_list_parser('(', ')', ',', ssa_opd_parser()),
-            spaced(char::string(":")).with(TypePtr::<RankedTensorType>::parser(())),
+            spaced(char::string(":")).with(TypedHandle::<RankedTensorType>::parser(())),
         );
 
         let ((source, dyn_dims, result_ty), _) = (source, dyn_dims, result_ty)
@@ -2033,7 +2030,7 @@ impl ReshapeOp {
         ctx: &mut Context,
         source: Value,
         dynamic_dimensions: Vec<Value>,
-        result_type: TypePtr<RankedTensorType>,
+        result_type: TypedHandle<RankedTensorType>,
     ) -> Self {
         let mut operands = vec![source];
         operands.extend(dynamic_dimensions);

@@ -19,10 +19,10 @@ use pliron::{
         ops::ConstantOp,
         types::{IntegerType, Signedness},
     },
-    context::{Context, Ptr},
+    context::Context,
     irbuild::inserter::Inserter,
     result::Result,
-    r#type::{TypeObj, TypePtr, Typed},
+    r#type::{TypeHandle, Typed, TypedHandle},
     utils::apint::APInt,
     value::Value,
 };
@@ -50,7 +50,7 @@ use crate::memref::{
 pub fn compute_sizes_strides(
     ctx: &mut Context,
     inserter: &mut dyn Inserter,
-    memref: TypePtr<RankedMemrefType>,
+    memref: TypedHandle<RankedMemrefType>,
     dynamic_sizes: Vec<Value>,
 ) -> (Vec<Value>, Vec<Value>, Value) {
     let mut dynamic_size_iter = dynamic_sizes.into_iter();
@@ -361,12 +361,12 @@ pub fn unpack_stride(
 pub fn pack_descriptor(
     ctx: &mut Context,
     inserter: &mut dyn Inserter,
-    memref_type: TypePtr<RankedMemrefType>,
+    memref_type: TypedHandle<RankedMemrefType>,
     descriptor: Descriptor,
 ) -> Result<Value> {
     let converter = memref_type.deref(ctx).converter();
     let llvm_struct_ty = converter(memref_type.into(), ctx)?;
-    let llvm_struct_ty_detail = TypePtr::<StructType>::from_ptr(llvm_struct_ty, ctx)
+    let llvm_struct_ty_detail = TypedHandle::<StructType>::from_handle(llvm_struct_ty, ctx)
         .expect("Expected LLVM struct type for the memref descriptor");
 
     // Begin with an undef value of the LLVM struct type, and insert the fields one by one using InsertValueOp.
@@ -440,7 +440,7 @@ pub fn pack_descriptor(
 pub fn get_strided_element_ptr(
     ctx: &mut Context,
     inserter: &mut dyn Inserter,
-    elem_ty: Ptr<TypeObj>,
+    elem_ty: TypeHandle,
     memref: Value,
     indices: Vec<Value>,
 ) -> Value {

@@ -31,7 +31,7 @@ use pliron::{
     operation::Operation,
     result::Result,
     symbol_table::{SymbolTableCollection, nearest_symbol_table},
-    r#type::{TypePtr, Typed},
+    r#type::{Typed, TypedHandle},
     utils::apint::APInt,
     value::Value,
     verify_err,
@@ -239,7 +239,7 @@ impl TrackedAllocOp {
     /// Create a new [TrackedAllocOp] with `tmm` as the runtime state pointer.
     pub fn new_with_tmm(
         ctx: &mut Context,
-        result_ty: TypePtr<RankedMemrefType>,
+        result_ty: TypedHandle<RankedMemrefType>,
         dynamic_dimensions: Vec<Value>,
         tmm: ConstPointerAttr,
     ) -> Self {
@@ -296,7 +296,7 @@ impl ToCFDialect for TrackedAllocOp {
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let result_ty = OneResultInterface::result_type(self, ctx);
-        let memref_ty = TypePtr::<RankedMemrefType>::from_ptr(result_ty, ctx)
+        let memref_ty = TypedHandle::<RankedMemrefType>::from_handle(result_ty, ctx)
             .expect("TrackedAllocOp result must be a RankedMemrefType");
         let dyn_dimensions = self.get_dynamic_dimensions(ctx);
 
@@ -368,7 +368,7 @@ impl MemrefAllocOpInterface for TrackedAllocOp {
     fn try_new(
         ctx: &mut Context,
         static_info: Option<AttrObj>,
-        memref_ty: TypePtr<RankedMemrefType>,
+        memref_ty: TypedHandle<RankedMemrefType>,
         dynamic_sizes: Vec<Value>,
     ) -> Result<Self> {
         let const_pointer = static_info
@@ -503,7 +503,7 @@ impl TensorMemoryManager for TrackedTMM {
     fn create_memref_alloc(
         &mut self,
         ctx: &mut Context,
-        memref_ty: TypePtr<RankedMemrefType>,
+        memref_ty: TypedHandle<RankedMemrefType>,
         dynamic_sizes: Vec<Value>,
     ) -> Result<Box<dyn MemrefAllocOpInterface>> {
         let tmm_ptr = self as *mut TrackedTMM as *const ();

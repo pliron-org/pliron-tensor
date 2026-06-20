@@ -1,9 +1,8 @@
 //! Types for the memref dialect.
 
 use pliron::{
-    context::Ptr,
     derive::{pliron_type, type_interface_impl},
-    r#type::TypeObj,
+    r#type::TypeHandle,
 };
 
 use crate::memref::type_interfaces::{Dimension, MultiDimensionalType, ShapedType};
@@ -17,13 +16,13 @@ use crate::memref::type_interfaces::{Dimension, MultiDimensionalType, ShapedType
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RankedMemrefType {
-    element_type: Ptr<TypeObj>,
+    element_type: TypeHandle,
     shape: Vec<Dimension>,
 }
 
 #[type_interface_impl]
 impl MultiDimensionalType for RankedMemrefType {
-    fn element_type(&self) -> Ptr<TypeObj> {
+    fn element_type(&self) -> TypeHandle {
         self.element_type
     }
 }
@@ -44,12 +43,12 @@ impl ShapedType for RankedMemrefType {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnrankedMemrefType {
-    element_type: Ptr<TypeObj>,
+    element_type: TypeHandle,
 }
 
 #[type_interface_impl]
 impl MultiDimensionalType for UnrankedMemrefType {
-    fn element_type(&self) -> Ptr<TypeObj> {
+    fn element_type(&self) -> TypeHandle {
         self.element_type
     }
 }

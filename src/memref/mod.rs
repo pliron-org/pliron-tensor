@@ -9,14 +9,14 @@ pub mod type_interfaces;
 pub mod types;
 
 use pliron::{
-    context::{Context, Ptr},
+    context::Context,
     derive::type_interface,
     result::Result,
-    r#type::{Type, TypeObj},
+    r#type::{Type, TypeHandle},
 };
 
 /// A function pointer type for the [ToMemrefType] interface.
-pub type ToMemrefTypeFn = fn(self_ty: Ptr<TypeObj>, &mut Context) -> Result<Ptr<TypeObj>>;
+pub type ToMemrefTypeFn = fn(self_ty: TypeHandle, &mut Context) -> Result<TypeHandle>;
 
 /// Interface for converting to a Memref type.
 #[type_interface]

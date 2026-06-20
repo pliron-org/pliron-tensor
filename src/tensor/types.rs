@@ -1,7 +1,7 @@
 //! Tensor types and related functionality.
 
 use pliron::derive::{pliron_type, type_interface_impl};
-use pliron::{context::Ptr, r#type::TypeObj};
+use pliron::r#type::TypeHandle;
 
 use crate::memref::type_interfaces::{Dimension, MultiDimensionalType, ShapedType};
 
@@ -14,13 +14,13 @@ use crate::memref::type_interfaces::{Dimension, MultiDimensionalType, ShapedType
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RankedTensorType {
-    element_type: Ptr<TypeObj>,
+    element_type: TypeHandle,
     shape: Vec<Dimension>,
 }
 
 #[type_interface_impl]
 impl MultiDimensionalType for RankedTensorType {
-    fn element_type(&self) -> Ptr<TypeObj> {
+    fn element_type(&self) -> TypeHandle {
         self.element_type
     }
 }
@@ -42,12 +42,12 @@ impl ShapedType for RankedTensorType {
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnrankedTensorType {
-    element_type: Ptr<TypeObj>,
+    element_type: TypeHandle,
 }
 
 #[type_interface_impl]
 impl MultiDimensionalType for UnrankedTensorType {
-    fn element_type(&self) -> Ptr<TypeObj> {
+    fn element_type(&self) -> TypeHandle {
         self.element_type
     }
 }

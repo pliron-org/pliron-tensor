@@ -18,7 +18,7 @@ use pliron::{
     operation::Operation,
     region::Region,
     result::Result,
-    r#type::{TypeObj, TypePtr, Typed, type_cast},
+    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
     value::{Use, Value},
 };
 use pliron_common_dialects::{
@@ -75,17 +75,17 @@ impl ToMemrefType for RankedTensorType {
 /// Convert a tensor type (which must implement [ToMemrefType]) to its
 /// memref equivalent. Returns an error if it cannot do the conversion.
 fn tensor_type_to_memref_type(
-    ty: Ptr<TypeObj>,
+    ty: TypeHandle,
     ctx: &mut Context,
-) -> Result<TypePtr<RankedMemrefType>> {
+) -> Result<TypedHandle<RankedMemrefType>> {
     let maybe_conv: Option<ToMemrefTypeFn> =
-        type_cast::<dyn ToMemrefType>(&**ty.deref(ctx)).map(|t| t.converter());
+        type_cast::<dyn ToMemrefType>(&*ty.deref(ctx)).map(|t| t.converter());
     let memref_ty_ptr = if let Some(conv) = maybe_conv {
         conv(ty, ctx)?
     } else {
         ty
     };
-    TypePtr::<RankedMemrefType>::from_ptr(memref_ty_ptr, ctx)
+    TypedHandle::<RankedMemrefType>::from_handle(memref_ty_ptr, ctx)
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -387,7 +387,7 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
     ) -> Result<()> {
         let loaded_ty = self.get_result(ctx).get_type(ctx);
         let to_memref_ty =
-            type_cast::<dyn ToMemrefType>(&**loaded_ty.deref(ctx)).map(|t| t.converter());
+            type_cast::<dyn ToMemrefType>(&*loaded_ty.deref(ctx)).map(|t| t.converter());
         let memref_ty = if let Some(to_memref_ty) = to_memref_ty {
             (to_memref_ty)(loaded_ty, ctx)?
         } else {
@@ -479,12 +479,13 @@ impl BufferizableOpInterface for BatchMatMulOp {
         let rhs = self.get_operation().deref(ctx).get_operand(1);
         let accum = self.get_operation().deref(ctx).get_operand(2);
 
-        let lhs_memref_ty = TypePtr::<RankedMemrefType>::from_ptr(lhs.get_type(ctx), ctx)
+        let lhs_memref_ty = TypedHandle::<RankedMemrefType>::from_handle(lhs.get_type(ctx), ctx)
             .expect("BatchMatMulOp lhs must be a ranked memref after conversion");
-        let rhs_memref_ty = TypePtr::<RankedMemrefType>::from_ptr(rhs.get_type(ctx), ctx)
+        let rhs_memref_ty = TypedHandle::<RankedMemrefType>::from_handle(rhs.get_type(ctx), ctx)
             .expect("BatchMatMulOp rhs must be a ranked memref after conversion");
-        let accum_memref_ty = TypePtr::<RankedMemrefType>::from_ptr(accum.get_type(ctx), ctx)
-            .expect("BatchMatMulOp accum must be a ranked memref after conversion");
+        let accum_memref_ty =
+            TypedHandle::<RankedMemrefType>::from_handle(accum.get_type(ctx), ctx)
+                .expect("BatchMatMulOp accum must be a ranked memref after conversion");
 
         let rank = lhs_memref_ty.deref(ctx).rank();
         let batch_rank = rank - 2;
@@ -549,7 +550,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
                 rhs_sizes: Vec<Value>,
                 rank: usize,
                 batch_rank: usize,
-                elem_ty: Ptr<TypeObj>,
+                elem_ty: TypeHandle,
             }
 
             let mut state = State {
@@ -764,7 +765,7 @@ pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> 
     // update the function type to convert any tensor types in the signature to memref types.
     let func_ty = func_op.get_type(ctx);
     let res_ty = func_ty.deref(ctx).result_type();
-    let res_ty_converter = type_cast::<dyn ToMemrefType>(&**res_ty.deref(ctx))
+    let res_ty_converter = type_cast::<dyn ToMemrefType>(&*res_ty.deref(ctx))
         .map(|to_memref_ty| to_memref_ty.converter());
     let res_ty = if let Some(res_ty_converter) = res_ty_converter {
         (res_ty_converter)(res_ty, ctx)?
@@ -775,7 +776,7 @@ pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> 
     let arg_tys = arg_tys
         .iter()
         .map(|arg_ty| {
-            let arg_ty_converter = type_cast::<dyn ToMemrefType>(&**arg_ty.deref(ctx))
+            let arg_ty_converter = type_cast::<dyn ToMemrefType>(&*arg_ty.deref(ctx))
                 .map(|to_memref_ty| to_memref_ty.converter());
             if let Some(arg_ty_converter) = arg_ty_converter {
                 (arg_ty_converter)(*arg_ty, ctx)
@@ -795,7 +796,7 @@ pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> 
     let args = entry_block.deref(ctx).arguments().collect::<Vec<_>>();
     for arg in args {
         let arg_ty = arg.get_type(ctx);
-        let arg_ty_converter = type_cast::<dyn ToMemrefType>(&**arg_ty.deref(ctx))
+        let arg_ty_converter = type_cast::<dyn ToMemrefType>(&*arg_ty.deref(ctx))
             .map(|to_memref_ty| to_memref_ty.converter());
         let arg_ty = if let Some(arg_ty_converter) = arg_ty_converter {
             (arg_ty_converter)(arg_ty, ctx)?

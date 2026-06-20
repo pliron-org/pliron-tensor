@@ -3,12 +3,12 @@
 use pliron::{
     builtin::{type_interfaces::FloatTypeInterface, types::IntegerType},
     combine::{self, Parser},
-    context::{Context, Ptr},
+    context::Context,
     derive::type_interface,
     parsable::Parsable,
     printable::Printable,
     result::Result,
-    r#type::{Type, TypeObj, type_cast, type_impls},
+    r#type::{Type, TypeHandle, type_cast, type_impls},
     verify_err_noloc,
 };
 
@@ -57,7 +57,7 @@ pub enum MultiDimensionalTypeErr {
 #[type_interface]
 pub trait MultiDimensionalType {
     /// Get the element type of the multi-dimensional type.
-    fn element_type(&self) -> Ptr<TypeObj>;
+    fn element_type(&self) -> TypeHandle;
 
     /// Verify the invariants of the multi-dimensional type.
     fn verify(ty: &dyn Type, ctx: &Context) -> Result<()>
@@ -66,7 +66,7 @@ pub trait MultiDimensionalType {
     {
         let ty = type_cast::<dyn MultiDimensionalType>(ty)
             .expect("We cannot be here if the type does not implement MultiDimensionalType");
-        let el_ty = &**ty.element_type().deref(ctx);
+        let el_ty = &*ty.element_type().deref(ctx);
         // TODO: Expand later as necessary.
         if !(el_ty.is::<IntegerType>() || type_impls::<dyn FloatTypeInterface>(el_ty)) {
             let ty_str = format!("{}", el_ty.disp(ctx));

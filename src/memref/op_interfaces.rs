@@ -146,7 +146,7 @@ pub trait CompatibleShapesOp<T: ShapedType>: AllResultsOfType<T> + AllOperandsOf
         let shapes = op_ref.results().chain(op_ref.operands()).map(|v| {
             let ty = v.get_type(ctx);
             let ty_ref = ty.deref(ctx);
-            let shaped_ty = type_cast::<dyn ShapedType>(&**ty_ref)
+            let shaped_ty = type_cast::<dyn ShapedType>(&*ty_ref)
                 .expect("Expected operand and result types to be of the specified ShapedType");
             shaped_ty.shape().clone()
         });
