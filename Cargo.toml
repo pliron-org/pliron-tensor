@@ -13,7 +13,7 @@ pliron = { git = "https://github.com/pliron-org/pliron.git" }
 pliron-llvm = { git = "https://github.com/pliron-org/pliron.git" }
 pliron-common-dialects = { git = "https://github.com/pliron-org/pliron-common-dialects.git" }
 thiserror = "2"
-log = { version = "0", features = ["release_max_level_warn"] }
+log = { version = "0" }
 rustc-hash = "2"
 
 [dev-dependencies]
