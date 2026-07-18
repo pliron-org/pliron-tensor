@@ -1203,6 +1203,171 @@ fn test_insert_slice_tensor_to_memref() {
     }
 }
 
+/// Test that when the destination operand of `tensor.insert_slice` is still live
+/// after the op (i.e. used again afterwards), bufferization allocates a fresh
+/// buffer and copies the destination into it before writing, instead of mutating
+/// the original destination buffer in place.
+///
+/// Without this, the (still-live) original `dst` value would incorrectly observe
+/// the in-place write performed for `updated`.
+#[test]
+fn test_insert_slice_dest_live_after_needs_copy() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+        ^entry():
+            llvm.func @test_insert_slice_dest_live_after_runtime: llvm.func
+                <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(src_p: llvm.ptr(0), dst_p: llvm.ptr(0), out_updated_p: llvm.ptr(0), out_dst_p: llvm.ptr(0)):
+                src = llvm.load src_p : tensor.ranked<5x10:builtin.integer i64>;
+                dst = llvm.load dst_p : tensor.ranked<10x20:builtin.integer i64>;
+                updated = tensor.insert_slice src into dst [0, 2] [5, 10] [1, 2] : tensor.ranked<10x20:builtin.integer i64>;
+                llvm.store *out_updated_p <- updated;
+                llvm.store *out_dst_p <- dst;
+                llvm.return
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let mut tmm = MallocFreeTMM;
+    bufferize(&mut tmm, parsed_op, ctx).expect_ok(ctx);
+    let after_tensor_to_memref = format!("{}", module_op.disp(ctx));
+
+    // `dst` is live after the insert (it's stored to `out_dst_p`), so a new buffer
+    // must be allocated and `dst` copied into it before the in-place write.
+    assert!(
+        after_tensor_to_memref.contains("memref.alloc"),
+        "expected a memref.alloc for the copied destination buffer, got:\n{after_tensor_to_memref}"
+    );
+    assert_eq!(
+        after_tensor_to_memref.matches("memref.copy").count(),
+        2,
+        "expected one memref.copy for the destination buffer and one for the inserted slice, got:\n{after_tensor_to_memref}"
+    );
+
+    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_insert_slice_dest_live_after_runtime")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+
+    let f = unsafe {
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
+    };
+
+    let src_data: Vec<u64> = (100..150_u64).collect();
+    let dst_data: Vec<u64> = (0..200_u64).collect();
+
+    let src_descr = TensorDesciptor::new(
+        [5, 10].to_vec(),
+        std::mem::size_of::<u64>(),
+        src_data.as_ptr() as *const u8,
+    );
+    let dst_descr = TensorDesciptor::new(
+        [10, 20].to_vec(),
+        std::mem::size_of::<u64>(),
+        dst_data.as_ptr() as *const u8,
+    );
+    let out_updated_descr = TensorDesciptor::new(
+        [10, 20].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+    let out_dst_descr = TensorDesciptor::new(
+        [10, 20].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+
+    let mut out_updated_ir_descr = out_updated_descr.build_ir_descriptor();
+    let mut out_dst_ir_descr = out_dst_descr.build_ir_descriptor();
+    f(
+        src_descr.build_ir_descriptor().as_ptr(),
+        dst_descr.build_ir_descriptor().as_ptr(),
+        out_updated_ir_descr.as_mut_ptr(),
+        out_dst_ir_descr.as_mut_ptr(),
+    );
+
+    let out_updated_tensor_descr = unsafe {
+        TensorDesciptor::from_ir_descriptor(
+            out_updated_ir_descr.as_ptr(),
+            2,
+            std::mem::size_of::<u64>(),
+        )
+    };
+    let out_dst_tensor_descr = unsafe {
+        TensorDesciptor::from_ir_descriptor(
+            out_dst_ir_descr.as_ptr(),
+            2,
+            std::mem::size_of::<u64>(),
+        )
+    };
+    let out_updated_slice = unsafe {
+        std::slice::from_raw_parts(
+            out_updated_tensor_descr.aligned_ptr() as *const u64,
+            out_updated_tensor_descr.num_elements(),
+        )
+    };
+    let out_dst_slice = unsafe {
+        std::slice::from_raw_parts(
+            out_dst_tensor_descr.aligned_ptr() as *const u64,
+            out_dst_tensor_descr.num_elements(),
+        )
+    };
+
+    // `out_dst` must retain the ORIGINAL destination data: the insert must not
+    // have mutated the buffer backing the still-live `dst` value.
+    assert_eq!(
+        out_dst_slice,
+        &dst_data[..],
+        "dst was mutated in place even though it was still live after the insert"
+    );
+
+    let mut expected_updated = dst_data.clone();
+    for i in 0..5_usize {
+        for j in 0..10_usize {
+            let src_idx = i * 10 + j;
+            let dst_idx = i * 20 + (2 + 2 * j);
+            expected_updated[dst_idx] = src_data[src_idx];
+        }
+    }
+    assert_eq!(
+        out_updated_slice,
+        &expected_updated[..],
+        "updated tensor does not reflect the inserted slice"
+    );
+}
+
 /// End-to-end test for tensor.reshape lowering:
 /// tensor.reshape -> memref.alloc + memref.copy + memref.reshape (TensorToMemref), then
 /// memref.reshape -> descriptor construction (MemrefToCF), then LLVM.

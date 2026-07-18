@@ -366,6 +366,7 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
             if aliasing_results.is_empty() || self.in_place_bufferizable_operands.contains(&opd) {
                 continue;
             }
+            opds_needing_copy.insert(opd);
         }
 
         for opd in opds_needing_copy {
