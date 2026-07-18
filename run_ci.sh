@@ -1,17 +1,10 @@
 #!/bin/bash
 
-# This script runs the CI checks for this workspace.
-#
-# It differs from .github/workflows/ci.yml as follows
-#   - LLVM setup is not performed.
-#   - Cargo commands are not passed the additional `--verbose` flag.
+# Pre-CI tests to run locally before pushing to GitHub
 
-set -e
-set -x
+set -ex
 
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-RUSTFLAGS="-D warnings" cargo build --workspace
-cargo test --workspace
-cargo test --release --workspace
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace
+RUSTFLAGS="-D warnings" cargo test --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items
