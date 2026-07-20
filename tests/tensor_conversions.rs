@@ -1845,12 +1845,17 @@ fn test_tiled_matmul_issue_4() {
         "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
     );
 
-    // The accumulator chain is still copied twice per iteration; see the test's
-    // closing comment for why.
+    // Only matmul's accumulator tile is copied. insert_slice writes straight into the
+    // loop-carried accumulator: the copy decided for matmul severed `tiled` from it,
+    // so the intra-op guard no longer fires.
     assert_eq!(
         after.matches("memref.alloc").count(),
-        2,
-        "expected the two accumulator-side allocations, got:\n{after}"
+        1,
+        "only matmul's accumulator tile should be allocated, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <4x4"),
+        "the loop-carried accumulator should not be copied, got:\n{after}"
     );
 
     apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
@@ -1904,6 +1909,17 @@ fn test_tiled_matmul_issue_4() {
         std::ptr::null::<u8>(),
     );
 
+    // tensor.matmul accumulates, so the tiled nest computes C + A*B. Computed before
+    // the call: `c` is the loop-carried accumulator and is now written in place.
+    let mut expected = c_data.clone();
+    for i in 0..4_usize {
+        for j in 0..4_usize {
+            for k in 0..4_usize {
+                expected[i * 4 + j] += a_data[i * 4 + k] * b_data[k * 4 + j];
+            }
+        }
+    }
+
     let mut out_ir_descr = out_descr.build_ir_descriptor();
     f(
         a_descr.build_ir_descriptor().as_ptr(),
@@ -1918,24 +1934,133 @@ fn test_tiled_matmul_issue_4() {
     let mut actual: Vec<u64> = Vec::new();
     unsafe { out_tensor_descr.copy_to_vec(&mut actual) };
 
-    // tensor.matmul accumulates, so the tiled nest computes C + A*B.
-    let mut expected = c_data.clone();
-    for i in 0..4_usize {
-        for j in 0..4_usize {
-            for k in 0..4_usize {
-                expected[i * 4 + j] += a_data[i * 4 + k] * b_data[k * 4 + j];
-            }
-        }
-    }
     assert_eq!(actual, expected, "tiled matmul produced wrong values");
 
     // `a` and `b` are sliced without any copy, which is what issue #4 asks for.
     //
-    // Two copies per iteration remain, both on the accumulator:
-    //   1. matmul's accumulator tile. `slice_c` shares a buffer with `jv_c_n`, which is
-    //      live afterwards (insert_slice reads it), so the write can't go in place.
-    //   2. insert_slice's destination. `tiled` and `jv_c_n` are in one buffer class, so
-    //      the intra-op guard fires. The class is an over-approximation here: the copy
-    //      at (1) already severed `tiled` from `jv_c_n`, but classes are built once,
-    //      before any copy is inserted, and are never refined afterwards.
+    // One copy per iteration remains: matmul's accumulator tile. `slice_c` shares a
+    // buffer with `jv_c_n`, which is live afterwards because insert_slice reads it, so
+    // that write can't go in place. Everything else is a plain subview.
+}
+
+/// A write through a slice of a tensor that is still live must not touch that
+/// tensor's buffer.
+///
+/// `s` is a slice of `t`, and `s` itself is dead right after the insert, so looking at
+/// `s` alone would wrongly allow the write to go in place. It's only via `s` and `t`
+/// sharing a buffer that `t`'s liveness is seen and the copy inserted.
+#[test]
+fn test_write_through_slice_of_live_tensor_needs_copy() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+            ^entry():
+                llvm.func @test_write_through_slice: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                    ^entry(t_p: llvm.ptr(0), small_p: llvm.ptr(0), out_u_p: llvm.ptr(0), out_t_p: llvm.ptr(0)):
+                        t = llvm.load t_p : tensor.ranked<4x4:builtin.integer i64>;
+                        small = llvm.load small_p : tensor.ranked<2x2:builtin.integer i64>;
+                        s = tensor.extract_slice t [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                        u = tensor.insert_slice small into s [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                        llvm.store *out_u_p <- u;
+                        llvm.store *out_t_p <- t;
+                        llvm.return
+                }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let mut tmm = MallocFreeTMM;
+    bufferize(&mut tmm, parsed_op, ctx).expect_ok(ctx);
+    let after = format!("{}", module_op.disp(ctx));
+    assert!(
+        after.contains("memref.alloc"),
+        "writing through a slice of the live `t` must allocate a private buffer, got:\n{after}"
+    );
+
+    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_write_through_slice")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+
+    let f = unsafe {
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
+    };
+
+    let t_data: Vec<u64> = (0..16_u64).collect();
+    let small_data: Vec<u64> = vec![900, 901, 902, 903];
+
+    let t_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        t_data.as_ptr() as *const u8,
+    );
+    let small_descr = TensorDesciptor::new(
+        [2, 2].to_vec(),
+        std::mem::size_of::<u64>(),
+        small_data.as_ptr() as *const u8,
+    );
+    let out_u_descr = TensorDesciptor::new(
+        [2, 2].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+    let out_t_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+
+    let mut out_u_ir = out_u_descr.build_ir_descriptor();
+    let mut out_t_ir = out_t_descr.build_ir_descriptor();
+    f(
+        t_descr.build_ir_descriptor().as_ptr(),
+        small_descr.build_ir_descriptor().as_ptr(),
+        out_u_ir.as_mut_ptr(),
+        out_t_ir.as_mut_ptr(),
+    );
+
+    let u_descr =
+        unsafe { TensorDesciptor::from_ir_descriptor(out_u_ir.as_ptr(), 2, size_of::<u64>()) };
+    let t_out_descr =
+        unsafe { TensorDesciptor::from_ir_descriptor(out_t_ir.as_ptr(), 2, size_of::<u64>()) };
+    let mut actual_u: Vec<u64> = Vec::new();
+    let mut actual_t: Vec<u64> = Vec::new();
+    unsafe { u_descr.copy_to_vec(&mut actual_u) };
+    unsafe { t_out_descr.copy_to_vec(&mut actual_t) };
+
+    assert_eq!(actual_u, small_data, "the inserted slice is wrong");
+    assert_eq!(
+        actual_t, t_data,
+        "`t` was clobbered by a write through its slice"
+    );
 }
