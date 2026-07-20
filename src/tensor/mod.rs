@@ -3,6 +3,7 @@
 pub mod attributes;
 pub mod bufferize;
 pub mod conversions;
+pub mod memory_management;
 pub mod op_interfaces;
 pub mod ops;
 pub mod runtime_utils;

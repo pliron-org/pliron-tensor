@@ -39,9 +39,8 @@ use crate::{
         types::RankedMemrefType,
     },
     tensor::{
-        bufferize::{
-            Alias, AliasKind, BufferRelation, BufferizableOpInterface, TensorMemoryManager,
-        },
+        bufferize::{Alias, AliasKind, BufferRelation, BufferizableOpInterface},
+        memory_management::TensorMemoryManager,
         op_interfaces::ElementWiseBinaryTensorOpInterface,
         ops::{
             AddOp, BatchMatMulOp, DivOp, ExtractOp, ExtractSliceOp as TensorExtractSliceOp,

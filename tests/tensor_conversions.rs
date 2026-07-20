@@ -22,7 +22,8 @@ use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::LLVMLLJIT, target::initial
 use pliron_tensor::{
     memref::conversions::MemrefToCF,
     tensor::{
-        bufferize::{MallocFreeTMM, TensorMemoryManager, bufferize},
+        bufferize::bufferize,
+        memory_management::{MallocFreeTMM, TensorMemoryManager},
         runtime_utils::TensorDesciptor,
         tracked_tmm::TrackedTMM,
     },

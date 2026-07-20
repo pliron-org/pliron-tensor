@@ -53,7 +53,9 @@ use crate::{
         type_interfaces::{MultiDimensionalType, ShapedType},
         types::RankedMemrefType,
     },
-    tensor::bufferize::{MemrefAllocOpInterface, MemrefDeallocOpInterface, TensorMemoryManager},
+    tensor::memory_management::{
+        MemrefAllocOpInterface, MemrefDeallocOpInterface, TensorMemoryManager,
+    },
 };
 
 unsafe extern "C" {
