@@ -692,6 +692,10 @@ pub fn bufferize<TMM: TensorMemoryManager>(
         let decisions_before_op = analysis.out_of_place_operands.len();
         analyze_in_place_operands(ctx, &mut analysis, op);
         if analysis.out_of_place_operands.len() != decisions_before_op {
+            // TODO: This rebuild (unlike the one outside the loop)
+            // is for precision and not safety. A rebuild will not contain
+            // alias edges that weren't there in a previous computation.
+            // We can explore ways to avoid rebuilding. It is O(n).
             rebuild_buffer_classes(ctx, &mut analysis, &ops);
         }
     }
