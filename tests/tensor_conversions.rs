@@ -888,14 +888,14 @@ fn test_extract_slice_tensor_to_memref() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block2v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_extract_slice_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
               [] 
             {
-              ^entry_block1v1(src_p_v4: llvm.ptr (0), out_p_v5: llvm.ptr (0)) !1:
-                src_v1 = llvm.load src_p_v4  : memref.ranked <10x20 : builtin.integer i64> !2;
-                $v6 = memref.subview src_v1 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !3;
-                llvm.store *out_p_v5 <- v6  !4;
+              ^entry_block2v1(src_p_v0: llvm.ptr (0), out_p_v1: llvm.ptr (0)) !1:
+                src_v2 = llvm.load src_p_v0  : memref.ranked <10x20 : builtin.integer i64> !2;
+                $v4 = memref.subview src_v2 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !3;
+                llvm.store *out_p_v1 <- v4  !4;
                 llvm.return  !5
             } !6
         }"#]].assert_eq(&exec_module_op.disp(exec_ctx).to_string());
@@ -1238,16 +1238,16 @@ fn test_insert_slice_tensor_to_memref() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block2v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_insert_slice_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
               [] 
             {
-              ^entry_block1v1(src_p_v6: llvm.ptr (0), dst_p_v7: llvm.ptr (0), out_p_v8: llvm.ptr (0)) !1:
-                src_v1 = llvm.load src_p_v6  : memref.ranked <5x10 : builtin.integer i64> !2;
-                dst_v3 = llvm.load dst_p_v7  : memref.ranked <10x20 : builtin.integer i64> !3;
-                $v9 = memref.subview dst_v3 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
-                memref.copy v9 <- src_v1;
-                llvm.store *out_p_v8 <- dst_v3  !4;
+              ^entry_block2v1(src_p_v0: llvm.ptr (0), dst_p_v1: llvm.ptr (0), out_p_v2: llvm.ptr (0)) !1:
+                src_v3 = llvm.load src_p_v0  : memref.ranked <5x10 : builtin.integer i64> !2;
+                dst_v4 = llvm.load dst_p_v1  : memref.ranked <10x20 : builtin.integer i64> !3;
+                $v6 = memref.subview dst_v4 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
+                memref.copy v6 <- src_v3;
+                llvm.store *out_p_v2 <- dst_v4  !4;
                 llvm.return  !5
             } !6
         }"#]].assert_eq(&after_tensor_to_memref);
@@ -1548,17 +1548,17 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block2v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
               [] 
             {
-              ^entry_block1v1(arg_p_v8: llvm.ptr (0), i_res_v9: builtin.integer i64, j_res_v10: builtin.integer i64) !1:
-                arg_v1 = llvm.load arg_p_v8  : memref.ranked <2x3 : builtin.integer i64> !2;
-                v11 = memref.reshape arg_v1 : memref.ranked <3x2 : builtin.integer i64> !3;
-                i_idx_v4 = index.from_integer i_res_v9 : index.index  !4;
-                j_idx_v6 = index.from_integer j_res_v10 : index.index  !5;
-                v12 = memref.load v11[i_idx_v4, j_idx_v6] : builtin.integer i64 !6;
-                llvm.return v12 !7
+              ^entry_block2v1(arg_p_v0: llvm.ptr (0), i_res_v1: builtin.integer i64, j_res_v2: builtin.integer i64) !1:
+                arg_v3 = llvm.load arg_p_v0  : memref.ranked <2x3 : builtin.integer i64> !2;
+                v8 = memref.reshape arg_v3 : memref.ranked <3x2 : builtin.integer i64> !3;
+                i_idx_v5 = index.from_integer i_res_v1 : index.index  !4;
+                j_idx_v6 = index.from_integer j_res_v2 : index.index  !5;
+                v9 = memref.load v8[i_idx_v5, j_idx_v6] : builtin.integer i64 !6;
+                llvm.return v9 !7
             } !8
         }"#]].assert_eq(&after_tensor_to_memref);
 
@@ -1745,67 +1745,61 @@ fn test_tracked_tmm_complex_tensor_computation_from_rust() {
     assert_eq!(tmm.tracked_allocations().len(), 0);
 }
 
-/// The tiled matmul from issue #4, in CF form (this dialect has no `scf.for`, so the
-/// `iter_args` loop nest is expressed as blocks with loop-carried block arguments).
-///
-/// `A` and `B` are sliced but never written, and both are live across the whole loop
-/// nest. A purely liveness-based in-place decision therefore copies every `%slice_A` /
-/// `%slice_B` tile, which is what the issue reports. Reads are now bufferized in place,
-/// so those copies are gone.
+/// tiled matmul in control-flow form
 #[test]
-fn test_tiled_matmul_issue_4() {
+fn test_tiled_matmul_cf() {
     init_env_logger_for_tests!();
     let ctx = &mut Context::new();
 
-    // 4x4 matrices, 2x2 tiles. Mirrors the issue's structure: an outer loop over row
-    // tiles of C and an inner loop over column tiles, with the accumulator threaded
+    // 4x4 matrices, 2x2 tiles. An outer loop over row tiles of C and
+    // an inner loop over column tiles, with the accumulator threaded
     // through both loops as a loop-carried value.
     let input_ir = r#"
         builtin.module @test_module {
-            ^entry():
-                llvm.func @test_tiled_matmul: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
-                    ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
-                        a = llvm.load a_p : tensor.ranked<4x4:builtin.integer i64>;
-                        b = llvm.load b_p : tensor.ranked<4x4:builtin.integer i64>;
-                        c = llvm.load c_p : tensor.ranked<4x4:builtin.integer i64>;
-                        i_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
-                        llvm.br ^outer_header(i_init, c)
+        ^entry():
+            llvm.func @test_tiled_matmul: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+                a = llvm.load a_p : tensor.ranked<4x4:builtin.integer i64>;
+                b = llvm.load b_p : tensor.ranked<4x4:builtin.integer i64>;
+                c = llvm.load c_p : tensor.ranked<4x4:builtin.integer i64>;
+                i_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                llvm.br ^outer_header(i_init, c)
 
-                    ^outer_header(i: builtin.integer i64, iv_c: tensor.ranked<4x4:builtin.integer i64>):
-                        n_i = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
-                        i_lt = llvm.icmp i <SLT> n_i : builtin.integer i1;
-                        llvm.cond_br if i_lt ^outer_body(i, iv_c) else ^done(iv_c)
+            ^outer_header(i: builtin.integer i64, iv_c: tensor.ranked<4x4:builtin.integer i64>):
+                n_i = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
+                i_lt = llvm.icmp i <SLT> n_i : builtin.integer i1;
+                llvm.cond_br if i_lt ^outer_body(i, iv_c) else ^done(iv_c)
 
-                    ^outer_body(i_b: builtin.integer i64, iv_c_b: tensor.ranked<4x4:builtin.integer i64>):
-                        j_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
-                        llvm.br ^inner_header(i_b, j_init, iv_c_b)
+            ^outer_body(i_b: builtin.integer i64, iv_c_b: tensor.ranked<4x4:builtin.integer i64>):
+                j_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                llvm.br ^inner_header(i_b, j_init, iv_c_b)
 
-                    ^inner_header(i_h: builtin.integer i64, j_h: builtin.integer i64, jv_c: tensor.ranked<4x4:builtin.integer i64>):
-                        n_j = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
-                        j_lt = llvm.icmp j_h <SLT> n_j : builtin.integer i1;
-                        llvm.cond_br if j_lt ^inner_body(i_h, j_h, jv_c) else ^outer_latch(i_h, jv_c)
+            ^inner_header(i_h: builtin.integer i64, j_h: builtin.integer i64, jv_c: tensor.ranked<4x4:builtin.integer i64>):
+                n_j = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
+                j_lt = llvm.icmp j_h <SLT> n_j : builtin.integer i1;
+                llvm.cond_br if j_lt ^inner_body(i_h, j_h, jv_c) else ^outer_latch(i_h, jv_c)
 
-                    ^inner_body(i_n: builtin.integer i64, j_n: builtin.integer i64, jv_c_n: tensor.ranked<4x4:builtin.integer i64>):
-                        i_idx = index.from_integer i_n : index.index;
-                        j_idx = index.from_integer j_n : index.index;
-                        slice_a = tensor.extract_slice a [i_idx, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.integer i64>;
-                        slice_b = tensor.extract_slice b [0, j_idx] [4, 2] [1, 1] : tensor.ranked<4x2:builtin.integer i64>;
-                        slice_c = tensor.extract_slice jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
-                        tiled = tensor.matmul slice_a, slice_b, slice_c : tensor.ranked<2x2:builtin.integer i64>;
-                        updated = tensor.insert_slice tiled into jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<4x4:builtin.integer i64>;
-                        step_j = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
-                        j_next = llvm.add j_n, step_j <{nsw = false, nuw = false}> : builtin.integer i64;
-                        llvm.br ^inner_header(i_n, j_next, updated)
+            ^inner_body(i_n: builtin.integer i64, j_n: builtin.integer i64, jv_c_n: tensor.ranked<4x4:builtin.integer i64>):
+                i_idx = index.from_integer i_n : index.index;
+                j_idx = index.from_integer j_n : index.index;
+                slice_a = tensor.extract_slice a [i_idx, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.integer i64>;
+                slice_b = tensor.extract_slice b [0, j_idx] [4, 2] [1, 1] : tensor.ranked<4x2:builtin.integer i64>;
+                slice_c = tensor.extract_slice jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                tiled = tensor.matmul slice_a, slice_b, slice_c : tensor.ranked<2x2:builtin.integer i64>;
+                updated = tensor.insert_slice tiled into jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<4x4:builtin.integer i64>;
+                step_j = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
+                j_next = llvm.add j_n, step_j <{nsw = false, nuw = false}> : builtin.integer i64;
+                llvm.br ^inner_header(i_n, j_next, updated)
 
-                    ^outer_latch(i_l: builtin.integer i64, jv_c_l: tensor.ranked<4x4:builtin.integer i64>):
-                        step_i = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
-                        i_next = llvm.add i_l, step_i <{nsw = false, nuw = false}> : builtin.integer i64;
-                        llvm.br ^outer_header(i_next, jv_c_l)
+            ^outer_latch(i_l: builtin.integer i64, jv_c_l: tensor.ranked<4x4:builtin.integer i64>):
+                step_i = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
+                i_next = llvm.add i_l, step_i <{nsw = false, nuw = false}> : builtin.integer i64;
+                llvm.br ^outer_header(i_next, jv_c_l)
 
-                    ^done(result: tensor.ranked<4x4:builtin.integer i64>):
-                        llvm.store *out_p <- result;
-                        llvm.return
-                }
+            ^done(result: tensor.ranked<4x4:builtin.integer i64>):
+                llvm.store *out_p <- result;
+                llvm.return
+            }
         }
         "#;
 
@@ -1828,11 +1822,11 @@ fn test_tiled_matmul_issue_4() {
     // The point of the issue: `a` and `b` are only read, so their tiles are plain
     // subviews. Neither is copied, even though both stay live across every iteration.
     assert!(
-        after.contains("memref.subview a_v1"),
+        after.contains("memref.subview a_v4"),
         "slice of `a` should be a plain subview, got:\n{after}"
     );
     assert!(
-        after.contains("memref.subview b_v3"),
+        after.contains("memref.subview b_v5"),
         "slice of `b` should be a plain subview, got:\n{after}"
     );
     // No buffer as large as an input matrix is allocated for a read-only tile.
@@ -1845,13 +1839,23 @@ fn test_tiled_matmul_issue_4() {
         "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
     );
 
-    // Only matmul's accumulator tile is copied. insert_slice writes straight into the
-    // loop-carried accumulator: the copy decided for matmul severed `tiled` from it,
-    // so the intra-op guard no longer fires.
+    // Only matmul's accumulator tile gets a private buffer: `slice_c` (`jv_c_n`'s own
+    // subview) is copied into it first, since matmul accumulates and `jv_c_n` is live
+    // afterwards so can't be written to directly. The accumulated result is then
+    // copied back out into `jv_c_n`'s subview -- that second copy is `insert_slice`'s
+    // own definitional write (moving the computed tile into place) and would be there
+    // even without the conflict above, so it's not a sign of a missed optimization.
+    // Two `memref.copy` ops per iteration, but only the one buffer above is allocated.
     assert_eq!(
         after.matches("memref.alloc").count(),
         1,
         "only matmul's accumulator tile should be allocated, got:\n{after}"
+    );
+    assert_eq!(
+        after.matches("memref.copy").count(),
+        2,
+        "expected one copy seeding matmul's private accumulator and one copy writing \
+         the result back into the loop-carried accumulator, got:\n{after}"
     );
     assert!(
         !after.contains("memref.alloc  : memref.ranked <4x4"),
@@ -1935,12 +1939,175 @@ fn test_tiled_matmul_issue_4() {
     unsafe { out_tensor_descr.copy_to_vec(&mut actual) };
 
     assert_eq!(actual, expected, "tiled matmul produced wrong values");
+}
 
-    // `a` and `b` are sliced without any copy, which is what issue #4 asks for.
-    //
-    // One copy per iteration remains: matmul's accumulator tile. `slice_c` shares a
-    // buffer with `jv_c_n`, which is live afterwards because insert_slice reads it, so
-    // that write can't go in place. Everything else is a plain subview.
+/// The same tiled matmul as [test_tiled_matmul_cf], but expressed with `cf.for`
+#[test]
+fn test_tiled_matmul_scf_for() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+        ^entry():
+            llvm.func @test_tiled_matmul_scf: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+                a = llvm.load a_p : tensor.ranked<4x4:builtin.integer i64>;
+                b = llvm.load b_p : tensor.ranked<4x4:builtin.integer i64>;
+                c = llvm.load c_p : tensor.ranked<4x4:builtin.integer i64>;
+                c0 = index.constant <index.constant 0> : index.index;
+                c2 = index.constant <index.constant 2> : index.index;
+                c4 = index.constant <index.constant 4> : index.index;
+                result = cf.for c0 to c4 step c2 (c) {
+                    ^entry(i: index.index, iv_c: tensor.ranked<4x4:builtin.integer i64>):
+                        inner_res = cf.for c0 to c4 step c2 (iv_c) {
+                            ^entry(j: index.index, jv_c: tensor.ranked<4x4:builtin.integer i64>):
+                                slice_a = tensor.extract_slice a [i, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.integer i64>;
+                                slice_b = tensor.extract_slice b [0, j] [4, 2] [1, 1] : tensor.ranked<4x2:builtin.integer i64>;
+                                slice_c = tensor.extract_slice jv_c [i, j] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                                tiled = tensor.matmul slice_a, slice_b, slice_c : tensor.ranked<2x2:builtin.integer i64>;
+                                updated = tensor.insert_slice tiled into jv_c [i, j] [2, 2] [1, 1] : tensor.ranked<4x4:builtin.integer i64>;
+                                cf.yield updated
+                        };
+                        cf.yield inner_res
+                };
+                llvm.store *out_p <- result;
+                llvm.return
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let mut tmm = MallocFreeTMM;
+    bufferize(&mut tmm, parsed_op, ctx).expect_ok(ctx);
+    let after = format!("{}", module_op.disp(ctx));
+
+    // Same expectations as the CF-form test: `a` and `b` are read-only, so their
+    // tiles are plain subviews and no buffer is allocated for them.
+    assert!(
+        after.contains("memref.subview a_v4"),
+        "slice of `a` should be a plain subview, got:\n{after}"
+    );
+    assert!(
+        after.contains("memref.subview b_v5"),
+        "slice of `b` should be a plain subview, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <2x4"),
+        "no buffer should be allocated for the read-only `a` tile, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <4x2"),
+        "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
+    );
+
+    // Only matmul's accumulator tile gets a private buffer, same as the CF-form test:
+    // one copy seeds it from `jv_c`'s subview (since `jv_c` is live afterwards, matmul
+    // can't write there directly), and one -- `insert_slice`'s own definitional write,
+    // not a bufferization decision -- writes the accumulated result back into that
+    // subview.
+    assert_eq!(
+        after.matches("memref.alloc").count(),
+        1,
+        "only matmul's accumulator tile should be allocated, got:\n{after}"
+    );
+    assert_eq!(
+        after.matches("memref.copy").count(),
+        2,
+        "expected one copy seeding matmul's private accumulator and one copy writing \
+         the result back into the loop-carried accumulator, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <4x4"),
+        "the loop-carried accumulator should not be copied, got:\n{after}"
+    );
+
+    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_tiled_matmul_scf")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+
+    let f = unsafe {
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
+    };
+
+    let a_data: Vec<u64> = (1..=16_u64).collect();
+    let b_data: Vec<u64> = (17..=32_u64).collect();
+    let c_data: Vec<u64> = (0..16_u64).map(|x| x * 100).collect();
+
+    let a_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        a_data.as_ptr() as *const u8,
+    );
+    let b_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        b_data.as_ptr() as *const u8,
+    );
+    let c_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        c_data.as_ptr() as *const u8,
+    );
+    let out_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+
+    let mut expected = c_data.clone();
+    for i in 0..4_usize {
+        for j in 0..4_usize {
+            for k in 0..4_usize {
+                expected[i * 4 + j] += a_data[i * 4 + k] * b_data[k * 4 + j];
+            }
+        }
+    }
+
+    let mut out_ir_descr = out_descr.build_ir_descriptor();
+    f(
+        a_descr.build_ir_descriptor().as_ptr(),
+        b_descr.build_ir_descriptor().as_ptr(),
+        c_descr.build_ir_descriptor().as_ptr(),
+        out_ir_descr.as_mut_ptr(),
+    );
+
+    let out_tensor_descr = unsafe {
+        TensorDesciptor::from_ir_descriptor(out_ir_descr.as_ptr(), 2, std::mem::size_of::<u64>())
+    };
+    let mut actual: Vec<u64> = Vec::new();
+    unsafe { out_tensor_descr.copy_to_vec(&mut actual) };
+
+    assert_eq!(actual, expected, "tiled matmul produced wrong values");
 }
 
 /// A write through a slice of a tensor that is still live must not touch that

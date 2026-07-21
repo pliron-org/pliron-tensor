@@ -3,7 +3,9 @@
 use pliron::{
     builtin::{
         attributes::TypeAttr,
-        op_interfaces::{OneOpdInterface, OneRegionInterface, OneResultInterface},
+        op_interfaces::{
+            OneOpdInterface, OneRegionInterface, OneResultInterface, OperandSegmentInterface,
+        },
         type_interfaces::FunctionTypeInterface,
     },
     context::{Context, Ptr},
@@ -22,7 +24,10 @@ use pliron::{
     value::{Use, Value},
 };
 use pliron_common_dialects::{
-    cf::{op_interfaces::YieldingRegion, ops::NDForOp},
+    cf::{
+        op_interfaces::YieldingRegion,
+        ops::{ForOp, NDForOp},
+    },
     index::ops::IndexConstantOp,
 };
 use pliron_llvm::ops::FuncOp;
@@ -393,6 +398,68 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
             loaded_ty
         };
         rewriter.set_value_type(ctx, self.get_result(ctx), memref_ty);
+        Ok(())
+    }
+}
+
+/// Allow [ForOp] ("cf.for", this dialect's structured loop -- the equivalent of
+/// MLIR's `scf.for`) to participate in bufferization.
+///
+/// Mirrors MLIR's `scf::ForOp` bufferization (`ForOpInterface` in
+/// `mlir/lib/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.cpp`): the i-th
+/// `iter_args_init` operand aliases the op's i-th result. `rewrite` doesn't need to
+/// build a new op or touch the body: `self` keeps its identity and region, so the
+/// ops inside the body are bufferized separately as the conversion continues. It
+/// only needs to retype the loop-carried block arguments and the op's own results to
+/// their already-bufferized operand types (mirroring how `pliron_llvm::ops::LoadOp`,
+/// above, retypes its own result in place).
+#[op_interface_impl]
+impl BufferizableOpInterface for ForOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        true
+    }
+
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        // Tensor iter_args are always considered a write, same as MLIR: whether the
+        // body writes through a particular iter_arg depends on ops we don't inspect
+        // here, so we conservatively assume it might.
+        true
+    }
+
+    fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
+        let op = self.get_operation().deref(ctx);
+        let iter_args_start = self.segment_size(ctx, 0) as usize;
+        let num_iter_args = self.get_num_iter_arg_inits(ctx) as usize;
+        (0..num_iter_args)
+            .map(|i| Alias {
+                operand: op.get_operand_as_use(iter_args_start + i),
+                result: op.get_result(i),
+                kind: AliasKind::Must,
+                relation: BufferRelation::Equivalent,
+            })
+            .collect()
+    }
+
+    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+        None
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let iter_args_init = self.get_iter_args_init(ctx);
+        let loop_carried_vars = self.get_loop_carried_variables(ctx);
+        for (block_arg, init_val) in loop_carried_vars.iter().zip(iter_args_init.iter()) {
+            rewriter.set_value_type(ctx, *block_arg, init_val.get_type(ctx));
+        }
+        let results: Vec<Value> = self.get_operation().deref(ctx).results().collect();
+        for (result, init_val) in results.iter().zip(iter_args_init.iter()) {
+            rewriter.set_value_type(ctx, *result, init_val.get_type(ctx));
+        }
         Ok(())
     }
 }

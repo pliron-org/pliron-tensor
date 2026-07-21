@@ -34,7 +34,7 @@ use pliron_common_dialects::{
     },
 };
 use pliron_llvm::{
-    ToLLVMType, ToLLVMTypeFn,
+    ToLLVMType,
     attributes::{FastmathFlagsAttr, IntegerOverflowFlagsAttr},
     function_call_utils::{
         compute_type_size_in_bytes, lookup_or_create_free_fn, lookup_or_create_malloc_fn,
@@ -981,38 +981,29 @@ impl ToCFDialect for SubviewOp {
 /// Ranked memref types are converted to LLVM struct types with details.
 #[type_interface_impl]
 impl ToLLVMType for RankedMemrefType {
-    fn converter(&self) -> ToLLVMTypeFn {
+    fn convert(&self, ctx: &Context) -> Result<TypeHandle> {
         // Compute an LLVM struct type with the following fields:
         // * allocated pointer (ptr)
         // * aligned pointer (ptr)
         // * offset (i64)
         // * sizes (i64 array of length rank)
         // * strides (i64 array of length rank)
-        |self_ty: TypeHandle, ctx: &mut Context| -> Result<TypeHandle> {
-            let rank: u64 = {
-                let self_ty = self_ty.deref(ctx);
-                let self_ty = self_ty
-                    .downcast_ref::<RankedMemrefType>()
-                    .expect("Expected a RankedMemrefType");
-
-                self_ty.rank().try_into().expect("Rank should fit into u64")
-            };
-            let ptr = pliron_llvm::types::PointerType::get(ctx, 0);
-            let i64 = pliron::builtin::types::IntegerType::get(ctx, 64, Signedness::Signless);
-            let sizes_array = pliron_llvm::types::ArrayType::get(ctx, i64.into(), rank);
-            let strides_array = sizes_array;
-            let struct_ty = pliron_llvm::types::StructType::get_unnamed(
-                ctx,
-                vec![
-                    ptr.into(),
-                    ptr.into(),
-                    i64.into(),
-                    sizes_array.into(),
-                    strides_array.into(),
-                ],
-            );
-            Ok(struct_ty.into())
-        }
+        let rank: u64 = self.rank().try_into().expect("Rank should fit into u64");
+        let ptr = pliron_llvm::types::PointerType::get(ctx, 0);
+        let i64 = pliron::builtin::types::IntegerType::get(ctx, 64, Signedness::Signless);
+        let sizes_array = pliron_llvm::types::ArrayType::get(ctx, i64.into(), rank);
+        let strides_array = sizes_array;
+        let struct_ty = pliron_llvm::types::StructType::get_unnamed(
+            ctx,
+            vec![
+                ptr.into(),
+                ptr.into(),
+                i64.into(),
+                sizes_array.into(),
+                strides_array.into(),
+            ],
+        );
+        Ok(struct_ty.into())
     }
 }
 
@@ -1020,10 +1011,10 @@ fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     // update the function type to convert any tensor types in the signature to LLVM types.
     let func_ty = func_op.get_type(ctx);
     let res_ty = func_ty.deref(ctx).result_type();
-    let res_ty_converter =
-        type_cast::<dyn ToLLVMType>(&*res_ty.deref(ctx)).map(|to_llvm_ty| to_llvm_ty.converter());
+    let res_ty_ref = &*res_ty.deref(ctx);
+    let res_ty_converter = type_cast::<dyn ToLLVMType>(res_ty_ref);
     let res_ty = if let Some(res_ty_converter) = res_ty_converter {
-        (res_ty_converter)(res_ty, ctx)?
+        res_ty_converter.convert(ctx)?
     } else {
         res_ty
     };
@@ -1031,10 +1022,10 @@ fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     let arg_tys = arg_tys
         .iter()
         .map(|arg_ty| {
-            let arg_ty_converter = type_cast::<dyn ToLLVMType>(&*arg_ty.deref(ctx))
-                .map(|to_llvm_ty| to_llvm_ty.converter());
+            let arg_ty_ref = &*arg_ty.deref(ctx);
+            let arg_ty_converter = type_cast::<dyn ToLLVMType>(arg_ty_ref);
             if let Some(arg_ty_converter) = arg_ty_converter {
-                (arg_ty_converter)(*arg_ty, ctx)
+                arg_ty_converter.convert(ctx)
             } else {
                 Ok(*arg_ty)
             }
@@ -1050,10 +1041,10 @@ fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     let args = entry_block.deref(ctx).arguments().collect::<Vec<_>>();
     for arg in args {
         let arg_ty = arg.get_type(ctx);
-        let arg_ty_converter = type_cast::<dyn ToLLVMType>(&*arg_ty.deref(ctx))
-            .map(|to_llvm_ty| to_llvm_ty.converter());
+        let arg_ty_ref = &*arg_ty.deref(ctx);
+        let arg_ty_converter = type_cast::<dyn ToLLVMType>(arg_ty_ref);
         let arg_ty = if let Some(arg_ty_converter) = arg_ty_converter {
-            (arg_ty_converter)(arg_ty, ctx)?
+            arg_ty_converter.convert(ctx)?
         } else {
             arg_ty
         };
@@ -1068,9 +1059,10 @@ fn lower_llvm_load_op_to_llvm(
     rewriter: &mut DialectConversionRewriter,
 ) -> Result<()> {
     let loaded_ty = load_op.get_result(ctx).get_type(ctx);
-    let to_memref_ty = type_cast::<dyn ToLLVMType>(&*loaded_ty.deref(ctx)).map(|t| t.converter());
+    let loaded_ty_ref = &*loaded_ty.deref(ctx);
+    let to_memref_ty = type_cast::<dyn ToLLVMType>(loaded_ty_ref);
     let memref_ty = if let Some(to_memref_ty) = to_memref_ty {
-        (to_memref_ty)(loaded_ty, ctx)?
+        to_memref_ty.convert(ctx)?
     } else {
         loaded_ty
     };
@@ -1136,12 +1128,11 @@ impl DialectConversion for MemrefToCF {
     }
 
     fn convert_type(&mut self, ctx: &mut Context, ty: TypeHandle) -> Result<TypeHandle> {
-        let Some(ty_converter) =
-            type_cast::<dyn ToLLVMType>(&*ty.deref(ctx)).map(|t| t.converter())
-        else {
+        let ty_ref = &*ty.deref(ctx);
+        let Some(ty_converter) = type_cast::<dyn ToLLVMType>(ty_ref) else {
             return Ok(ty);
         };
-        ty_converter(ty, ctx)
+        ty_converter.convert(ctx)
     }
 
     fn rewrite(
