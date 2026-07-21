@@ -1,29 +1,46 @@
 //! Tensor semantics -> memref semantics
 //!
+//! Tensors are values: every tensor-producing op conceptually yields a brand new tensor.
+//! Buffers (memrefs) are storage: bufferization is the process of mapping tensor values
+//! to buffers.
+//!
+//! A naive approach is to give every tensor value its own buffer. The optimization part
+//! is deciding when a result can instead reuse ("bufferize in place") the buffer of one
+//! of its operands without affecting program semantics.
+//!
 //! The function [bufferize], is the main entry point.
 //!
-//! The bufferization algorithm relies on maintaining the invariant that a buffer (memref)
-//! is mapped to at most one tensor value at any point in the program.
+//! Multiple live tensor values are allowed to share a buffer, as long as none of them
+//! can observe a write performed through another. Concretely, the algorithm maintains
+//! the invariant that at every in-place write:
 //!
-//! The inverse need not hold: A tensor may be backed by more than one buffer at a point.
-//! For example, a tensor block arg may be backed by different buffers based on control-flow.
+//! 1. No tensor value sharing that buffer, other than the values the writing op itself
+//!    defines, is live after the writing op, and
+//! 2. No other operand of the writing op shares that buffer (which would be read or
+//!    written concurrently, through the same storage, during the op).
+//!
+//! Reads never need exclusive access: sharing a buffer between readers can't corrupt it,
+//! so a read is always bufferized in-place. The burden is entirely on writes.
+//!
+//! A tensor may be backed by more than one buffer at a point: for example, a tensor block
+//! arg may be backed by different buffers based on control-flow.
 //!
 //! Aliases may be created in the following ways:
 //! 1. An operand of an op implementing [BufferizableOpInterface] may be specified to alias
 //!    with a result of the same op. The algorithm will insert copies (if it deems necessary)
 //!    and update the operand with the copy buffer, allowing the rewrite method to reuse the
-//!    operand buffer for the result, safely. The rewrite method of the op, must, however ensure
-//!    that it doesn't create new aliases that violate the invariant. For example, multiple results
-//!    must not bufferize to the same memref.
+//!    operand buffer for the result, safely. The rewrite method of the op, must, however
+//!    ensure that it doesn't create new aliases that violate the invariant. For example,
+//!    multiple results must not bufferize to the same memref.
 //! 2. A tensor value passed as a successor operand to a successor block argument creates an
 //!    implicit alias between the value and the successor block argument. If the value is live-in
 //!    at the successor block or is passed to multiple argument positions of the same successor,
-//!    the bufferizer will insert a copy to a new buffer and pass that to the successor instead,
-//!    to avoid violating the invariant.
-//!    *Note*: Two tensors T1 and T2 that may be passed from different predecessor blocks to the
-//!    same successor block argument, will not be alias. Even if both T1 and T2 are live at the
-//!    successor block, either T1 dominates T2 or T2 dominates T1, preventing them from being
-//!    assigned to the same buffer previously.
+//!    the bufferizer will insert a copy to a new buffer and pass that to the successor instead.
+//!
+//! *Requirement*: if a bufferized op writes to memory, the write must either be through
+//! an operand aliasing the written result, or into a buffer the op allocates itself and
+//! that the result refers to. A write through an operand that declares no alias is
+//! invisible to the copy insertion below, and would clobber that operand's buffer.
 
 use rustc_hash::FxHashSet;
 
@@ -48,6 +65,7 @@ use pliron::{
     operation::Operation,
     result::Result,
     r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
+    utils::union_find::UnionFind,
     value::{DefiningEntity, Use, Value},
     verify_err_noloc,
 };
@@ -190,9 +208,10 @@ pub trait BufferizableOpInterface {
     /// Non-aliasing results will need to be be bufferized (by allocating a new buffer).
     /// Aliasing results can assume that it's safe to reuse operand buffers.
     ///
-    /// The rewrite must maintain the invariant that a buffer (memref) is mapped
-    /// to at most one tensor value at any point in the program. This means that,
-    /// for example, multiple results of the op must not bufferize to the same memref.
+    /// The rewrite must not create buffer sharing beyond what
+    /// [Self::get_operand_result_aliases] declares: the analysis reasons only about the
+    /// aliases reported there. This means that, for example, multiple results of the op
+    /// must not bufferize to the same memref.
     ///
     /// `operands_info` semantics are as in [DialectConversion::rewrite], and can be used
     /// to get pre-conversion operand types.
@@ -242,13 +261,11 @@ pub trait BufferizableOpInterface {
 /// to bufferize from tensor semantics to memref semantics.
 struct Bufferizer<'tmm, TMM: TensorMemoryManager> {
     tmm: &'tmm mut TMM,
-    /// Set of operands that can be bufferized in-place (i.e., without copy).
-    /// Whether a result (that alises to this operand) needs a new allocation
-    /// or not is left to the op's rewrite method.
-    in_place_bufferizable_operands: FxHashSet<Use<Value>>,
-    /// Set of successor operands (identified by their operand index in the branch op)
-    /// that must be copied before being passed to a successor block, to avoid
-    /// violating the invariant that a buffer maps to at most one tensor value.
+    /// Aliasing operands that must be copied to a fresh buffer before the op runs.
+    out_of_place_operands: FxHashSet<Use<Value>>,
+    /// Set of successor operands that must be copied before being passed to a successor block,
+    /// because the operand and the successor block argument would otherwise share a buffer while
+    /// both are live.
     successor_operands_needing_copy: FxHashSet<Use<Value>>,
 }
 
@@ -276,25 +293,18 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
 
         let op_dyn = Operation::get_op_dyn(op, ctx);
         let op_iface_opt = op_cast::<dyn BufferizableOpInterface>(op_dyn.as_ref());
-        let aliases_opt = op_iface_opt.map(|iface| iface.get_operand_result_aliases(ctx));
 
         // Two kinds of operands need to be copied to a new buffer:
-        let mut opds_needing_copy = FxHashSet::default();
         // 1. Successor operands that were previously identified to need a copy.
-        // 2. Operands that alias with a result but weren't marked safe for in-place bufferization.
-        for opd in op.deref(ctx).operands_as_uses() {
-            if self.successor_operands_needing_copy.contains(&opd) {
-                opds_needing_copy.insert(opd);
-            }
-            let Some(aliases) = &aliases_opt else {
-                continue;
-            };
-            let aliasing_results = Alias::get_aliases_for_operand(aliases, opd);
-            if aliasing_results.is_empty() || self.in_place_bufferizable_operands.contains(&opd) {
-                continue;
-            }
-            opds_needing_copy.insert(opd);
-        }
+        // 2. Aliasing operands the analysis decided to bufferize out-of-place.
+        let opds_needing_copy: FxHashSet<_> = op
+            .deref(ctx)
+            .operands_as_uses()
+            .filter(|opd| {
+                self.successor_operands_needing_copy.contains(opd)
+                    || self.out_of_place_operands.contains(opd)
+            })
+            .collect();
 
         for opd in opds_needing_copy {
             // Create a new buffer for the operand.
@@ -358,20 +368,32 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
     }
 }
 
-/// Bufferize `op` and its nested ops
+/// Bufferize `op` and its nested ops.
 ///
-/// Bufferization happens in three steps:
-/// 1. Compute liveness for all tensor values.
-/// 2. For each op, if an operand is aliasing with a result:
-///    (a): If the operand is live after the op: Create a new buffer,
-///    and, if necessary, copy the operand buffer to it.
-///    Replace the operand with the new buffer.
-///    (b): If the operand is not live after the op: No action.
-/// 2. Operands passed as successor operands to a successor block create aliases.
+/// Bufferization happens in four steps:
+///
+/// 1. Operands passed as successor operands to a successor block create aliases.
 ///    If any such operand is live-in at the successor block or is passed to
 ///    multiple argument positions of the same successor, copy the operand to a
 ///    new buffer and pass that to the successor instead.
-/// 3. Rewrite the IR using dialect conversion, which invokes [BufferizableOpInterface::rewrite].
+/// 2. Group values that share a buffer into buffer classes. This includes aliases
+///    declared by [BufferizableOpInterface] ops and successor operands that share
+///    a buffer with the block argument they are forwarded to. An alias is skipped
+///    once its operand has been decided as out-of-place, since the copy severs it.
+/// 3. For each operand of a [BufferizableOpInterface] op that aliases a result, decide
+///    whether it can be bufferized in place:
+///    (a) If the op only reads through the operand: always in-place.
+///    (b) If the op writes through it: in-place only if no other operand of the op is in
+///    the same buffer class, and no member of that class, other than the values this op
+///    itself defines, is live after it. Otherwise a new buffer is allocated and the
+///    operand copied into it.
+///
+///    This step walks the ops in program order and rebuilds the classes of step 2 as soon
+///    as a decision invalidates them, so a copy decided for one op can let a later op
+///    stay in place.
+/// 4. Rewrite the IR using dialect conversion, which invokes [BufferizableOpInterface::rewrite].
+///
+/// The algorithm is, at worst, O(n^2) in the number of ops.
 pub fn bufferize<TMM: TensorMemoryManager>(
     tmm: &mut TMM,
     op: Ptr<Operation>,
@@ -380,69 +402,154 @@ pub fn bufferize<TMM: TensorMemoryManager>(
     struct InPlaceBufferizationAnalysis {
         liveness: Liveness<LivenessTq>,
         dom_info: DomInfo,
-        in_place_bufferizable_operands: FxHashSet<Use<Value>>,
+        /// Values sharing a buffer, grouped into buffer classes.
+        buffer_classes: UnionFind<Value>,
+        /// Aliasing operands decided to need a copy. Everything not in here is
+        /// bufferized in place. Only ever grows; recording one severs its alias edge
+        /// the next time the buffer classes are rebuilt.
+        out_of_place_operands: FxHashSet<Use<Value>>,
         successor_operands_needing_copy: FxHashSet<Use<Value>>,
     }
 
-    fn analyze_op(ctx: &Context, state: &mut InPlaceBufferizationAnalysis, node: IRNode) {
+    impl InPlaceBufferizationAnalysis {
+        /// Record that `opd` must be copied to a fresh buffer.
+        fn record_out_of_place(&mut self, opd: Use<Value>) {
+            self.out_of_place_operands.insert(opd);
+        }
+    }
+
+    /// Pass 1: decide which successor operands must be copied before being
+    /// forwarded to a successor block.
+    fn analyze_successor_operands(
+        ctx: &Context,
+        state: &mut InPlaceBufferizationAnalysis,
+        node: IRNode,
+    ) {
         let IRNode::Operation(op) = node else {
             return;
         };
 
         let op_dyn = Operation::get_op_dyn(op, ctx);
 
-        // Successor operand analysis: passing a tensor value as a successor operand
-        // creates an implicit alias between the value and the successor block argument.
-        // We detect two cases that violate the bufferization invariant:
+        // Passing a tensor value as a successor operand creates an implicit alias between
+        // the value and the successor block argument. We detect two cases where the value
+        // and the block argument would both be live, and so must not share a buffer:
         //   (a) The value is live-in at the successor block (direct use there besides the block arg).
         //   (b) The same value is passed to multiple argument positions of the same successor.
-        if op.deref(ctx).get_num_successors() > 0 {
-            if let Some(branch_iface) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) {
-                for opd_use in op.deref(ctx).operands_as_uses() {
-                    let val = opd_use.get_def(ctx);
-                    if !type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
-                        continue;
-                    }
-                    let mut needs_copy = false;
-                    for succ_idx in 0..op.deref(ctx).get_num_successors() {
-                        let succ_opds = branch_iface.successor_operands(ctx, succ_idx);
-                        if !succ_opds.contains(&val) {
-                            continue;
-                        }
-                        // (a) Liveness check.
-                        let succ_block = op.deref(ctx).get_successor(succ_idx);
-                        if state.liveness.is_live_at_point(
-                            ctx,
-                            &mut state.dom_info,
-                            val,
-                            OpInsertionPoint::AtBlockStart(succ_block),
-                        ) {
-                            needs_copy = true;
-                            break;
-                        }
-                        // (b) Duplicate check: value appears more than once in this successor's args.
-                        if succ_opds.iter().filter(|&&v| v == val).count() >= 2 {
-                            needs_copy = true;
-                            break;
-                        }
-                    }
-                    if needs_copy {
-                        state.successor_operands_needing_copy.insert(opd_use);
-                    }
+        // *Note*: Two tensors T1 and T2 that may be passed from different predecessor blocks to the
+        // same successor block argument may share a buffer. If they do, they acquired it through a
+        // common alias, so they are in one buffer class and every write checks the whole class.
+        if op.deref(ctx).get_num_successors() == 0 {
+            return;
+        }
+
+        let Some(branch_iface) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) else {
+            // Without BranchOpInterface we cannot identify which operands are successor
+            // operands, so conservatively copy all tensor-typed operands.
+            for opd_use in op.deref(ctx).operands_as_uses() {
+                let val = opd_use.get_def(ctx);
+                if type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
+                    state.successor_operands_needing_copy.insert(opd_use);
                 }
-            } else {
-                // Without BranchOpInterface we cannot identify which operands are successor
-                // operands, so conservatively copy all tensor-typed operands.
-                for opd_use in op.deref(ctx).operands_as_uses() {
-                    let val = opd_use.get_def(ctx);
-                    if type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
-                        state.successor_operands_needing_copy.insert(opd_use);
-                    }
+            }
+            return;
+        };
+
+        for opd_use in op.deref(ctx).operands_as_uses() {
+            let val = opd_use.get_def(ctx);
+            if !type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
+                continue;
+            }
+            let mut needs_copy = false;
+            for succ_idx in 0..op.deref(ctx).get_num_successors() {
+                let succ_opds = branch_iface.successor_operands(ctx, succ_idx);
+                if !succ_opds.contains(&val) {
+                    continue;
                 }
+                // (a) Liveness check.
+                let succ_block = op.deref(ctx).get_successor(succ_idx);
+                if state.liveness.is_live_at_point(
+                    ctx,
+                    &mut state.dom_info,
+                    val,
+                    OpInsertionPoint::AtBlockStart(succ_block),
+                ) {
+                    needs_copy = true;
+                    break;
+                }
+                // (b) Duplicate check: value appears more than once in this successor's args.
+                if succ_opds.iter().filter(|&&v| v == val).count() >= 2 {
+                    needs_copy = true;
+                    break;
+                }
+            }
+            if needs_copy {
+                state.successor_operands_needing_copy.insert(opd_use);
+            }
+        }
+    }
+
+    /// Pass 2: add `op`'s share of the buffer classes.
+    ///
+    /// An alias edge is skipped when the operand carrying it has already been decided
+    /// to be bufferized out-of-place: the copy inserted for it severs that alias. Since
+    /// the decision set only grows, classes only shrink, which only relaxes the checks
+    /// in [analyze_in_place_operands] and so never invalidates a decision already made.
+    fn build_buffer_classes(
+        ctx: &Context,
+        state: &mut InPlaceBufferizationAnalysis,
+        op: Ptr<Operation>,
+    ) {
+        let op_dyn = Operation::get_op_dyn(op, ctx);
+
+        // Aliases the op declares between its own operands and results.
+        if let Some(op_iface) = op_cast::<dyn BufferizableOpInterface>(op_dyn.as_ref()) {
+            for alias in op_iface.get_operand_result_aliases(ctx) {
+                if state.out_of_place_operands.contains(&alias.operand) {
+                    // A copy will be inserted for this operand, severing the alias.
+                    continue;
+                }
+                state
+                    .buffer_classes
+                    .union(alias.operand.get_def(ctx), alias.result);
             }
         }
 
-        // In-place bufferization analysis for ops implementing [BufferizableOpInterface].
+        // A successor operand shares its buffer with the block argument it is forwarded to.
+        if op.deref(ctx).get_num_successors() == 0 {
+            // No successor operands to union with block arguments.
+            return;
+        }
+        let Some(branch_iface) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) else {
+            // Without BranchOpInterface there is no operand -> block argument mapping to
+            // union over. `analyze_successor_operands` handles this by conservatively
+            // copying every tensor-typed operand, and a copy severs the alias, so there
+            // is no sharing left to record.
+            return;
+        };
+        for succ_idx in 0..op.deref(ctx).get_num_successors() {
+            let succ_block = op.deref(ctx).get_successor(succ_idx);
+            for (arg_idx, val) in branch_iface
+                .successor_operands(ctx, succ_idx)
+                .into_iter()
+                .enumerate()
+            {
+                if !type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
+                    continue;
+                }
+                let block_arg = succ_block.deref(ctx).get_argument(arg_idx);
+                state.buffer_classes.union(val, block_arg);
+            }
+        }
+    }
+
+    /// Pass 3: decide which aliasing operands of `op` can be bufferized in place.
+    fn analyze_in_place_operands(
+        ctx: &Context,
+        state: &mut InPlaceBufferizationAnalysis,
+        op: Ptr<Operation>,
+    ) {
+        let op_dyn = Operation::get_op_dyn(op, ctx);
         let Some(op_iface) = op_cast::<dyn BufferizableOpInterface>(op_dyn.as_ref()) else {
             return;
         };
@@ -458,54 +565,144 @@ pub fn bufferize<TMM: TensorMemoryManager>(
                 continue;
             }
 
+            // Decisions are never revisited: re-granting one would restore its alias
+            // edge and grow the classes, which could invalidate other decisions.
+            if state.out_of_place_operands.contains(&opd) {
+                continue;
+            }
+
             let aliasing_results = Alias::get_aliases_for_operand(&aliases, opd);
-            if aliasing_results.is_empty()
-                || Alias::operand_aliases_with_multiple_results(&aliases, opd)
+            if aliasing_results.is_empty() {
+                // Not an aliasing operand: nothing to decide, and nothing to copy.
+                continue;
+            }
+            if Alias::operand_aliases_with_multiple_results(&aliases, opd)
                 || Alias::operand_aliases_with_other_operands(&aliases, opd)
             {
+                // Sharing here could leave several values on one buffer in ways the
+                // checks below don't model, so give the operand its own buffer.
+                state.record_out_of_place(opd);
                 continue;
             }
 
-            // If the operand is used multiple times in the same op,
-            // bufferizing in-place may break the invariant that a buffer
-            // is mapped to at most one tensor value.
-            if op
-                .deref(ctx)
-                .operands_as_uses()
-                .any(|opd_| opd != opd_ && opd_.get_def(ctx) == opd.get_def(ctx))
-            {
+            // Reading through the operand can't corrupt the buffer, so sharing it is safe
+            // no matter who else holds it. Leaving it undecided leaves it in place.
+            if !op_iface.operand_bufferizes_to_memory_write(ctx, opd) {
                 continue;
             }
 
-            if !state.liveness.is_live_at_point(
-                ctx,
-                &mut state.dom_info,
-                opd.get_def(ctx),
-                OpInsertionPoint::AfterOperation(op),
-            ) {
-                state.in_place_bufferizable_operands.insert(opd);
+            let opd_class = state.buffer_classes.find(opd.get_def(ctx));
+
+            // Another operand backed by the same buffer would be accessed through the
+            // storage this operand is about to be written through, during the op itself.
+            // No liveness query can catch that, since the hazard is within the op.
+            let mut conflicts_with_other_operand = false;
+            for other in op.deref(ctx).operands_as_uses() {
+                if other != opd && state.buffer_classes.find(other.get_def(ctx)) == opd_class {
+                    conflicts_with_other_operand = true;
+                    break;
+                }
             }
+            if conflicts_with_other_operand {
+                state.record_out_of_place(opd);
+                continue;
+            }
+
+            // Writing in place is safe only if nothing else that shares the buffer can
+            // observe the write. Values this op defines are excluded: they are the results
+            // of the write, not readers of the pre-write contents.
+            //
+            // This asks only whether a member is live just after the op; no program order
+            // between the op and the member's definition is assumed. A member defined by a
+            // textually later op still counts if it reaches this point via a back edge.
+            let class_members = state.buffer_classes.set_members(opd_class);
+            let class_live = class_members
+                .iter()
+                .filter(|member| {
+                    // Exclude values this op defines
+                    !matches!(member.defining_entity(), DefiningEntity::Op(def_op) if def_op == op)
+                })
+                .any(|&member| {
+                    state.liveness.is_live_at_point(
+                        ctx,
+                        &mut state.dom_info,
+                        member,
+                        OpInsertionPoint::AfterOperation(op),
+                    )
+                });
+            if class_live {
+                state.record_out_of_place(opd);
+            }
+        }
+    }
+
+    /// Collect operations in program order.
+    fn collect_op(_ctx: &Context, ops: &mut Vec<Ptr<Operation>>, node: IRNode) {
+        if let IRNode::Operation(op) = node {
+            ops.push(op);
+        }
+    }
+
+    /// Rebuild the buffer classes from scratch, honouring the decisions made so far.
+    fn rebuild_buffer_classes(
+        ctx: &Context,
+        state: &mut InPlaceBufferizationAnalysis,
+        ops: &[Ptr<Operation>],
+    ) {
+        state.buffer_classes = UnionFind::default();
+        for &op in ops {
+            build_buffer_classes(ctx, state, op);
         }
     }
 
     let mut analysis = InPlaceBufferizationAnalysis {
         liveness: Liveness::<LivenessTq>::default(),
         dom_info: DomInfo::default(),
-        in_place_bufferizable_operands: FxHashSet::default(),
+        buffer_classes: UnionFind::default(),
+        out_of_place_operands: FxHashSet::default(),
         successor_operands_needing_copy: FxHashSet::default(),
     };
 
+    // Successor-operand copies don't depend on the buffer classes, so they're decided once.
     walkers::uninterruptible::immutable::walk_op(
         ctx,
         &mut analysis,
         &walkers::WALKCONFIG_PREORDER_FORWARD,
         op,
-        analyze_op,
+        analyze_successor_operands,
     );
+
+    let mut ops = Vec::new();
+    walkers::uninterruptible::immutable::walk_op(
+        ctx,
+        &mut ops,
+        &walkers::WALKCONFIG_PREORDER_FORWARD,
+        op,
+        collect_op,
+    );
+
+    // Decide the in-place bufferization of every aliasing operand, in program order.
+    //
+    // Classes start maximal (nothing decided out-of-place yet), which is the conservative
+    // end: every alias edge is present, so the checks are at their strictest. Each
+    // out-of-place decision severs an edge and shrinks the classes, and is applied right
+    // away so that the ops after it see the effect.
+    rebuild_buffer_classes(ctx, &mut analysis, &ops);
+    for &op in &ops {
+        let decisions_before_op = analysis.out_of_place_operands.len();
+        analyze_in_place_operands(ctx, &mut analysis, op);
+        if analysis.out_of_place_operands.len() != decisions_before_op {
+            // TODO: This rebuild (unlike the one outside the loop)
+            // is for precision and not safety. A rebuild will not contain
+            // alias edges that weren't there in a previous computation.
+            // We can explore ways to avoid rebuilding. It is O(n).
+            rebuild_buffer_classes(ctx, &mut analysis, &ops);
+        }
+    }
 
     let mut bufferizer = Bufferizer::<TMM> {
         tmm,
-        in_place_bufferizable_operands: analysis.in_place_bufferizable_operands,
+        out_of_place_operands: analysis.out_of_place_operands,
         successor_operands_needing_copy: analysis.successor_operands_needing_copy,
     };
     apply_dialect_conversion(ctx, &mut bufferizer, op)

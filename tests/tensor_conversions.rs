@@ -888,14 +888,14 @@ fn test_extract_slice_tensor_to_memref() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block2v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_extract_slice_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
               [] 
             {
-              ^entry_block1v1(src_p_v4: llvm.ptr (0), out_p_v5: llvm.ptr (0)) !1:
-                src_v1 = llvm.load src_p_v4  : memref.ranked <10x20 : builtin.integer i64> !2;
-                $v6 = memref.subview src_v1 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !3;
-                llvm.store *out_p_v5 <- v6  !4;
+              ^entry_block2v1(src_p_v0: llvm.ptr (0), out_p_v1: llvm.ptr (0)) !1:
+                src_v2 = llvm.load src_p_v0  : memref.ranked <10x20 : builtin.integer i64> !2;
+                $v4 = memref.subview src_v2 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !3;
+                llvm.store *out_p_v1 <- v4  !4;
                 llvm.return  !5
             } !6
         }"#]].assert_eq(&exec_module_op.disp(exec_ctx).to_string());
@@ -1063,6 +1063,142 @@ fn test_extract_slice_tensor_to_memref_sequential() {
     assert_eq!(actual, expected);
 }
 
+/// Test that a read-only aliasing operand is bufferized in place even when it stays
+/// live afterwards. Here `src` is live across the first `tensor.extract_slice` (the
+/// second one reads it again), but `extract_slice` only reads through it, so both
+/// slices may share `src`'s buffer with no copy at all.
+#[test]
+fn test_extract_slice_live_source_bufferizes_in_place() {
+    init_env_logger_for_tests!();
+    let exec_ctx = &mut Context::new();
+    let exec_ir = r#"
+        builtin.module @test_module {
+        ^entry():
+            llvm.func @test_extract_slice_live_source_runtime: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(src_p: llvm.ptr(0), out_first_p: llvm.ptr(0), out_second_p: llvm.ptr(0)):
+                src = llvm.load src_p : tensor.ranked<10x20:builtin.integer i64>;
+                first = tensor.extract_slice src [0, 0] [5, 10] [1, 1] : tensor.ranked<5x10:builtin.integer i64>;
+                second = tensor.extract_slice src [5, 10] [5, 10] [1, 1] : tensor.ranked<5x10:builtin.integer i64>;
+                llvm.store *out_first_p <- first;
+                llvm.store *out_second_p <- second;
+                llvm.return
+            }
+        }
+        "#;
+
+    let exec_stream = state_stream_from_iterator(
+        exec_ir.chars(),
+        parsable::State::new(exec_ctx, location::Source::InMemory),
+    );
+    let exec_parsed = spaced(Operation::top_level_parser())
+        .parse(exec_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+    let exec_parsed_op = exec_parsed.expect_ok(exec_ctx);
+    let exec_module_op = Operation::get_op::<ModuleOp>(exec_parsed_op, exec_ctx).unwrap();
+    verify_op(&exec_module_op, exec_ctx).expect_ok(exec_ctx);
+
+    let mut tmm = MallocFreeTMM;
+    bufferize(&mut tmm, exec_parsed_op, exec_ctx).expect_ok(exec_ctx);
+    let after_tensor_to_memref = format!("{}", exec_module_op.disp(exec_ctx));
+
+    // Both extract_slices only read `src`, so neither needs a private buffer,
+    // even though `src` is live across the first of them.
+    assert!(
+        !after_tensor_to_memref.contains("memref.alloc"),
+        "read-only aliasing operands must not be copied to a new buffer, got:\n{after_tensor_to_memref}"
+    );
+    assert!(
+        !after_tensor_to_memref.contains("memref.copy"),
+        "read-only aliasing operands must not be copied, got:\n{after_tensor_to_memref}"
+    );
+    assert_eq!(
+        after_tensor_to_memref.matches("memref.subview").count(),
+        2,
+        "expected exactly two memref.subview ops, got:\n{after_tensor_to_memref}"
+    );
+
+    apply_dialect_conversion(exec_ctx, &mut MemrefToCF, exec_parsed_op).expect_ok(exec_ctx);
+    apply_dialect_conversion(exec_ctx, &mut CFToLLVM, exec_parsed_op).expect_ok(exec_ctx);
+    verify_op(&exec_module_op, exec_ctx).expect_ok(exec_ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(exec_ctx, &llvm_ctx, exec_module_op)
+        .expect_ok(exec_ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_extract_slice_live_source_runtime")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+
+    let f = unsafe {
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *mut u8, *mut u8) -> ()>(symbol_addr)
+    };
+
+    let src_data: Vec<u64> = (0..200_u64).collect();
+    let src_descr = TensorDesciptor::new(
+        [10, 20].to_vec(),
+        std::mem::size_of::<u64>(),
+        src_data.as_ptr() as *const u8,
+    );
+    let out_first_descr = TensorDesciptor::new(
+        [5, 10].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+    let out_second_descr = TensorDesciptor::new(
+        [5, 10].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+
+    let mut out_first_ir_descr = out_first_descr.build_ir_descriptor();
+    let mut out_second_ir_descr = out_second_descr.build_ir_descriptor();
+    f(
+        src_descr.build_ir_descriptor().as_ptr(),
+        out_first_ir_descr.as_mut_ptr(),
+        out_second_ir_descr.as_mut_ptr(),
+    );
+
+    let first_descr = unsafe {
+        TensorDesciptor::from_ir_descriptor(
+            out_first_ir_descr.as_ptr(),
+            2,
+            std::mem::size_of::<u64>(),
+        )
+    };
+    let second_descr = unsafe {
+        TensorDesciptor::from_ir_descriptor(
+            out_second_ir_descr.as_ptr(),
+            2,
+            std::mem::size_of::<u64>(),
+        )
+    };
+    let mut actual_first: Vec<u64> = Vec::new();
+    let mut actual_second: Vec<u64> = Vec::new();
+    unsafe { first_descr.copy_to_vec(&mut actual_first) };
+    unsafe { second_descr.copy_to_vec(&mut actual_second) };
+
+    let mut expected_first = Vec::with_capacity(5 * 10);
+    let mut expected_second = Vec::with_capacity(5 * 10);
+    for i in 0..5_u64 {
+        for j in 0..10_u64 {
+            expected_first.push(i * 20 + j);
+            expected_second.push((5 + i) * 20 + (10 + j));
+        }
+    }
+    assert_eq!(actual_first, expected_first);
+    assert_eq!(actual_second, expected_second);
+}
+
 /// Test that `tensor.insert_slice` is lowered and executed correctly end-to-end:
 /// TensorToMemref -> MemrefToCF -> CFToLLVM -> JIT.
 #[test]
@@ -1102,16 +1238,16 @@ fn test_insert_slice_tensor_to_memref() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block2v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_insert_slice_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
               [] 
             {
-              ^entry_block1v1(src_p_v6: llvm.ptr (0), dst_p_v7: llvm.ptr (0), out_p_v8: llvm.ptr (0)) !1:
-                src_v1 = llvm.load src_p_v6  : memref.ranked <5x10 : builtin.integer i64> !2;
-                dst_v3 = llvm.load dst_p_v7  : memref.ranked <10x20 : builtin.integer i64> !3;
-                $v9 = memref.subview dst_v3 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
-                memref.copy v9 <- src_v1;
-                llvm.store *out_p_v8 <- dst_v3  !4;
+              ^entry_block2v1(src_p_v0: llvm.ptr (0), dst_p_v1: llvm.ptr (0), out_p_v2: llvm.ptr (0)) !1:
+                src_v3 = llvm.load src_p_v0  : memref.ranked <5x10 : builtin.integer i64> !2;
+                dst_v4 = llvm.load dst_p_v1  : memref.ranked <10x20 : builtin.integer i64> !3;
+                $v6 = memref.subview dst_v4 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
+                memref.copy v6 <- src_v3;
+                llvm.store *out_p_v2 <- dst_v4  !4;
                 llvm.return  !5
             } !6
         }"#]].assert_eq(&after_tensor_to_memref);
@@ -1412,17 +1548,17 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block2v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
               [] 
             {
-              ^entry_block1v1(arg_p_v8: llvm.ptr (0), i_res_v9: builtin.integer i64, j_res_v10: builtin.integer i64) !1:
-                arg_v1 = llvm.load arg_p_v8  : memref.ranked <2x3 : builtin.integer i64> !2;
-                v11 = memref.reshape arg_v1 : memref.ranked <3x2 : builtin.integer i64> !3;
-                i_idx_v4 = index.from_integer i_res_v9 : index.index  !4;
-                j_idx_v6 = index.from_integer j_res_v10 : index.index  !5;
-                v12 = memref.load v11[i_idx_v4, j_idx_v6] : builtin.integer i64 !6;
-                llvm.return v12 !7
+              ^entry_block2v1(arg_p_v0: llvm.ptr (0), i_res_v1: builtin.integer i64, j_res_v2: builtin.integer i64) !1:
+                arg_v3 = llvm.load arg_p_v0  : memref.ranked <2x3 : builtin.integer i64> !2;
+                v8 = memref.reshape arg_v3 : memref.ranked <3x2 : builtin.integer i64> !3;
+                i_idx_v5 = index.from_integer i_res_v1 : index.index  !4;
+                j_idx_v6 = index.from_integer j_res_v2 : index.index  !5;
+                v9 = memref.load v8[i_idx_v5, j_idx_v6] : builtin.integer i64 !6;
+                llvm.return v9 !7
             } !8
         }"#]].assert_eq(&after_tensor_to_memref);
 
@@ -1607,4 +1743,491 @@ fn test_tracked_tmm_complex_tensor_computation_from_rust() {
 
     tmm.free_all();
     assert_eq!(tmm.tracked_allocations().len(), 0);
+}
+
+/// tiled matmul in control-flow form
+#[test]
+fn test_tiled_matmul_cf() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    // 4x4 matrices, 2x2 tiles. An outer loop over row tiles of C and
+    // an inner loop over column tiles, with the accumulator threaded
+    // through both loops as a loop-carried value.
+    let input_ir = r#"
+        builtin.module @test_module {
+        ^entry():
+            llvm.func @test_tiled_matmul: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+                a = llvm.load a_p : tensor.ranked<4x4:builtin.integer i64>;
+                b = llvm.load b_p : tensor.ranked<4x4:builtin.integer i64>;
+                c = llvm.load c_p : tensor.ranked<4x4:builtin.integer i64>;
+                i_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                llvm.br ^outer_header(i_init, c)
+
+            ^outer_header(i: builtin.integer i64, iv_c: tensor.ranked<4x4:builtin.integer i64>):
+                n_i = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
+                i_lt = llvm.icmp i <SLT> n_i : builtin.integer i1;
+                llvm.cond_br if i_lt ^outer_body(i, iv_c) else ^done(iv_c)
+
+            ^outer_body(i_b: builtin.integer i64, iv_c_b: tensor.ranked<4x4:builtin.integer i64>):
+                j_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                llvm.br ^inner_header(i_b, j_init, iv_c_b)
+
+            ^inner_header(i_h: builtin.integer i64, j_h: builtin.integer i64, jv_c: tensor.ranked<4x4:builtin.integer i64>):
+                n_j = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
+                j_lt = llvm.icmp j_h <SLT> n_j : builtin.integer i1;
+                llvm.cond_br if j_lt ^inner_body(i_h, j_h, jv_c) else ^outer_latch(i_h, jv_c)
+
+            ^inner_body(i_n: builtin.integer i64, j_n: builtin.integer i64, jv_c_n: tensor.ranked<4x4:builtin.integer i64>):
+                i_idx = index.from_integer i_n : index.index;
+                j_idx = index.from_integer j_n : index.index;
+                slice_a = tensor.extract_slice a [i_idx, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.integer i64>;
+                slice_b = tensor.extract_slice b [0, j_idx] [4, 2] [1, 1] : tensor.ranked<4x2:builtin.integer i64>;
+                slice_c = tensor.extract_slice jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                tiled = tensor.matmul slice_a, slice_b, slice_c : tensor.ranked<2x2:builtin.integer i64>;
+                updated = tensor.insert_slice tiled into jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<4x4:builtin.integer i64>;
+                step_j = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
+                j_next = llvm.add j_n, step_j <{nsw = false, nuw = false}> : builtin.integer i64;
+                llvm.br ^inner_header(i_n, j_next, updated)
+
+            ^outer_latch(i_l: builtin.integer i64, jv_c_l: tensor.ranked<4x4:builtin.integer i64>):
+                step_i = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
+                i_next = llvm.add i_l, step_i <{nsw = false, nuw = false}> : builtin.integer i64;
+                llvm.br ^outer_header(i_next, jv_c_l)
+
+            ^done(result: tensor.ranked<4x4:builtin.integer i64>):
+                llvm.store *out_p <- result;
+                llvm.return
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let mut tmm = MallocFreeTMM;
+    bufferize(&mut tmm, parsed_op, ctx).expect_ok(ctx);
+    let after = format!("{}", module_op.disp(ctx));
+
+    // The point of the issue: `a` and `b` are only read, so their tiles are plain
+    // subviews. Neither is copied, even though both stay live across every iteration.
+    assert!(
+        after.contains("memref.subview a_v4"),
+        "slice of `a` should be a plain subview, got:\n{after}"
+    );
+    assert!(
+        after.contains("memref.subview b_v5"),
+        "slice of `b` should be a plain subview, got:\n{after}"
+    );
+    // No buffer as large as an input matrix is allocated for a read-only tile.
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <2x4"),
+        "no buffer should be allocated for the read-only `a` tile, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <4x2"),
+        "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
+    );
+
+    // Only matmul's accumulator tile gets a private buffer: `slice_c` (`jv_c_n`'s own
+    // subview) is copied into it first, since matmul accumulates and `jv_c_n` is live
+    // afterwards so can't be written to directly. The accumulated result is then
+    // copied back out into `jv_c_n`'s subview -- that second copy is `insert_slice`'s
+    // own definitional write (moving the computed tile into place) and would be there
+    // even without the conflict above, so it's not a sign of a missed optimization.
+    // Two `memref.copy` ops per iteration, but only the one buffer above is allocated.
+    assert_eq!(
+        after.matches("memref.alloc").count(),
+        1,
+        "only matmul's accumulator tile should be allocated, got:\n{after}"
+    );
+    assert_eq!(
+        after.matches("memref.copy").count(),
+        2,
+        "expected one copy seeding matmul's private accumulator and one copy writing \
+         the result back into the loop-carried accumulator, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <4x4"),
+        "the loop-carried accumulator should not be copied, got:\n{after}"
+    );
+
+    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_tiled_matmul")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+
+    let f = unsafe {
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
+    };
+
+    let a_data: Vec<u64> = (1..=16_u64).collect();
+    let b_data: Vec<u64> = (17..=32_u64).collect();
+    let c_data: Vec<u64> = (0..16_u64).map(|x| x * 100).collect();
+
+    let a_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        a_data.as_ptr() as *const u8,
+    );
+    let b_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        b_data.as_ptr() as *const u8,
+    );
+    let c_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        c_data.as_ptr() as *const u8,
+    );
+    let out_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+
+    // tensor.matmul accumulates, so the tiled nest computes C + A*B. Computed before
+    // the call: `c` is the loop-carried accumulator and is now written in place.
+    let mut expected = c_data.clone();
+    for i in 0..4_usize {
+        for j in 0..4_usize {
+            for k in 0..4_usize {
+                expected[i * 4 + j] += a_data[i * 4 + k] * b_data[k * 4 + j];
+            }
+        }
+    }
+
+    let mut out_ir_descr = out_descr.build_ir_descriptor();
+    f(
+        a_descr.build_ir_descriptor().as_ptr(),
+        b_descr.build_ir_descriptor().as_ptr(),
+        c_descr.build_ir_descriptor().as_ptr(),
+        out_ir_descr.as_mut_ptr(),
+    );
+
+    let out_tensor_descr = unsafe {
+        TensorDesciptor::from_ir_descriptor(out_ir_descr.as_ptr(), 2, std::mem::size_of::<u64>())
+    };
+    let mut actual: Vec<u64> = Vec::new();
+    unsafe { out_tensor_descr.copy_to_vec(&mut actual) };
+
+    assert_eq!(actual, expected, "tiled matmul produced wrong values");
+}
+
+/// The same tiled matmul as [test_tiled_matmul_cf], but expressed with `cf.for`
+#[test]
+fn test_tiled_matmul_scf_for() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+        ^entry():
+            llvm.func @test_tiled_matmul_scf: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+                a = llvm.load a_p : tensor.ranked<4x4:builtin.integer i64>;
+                b = llvm.load b_p : tensor.ranked<4x4:builtin.integer i64>;
+                c = llvm.load c_p : tensor.ranked<4x4:builtin.integer i64>;
+                c0 = index.constant <index.constant 0> : index.index;
+                c2 = index.constant <index.constant 2> : index.index;
+                c4 = index.constant <index.constant 4> : index.index;
+                result = cf.for c0 to c4 step c2 (c) {
+                    ^entry(i: index.index, iv_c: tensor.ranked<4x4:builtin.integer i64>):
+                        inner_res = cf.for c0 to c4 step c2 (iv_c) {
+                            ^entry(j: index.index, jv_c: tensor.ranked<4x4:builtin.integer i64>):
+                                slice_a = tensor.extract_slice a [i, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.integer i64>;
+                                slice_b = tensor.extract_slice b [0, j] [4, 2] [1, 1] : tensor.ranked<4x2:builtin.integer i64>;
+                                slice_c = tensor.extract_slice jv_c [i, j] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                                tiled = tensor.matmul slice_a, slice_b, slice_c : tensor.ranked<2x2:builtin.integer i64>;
+                                updated = tensor.insert_slice tiled into jv_c [i, j] [2, 2] [1, 1] : tensor.ranked<4x4:builtin.integer i64>;
+                                cf.yield updated
+                        };
+                        cf.yield inner_res
+                };
+                llvm.store *out_p <- result;
+                llvm.return
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let mut tmm = MallocFreeTMM;
+    bufferize(&mut tmm, parsed_op, ctx).expect_ok(ctx);
+    let after = format!("{}", module_op.disp(ctx));
+
+    // Same expectations as the CF-form test: `a` and `b` are read-only, so their
+    // tiles are plain subviews and no buffer is allocated for them.
+    assert!(
+        after.contains("memref.subview a_v4"),
+        "slice of `a` should be a plain subview, got:\n{after}"
+    );
+    assert!(
+        after.contains("memref.subview b_v5"),
+        "slice of `b` should be a plain subview, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <2x4"),
+        "no buffer should be allocated for the read-only `a` tile, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <4x2"),
+        "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
+    );
+
+    // Only matmul's accumulator tile gets a private buffer, same as the CF-form test:
+    // one copy seeds it from `jv_c`'s subview (since `jv_c` is live afterwards, matmul
+    // can't write there directly), and one -- `insert_slice`'s own definitional write,
+    // not a bufferization decision -- writes the accumulated result back into that
+    // subview.
+    assert_eq!(
+        after.matches("memref.alloc").count(),
+        1,
+        "only matmul's accumulator tile should be allocated, got:\n{after}"
+    );
+    assert_eq!(
+        after.matches("memref.copy").count(),
+        2,
+        "expected one copy seeding matmul's private accumulator and one copy writing \
+         the result back into the loop-carried accumulator, got:\n{after}"
+    );
+    assert!(
+        !after.contains("memref.alloc  : memref.ranked <4x4"),
+        "the loop-carried accumulator should not be copied, got:\n{after}"
+    );
+
+    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_tiled_matmul_scf")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+
+    let f = unsafe {
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
+    };
+
+    let a_data: Vec<u64> = (1..=16_u64).collect();
+    let b_data: Vec<u64> = (17..=32_u64).collect();
+    let c_data: Vec<u64> = (0..16_u64).map(|x| x * 100).collect();
+
+    let a_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        a_data.as_ptr() as *const u8,
+    );
+    let b_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        b_data.as_ptr() as *const u8,
+    );
+    let c_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        c_data.as_ptr() as *const u8,
+    );
+    let out_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+
+    let mut expected = c_data.clone();
+    for i in 0..4_usize {
+        for j in 0..4_usize {
+            for k in 0..4_usize {
+                expected[i * 4 + j] += a_data[i * 4 + k] * b_data[k * 4 + j];
+            }
+        }
+    }
+
+    let mut out_ir_descr = out_descr.build_ir_descriptor();
+    f(
+        a_descr.build_ir_descriptor().as_ptr(),
+        b_descr.build_ir_descriptor().as_ptr(),
+        c_descr.build_ir_descriptor().as_ptr(),
+        out_ir_descr.as_mut_ptr(),
+    );
+
+    let out_tensor_descr = unsafe {
+        TensorDesciptor::from_ir_descriptor(out_ir_descr.as_ptr(), 2, std::mem::size_of::<u64>())
+    };
+    let mut actual: Vec<u64> = Vec::new();
+    unsafe { out_tensor_descr.copy_to_vec(&mut actual) };
+
+    assert_eq!(actual, expected, "tiled matmul produced wrong values");
+}
+
+/// A write through a slice of a tensor that is still live must not touch that
+/// tensor's buffer.
+///
+/// `s` is a slice of `t`, and `s` itself is dead right after the insert, so looking at
+/// `s` alone would wrongly allow the write to go in place. It's only via `s` and `t`
+/// sharing a buffer that `t`'s liveness is seen and the copy inserted.
+#[test]
+fn test_write_through_slice_of_live_tensor_needs_copy() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+            ^entry():
+                llvm.func @test_write_through_slice: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                    ^entry(t_p: llvm.ptr(0), small_p: llvm.ptr(0), out_u_p: llvm.ptr(0), out_t_p: llvm.ptr(0)):
+                        t = llvm.load t_p : tensor.ranked<4x4:builtin.integer i64>;
+                        small = llvm.load small_p : tensor.ranked<2x2:builtin.integer i64>;
+                        s = tensor.extract_slice t [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                        u = tensor.insert_slice small into s [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                        llvm.store *out_u_p <- u;
+                        llvm.store *out_t_p <- t;
+                        llvm.return
+                }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let mut tmm = MallocFreeTMM;
+    bufferize(&mut tmm, parsed_op, ctx).expect_ok(ctx);
+    let after = format!("{}", module_op.disp(ctx));
+    assert!(
+        after.contains("memref.alloc"),
+        "writing through a slice of the live `t` must allocate a private buffer, got:\n{after}"
+    );
+
+    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_write_through_slice")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+
+    let f = unsafe {
+        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8, *mut u8) -> ()>(
+            symbol_addr,
+        )
+    };
+
+    let t_data: Vec<u64> = (0..16_u64).collect();
+    let small_data: Vec<u64> = vec![900, 901, 902, 903];
+
+    let t_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        t_data.as_ptr() as *const u8,
+    );
+    let small_descr = TensorDesciptor::new(
+        [2, 2].to_vec(),
+        std::mem::size_of::<u64>(),
+        small_data.as_ptr() as *const u8,
+    );
+    let out_u_descr = TensorDesciptor::new(
+        [2, 2].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+    let out_t_descr = TensorDesciptor::new(
+        [4, 4].to_vec(),
+        std::mem::size_of::<u64>(),
+        std::ptr::null::<u8>(),
+    );
+
+    let mut out_u_ir = out_u_descr.build_ir_descriptor();
+    let mut out_t_ir = out_t_descr.build_ir_descriptor();
+    f(
+        t_descr.build_ir_descriptor().as_ptr(),
+        small_descr.build_ir_descriptor().as_ptr(),
+        out_u_ir.as_mut_ptr(),
+        out_t_ir.as_mut_ptr(),
+    );
+
+    let u_descr =
+        unsafe { TensorDesciptor::from_ir_descriptor(out_u_ir.as_ptr(), 2, size_of::<u64>()) };
+    let t_out_descr =
+        unsafe { TensorDesciptor::from_ir_descriptor(out_t_ir.as_ptr(), 2, size_of::<u64>()) };
+    let mut actual_u: Vec<u64> = Vec::new();
+    let mut actual_t: Vec<u64> = Vec::new();
+    unsafe { u_descr.copy_to_vec(&mut actual_u) };
+    unsafe { t_out_descr.copy_to_vec(&mut actual_t) };
+
+    assert_eq!(actual_u, small_data, "the inserted slice is wrong");
+    assert_eq!(
+        actual_t, t_data,
+        "`t` was clobbered by a write through its slice"
+    );
 }

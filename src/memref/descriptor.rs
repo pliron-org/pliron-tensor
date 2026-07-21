@@ -364,8 +364,7 @@ pub fn pack_descriptor(
     memref_type: TypedHandle<RankedMemrefType>,
     descriptor: Descriptor,
 ) -> Result<Value> {
-    let converter = memref_type.deref(ctx).converter();
-    let llvm_struct_ty = converter(memref_type.into(), ctx)?;
+    let llvm_struct_ty = memref_type.deref(ctx).convert(ctx)?;
     let llvm_struct_ty_detail = TypedHandle::<StructType>::from_handle(llvm_struct_ty, ctx)
         .expect("Expected LLVM struct type for the memref descriptor");
 
