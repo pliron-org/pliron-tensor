@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-tensor contributors
+
 //! Test conversions of memref operations to Memref -> CF -> LLVM dialect.
 
 use expect_test::expect;

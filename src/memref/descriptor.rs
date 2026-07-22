@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-tensor contributors
+
 //! Memref Descriptor for runtime information about memref types.
 //! This is analogous to the memref descriptor in MLIR.
 //! A memref descriptor is a struct containing the following fields:

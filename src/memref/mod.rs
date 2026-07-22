@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-tensor contributors
+
 //! Memref dialect for pliron.
 
 pub mod attributes;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-tensor contributors
+
 //! Memref attributes.
 
 use pliron::derive::{format, pliron_attr};

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-tensor contributors
+
 //! Track tensor allocations and deallocations in the IR.
 //! Provides tracked AllocOp and DeallocOp operations that expand, during lowering,
 //! to allocations / deallocation and tracking operations.

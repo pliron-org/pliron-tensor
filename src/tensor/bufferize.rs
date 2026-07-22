@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-tensor contributors
+
 //! Tensor semantics -> memref semantics
 //!
 //! Tensors are values: every tensor-producing op conceptually yields a brand new tensor.

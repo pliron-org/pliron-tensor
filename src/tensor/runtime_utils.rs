@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-tensor contributors
+
 //! Types and utilities to interact with the tensor dialect from Rust
 
 /// Represents a tensor descriptor in Rust.
