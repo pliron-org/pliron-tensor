@@ -402,17 +402,6 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
     }
 }
 
-/// Allow [ForOp] ("cf.for", this dialect's structured loop -- the equivalent of
-/// MLIR's `scf.for`) to participate in bufferization.
-///
-/// Mirrors MLIR's `scf::ForOp` bufferization (`ForOpInterface` in
-/// `mlir/lib/Dialect/SCF/Transforms/BufferizableOpInterfaceImpl.cpp`): the i-th
-/// `iter_args_init` operand aliases the op's i-th result. `rewrite` doesn't need to
-/// build a new op or touch the body: `self` keeps its identity and region, so the
-/// ops inside the body are bufferized separately as the conversion continues. It
-/// only needs to retype the loop-carried block arguments and the op's own results to
-/// their already-bufferized operand types (mirroring how `pliron_llvm::ops::LoadOp`,
-/// above, retypes its own result in place).
 #[op_interface_impl]
 impl BufferizableOpInterface for ForOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -420,12 +409,11 @@ impl BufferizableOpInterface for ForOp {
     }
 
     fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
-        // Tensor iter_args are always considered a write, same as MLIR: whether the
-        // body writes through a particular iter_arg depends on ops we don't inspect
-        // here, so we conservatively assume it might.
+        // Tensor iter_args are always considered a write.
         true
     }
 
+    // The i-th `iter_args_init` operand aliases the op's i-th result.
     fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
         let op = self.get_operation().deref(ctx);
         let iter_args_start = self.segment_size(ctx, 0) as usize;
@@ -445,12 +433,7 @@ impl BufferizableOpInterface for ForOp {
     }
 
     fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
-        // Mirrors MLIR's `ForOpInterface::isWritable`: a loop-carried block argument
-        // can always be viewed as writable from inside the body. Whichever way the
-        // in-place decision for the matching `iter_args_init` operand goes, the block
-        // argument ends up backed by a buffer this op exclusively owns for the
-        // duration of the loop -- either the original operand's buffer (bufferized in
-        // place) or a fresh allocation the operand was copied into.
+        // Loop-carried block arguments can always be viewed as writable from inside the body
         true
     }
 
