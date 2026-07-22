@@ -70,7 +70,6 @@ use pliron::{
     verify_err_noloc,
 };
 use pliron_common_dialects::index::{ops::IndexConstantOp, types::IndexType};
-use pliron_llvm::ops::FuncOp;
 use thiserror::Error;
 
 use crate::{
@@ -80,7 +79,7 @@ use crate::{
         type_interfaces::{Dimension, ShapedType},
         types::RankedMemrefType,
     },
-    tensor::{conversions::lower_func_op_to_llvm, memory_management::TensorMemoryManager},
+    tensor::memory_management::TensorMemoryManager,
 };
 
 /// Is an alias May or Must
@@ -202,6 +201,19 @@ pub trait BufferizableOpInterface {
     /// It will only be called on aliasing operands that have a tensor type.
     fn get_dynamic_dimensions(&self, ctx: &Context, opd: Use<Value>) -> Option<Vec<Value>>;
 
+    /// Return true if `value` -- a result of this op, or an argument of a block
+    /// belonging to one of this op's regions -- can be written to in place.
+    ///
+    /// It will only be called on values that have a tensor type.
+    ///
+    /// Default: results are writable, block arguments are not.
+    /// An op with a region must explicitly opt a block argument into being writable.
+    /// An op that wants a non-writable result (e.g. one backed by read-only memory)
+    /// must override this to return `false`.
+    fn is_writable(&self, _ctx: &Context, value: Value) -> bool {
+        value.defining_block().is_none()
+    }
+
     /// Rewrite to use memref semantics.
     ///
     /// Operands will have already been bufferized (i.e., converted to memrefs).
@@ -257,6 +269,31 @@ pub trait BufferizableOpInterface {
     }
 }
 
+/// Return true if `value` can be written to in place, per
+/// [BufferizableOpInterface::is_writable] of the op that owns it: the defining op,
+/// if `value` is an op result, or the parent op of the defining block, if `value` is
+/// a block argument.
+///
+/// If the owning op doesn't implement [BufferizableOpInterface] at all, the same
+/// conservative default applies as the trait's default method: op results are
+/// writable, block arguments are not.
+fn is_value_writable(ctx: &Context, value: Value) -> bool {
+    let owner_op = match value.defining_entity() {
+        DefiningEntity::Op(op) => op,
+        DefiningEntity::Block(block) => {
+            let Some(parent_op) = block.deref(ctx).get_parent_op(ctx) else {
+                return false;
+            };
+            parent_op
+        }
+    };
+    let op_dyn = Operation::get_op_dyn(owner_op, ctx);
+    match op_cast::<dyn BufferizableOpInterface>(op_dyn.as_ref()) {
+        Some(op_iface) => op_iface.is_writable(ctx, value),
+        None => value.defining_op().is_some(),
+    }
+}
+
 /// A helper struct that implements [DialectConversion]
 /// to bufferize from tensor semantics to memref semantics.
 struct Bufferizer<'tmm, TMM: TensorMemoryManager> {
@@ -272,7 +309,6 @@ struct Bufferizer<'tmm, TMM: TensorMemoryManager> {
 impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM> {
     fn can_convert_op(&self, ctx: &Context, op: Ptr<Operation>) -> bool {
         op_impls::<dyn BufferizableOpInterface>(Operation::get_op_dyn(op, ctx).as_ref())
-            || Operation::get_op::<FuncOp>(op, ctx).is_some()
             || op
                 .deref(ctx)
                 .operands_as_uses()
@@ -286,11 +322,6 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
         op: Ptr<Operation>,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
-        // Handle FuncOp: update function type signature and entry block arg types.
-        if let Some(func_op) = Operation::get_op::<FuncOp>(op, ctx) {
-            return lower_func_op_to_llvm(&func_op, ctx);
-        }
-
         let op_dyn = Operation::get_op_dyn(op, ctx);
         let op_iface_opt = op_cast::<dyn BufferizableOpInterface>(op_dyn.as_ref());
 
@@ -608,6 +639,18 @@ pub fn bufferize<TMM: TensorMemoryManager>(
                 continue;
             }
 
+            let class_members = state.buffer_classes.set_members(opd_class);
+
+            // A write cannot happen in place if any value sharing this buffer is not
+            // writable (see [BufferizableOpInterface::is_writable]).
+            if class_members
+                .iter()
+                .any(|&member| !is_value_writable(ctx, member))
+            {
+                state.record_out_of_place(opd);
+                continue;
+            }
+
             // Writing in place is safe only if nothing else that shares the buffer can
             // observe the write. Values this op defines are excluded: they are the results
             // of the write, not readers of the pre-write contents.
@@ -615,7 +658,6 @@ pub fn bufferize<TMM: TensorMemoryManager>(
             // This asks only whether a member is live just after the op; no program order
             // between the op and the member's definition is assumed. A member defined by a
             // textually later op still counts if it reaches this point via a back edge.
-            let class_members = state.buffer_classes.set_members(opd_class);
             let class_live = class_members
                 .iter()
                 .filter(|member| {
