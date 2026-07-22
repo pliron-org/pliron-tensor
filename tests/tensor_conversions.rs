@@ -1839,13 +1839,7 @@ fn test_tiled_matmul_cf() {
         "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
     );
 
-    // Only matmul's accumulator tile gets a private buffer: `slice_c` (`jv_c_n`'s own
-    // subview) is copied into it first, since matmul accumulates and `jv_c_n` is live
-    // afterwards so can't be written to directly. The accumulated result is then
-    // copied back out into `jv_c_n`'s subview -- that second copy is `insert_slice`'s
-    // own definitional write (moving the computed tile into place) and would be there
-    // even without the conflict above, so it's not a sign of a missed optimization.
-    // Two `memref.copy` ops per iteration, but only the one buffer above is allocated.
+    // Only matmul's accumulator tile gets a private buffer.
     assert_eq!(
         after.matches("memref.alloc").count(),
         1,
@@ -2012,11 +2006,7 @@ fn test_tiled_matmul_scf_for() {
         "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
     );
 
-    // Only matmul's accumulator tile gets a private buffer, same as the CF-form test:
-    // one copy seeds it from `jv_c`'s subview (since `jv_c` is live afterwards, matmul
-    // can't write there directly), and one -- `insert_slice`'s own definitional write,
-    // not a bufferization decision -- writes the accumulated result back into that
-    // subview.
+    // Only matmul's accumulator tile gets a private buffer.
     assert_eq!(
         after.matches("memref.alloc").count(),
         1,

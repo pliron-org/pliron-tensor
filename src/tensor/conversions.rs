@@ -869,8 +869,8 @@ pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> 
 }
 
 /// Allow [FuncOp] to participate in bufferization. `FuncOp` itself has no operands
-/// or results, so the only thing of interest here is [Self::is_writable] on its entry-block
-/// arguments (the function's parameters).
+/// or results, so the only thing of interest here is [Self::is_writable] on its
+/// (entry-block) arguments (the function's parameters).
 ///
 /// Function arguments are writable by default. It is up to the caller (i.e. whatever
 /// bufferizes a call to this function) to insert a copy if it still needs the
