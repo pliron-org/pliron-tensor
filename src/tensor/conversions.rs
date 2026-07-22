@@ -444,6 +444,16 @@ impl BufferizableOpInterface for ForOp {
         None
     }
 
+    fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
+        // Mirrors MLIR's `ForOpInterface::isWritable`: a loop-carried block argument
+        // can always be viewed as writable from inside the body. Whichever way the
+        // in-place decision for the matching `iter_args_init` operand goes, the block
+        // argument ends up backed by a buffer this op exclusively owns for the
+        // duration of the loop -- either the original operand's buffer (bufferized in
+        // place) or a fresh allocation the operand was copied into.
+        true
+    }
+
     fn rewrite(
         &self,
         ctx: &mut Context,
@@ -873,6 +883,46 @@ pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> 
     }
 
     Ok(())
+}
+
+/// Allow [FuncOp] to participate in bufferization. `FuncOp` itself has no operands
+/// or results, so the only thing of interest here is [Self::is_writable] on its entry-block
+/// arguments (the function's parameters).
+///
+/// Function arguments are writable by default. It is up to the caller (i.e. whatever
+/// bufferizes a call to this function) to insert a copy if it still needs the
+/// original tensor after the call.
+#[op_interface_impl]
+impl BufferizableOpInterface for FuncOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+
+    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        vec![]
+    }
+
+    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+        None
+    }
+
+    fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
+        true
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        _rewriter: &mut DialectConversionRewriter,
+        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        lower_func_op_to_llvm(self, ctx)
+    }
 }
 
 #[op_interface_impl]
