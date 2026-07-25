@@ -897,8 +897,8 @@ fn test_extract_slice_tensor_to_memref() {
             {
               ^entry_block2v1(src_p_v0: llvm.ptr (0), out_p_v1: llvm.ptr (0)) !1:
                 src_v2 = llvm.load src_p_v0  : memref.ranked <10x20 : builtin.integer i64> !2;
-                $v4 = memref.subview src_v2 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !3;
-                llvm.store *out_p_v1 <- v4  !4;
+                $slice_v4 = memref.subview src_v2 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !3;
+                llvm.store *out_p_v1 <- slice_v4  !4;
                 llvm.return  !5
             } !6
         }"#]].assert_eq(&exec_module_op.disp(exec_ctx).to_string());
@@ -1557,11 +1557,11 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
             {
               ^entry_block2v1(arg_p_v0: llvm.ptr (0), i_res_v1: builtin.integer i64, j_res_v2: builtin.integer i64) !1:
                 arg_v3 = llvm.load arg_p_v0  : memref.ranked <2x3 : builtin.integer i64> !2;
-                v8 = memref.reshape arg_v3 : memref.ranked <3x2 : builtin.integer i64> !3;
+                reshaped_v8 = memref.reshape arg_v3 : memref.ranked <3x2 : builtin.integer i64> !3;
                 i_idx_v5 = index.from_integer i_res_v1 : index.index  !4;
                 j_idx_v6 = index.from_integer j_res_v2 : index.index  !5;
-                v9 = memref.load v8[i_idx_v5, j_idx_v6] : builtin.integer i64 !6;
-                llvm.return v9 !7
+                res_v9 = memref.load reshaped_v8[i_idx_v5, j_idx_v6] : builtin.integer i64 !6;
+                llvm.return res_v9 !7
             } !8
         }"#]].assert_eq(&after_tensor_to_memref);
 

@@ -4,10 +4,12 @@
 //! Translate tensor to memref
 
 use pliron::{
+    basic_block::BasicBlock,
     builtin::{
         attributes::TypeAttr,
         op_interfaces::{
-            OneOpdInterface, OneRegionInterface, OneResultInterface, OperandSegmentInterface,
+            OneOpdInterface, OneResultInterface, OperandSegmentInterface,
+            SingleBlockRegionInterface,
         },
         type_interfaces::FunctionTypeInterface,
     },
@@ -15,13 +17,12 @@ use pliron::{
     derive::{op_interface_impl, type_interface_impl},
     irbuild::{
         dialect_conversion::{DialectConversionRewriter, OperandsInfo},
-        inserter::{BlockInsertionPoint, Inserter, OpInsertionPoint},
+        inserter::{Inserter, OpInsertionPoint},
         rewriter::{Rewriter, ScopedRewriter},
     },
     linked_list::ContainsLinkedList,
     op::Op,
     operation::Operation,
-    region::Region,
     result::Result,
     r#type::{TypeHandle, Typed, TypedHandle, type_cast},
     value::{Use, Value},
@@ -128,8 +129,6 @@ impl BufferizableOpInterface for GenerateOp {
     ) -> Result<()> {
         let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
 
-        let region = self.get_region(ctx);
-
         let alloc = bufferizer_callbacks.create_memref_alloc(
             ctx,
             result_ty,
@@ -142,28 +141,36 @@ impl BufferizableOpInterface for GenerateOp {
         struct State<'a> {
             yield_op: YieldOp,
             rewriter: &'a mut DialectConversionRewriter,
-            inline_region: Ptr<Region>,
+            source_body: Ptr<BasicBlock>,
         }
         let generate_op = memref::ops::GenerateOp::new(
             ctx,
             alloc.get_result(ctx),
             |ctx, state, inserter, indices: Vec<Value>| {
-                let previos_entry = state
-                    .inline_region
-                    .deref(ctx)
-                    .get_head()
-                    .expect("Region must have at least one block");
-                state.rewriter.inline_region(
-                    ctx,
-                    state.inline_region,
-                    BlockInsertionPoint::AfterBlock(
-                        inserter
-                            .get_insertion_block(ctx)
-                            .expect("Inserter must be set to entry block"),
-                    ),
-                );
-                let branch = pliron_llvm::ops::BrOp::new(ctx, previos_entry, indices);
-                inserter.append_op(ctx, &branch);
+                let source_body = state.source_body;
+
+                // Replace uses of the source block's arguments with the
+                // memref.generate's induction variables.
+                let source_args: Vec<_> = source_body.deref(ctx).arguments().collect();
+                for (source_arg, idx) in source_args.iter().zip(indices.iter()) {
+                    state
+                        .rewriter
+                        .replace_value_uses_with(ctx, *source_arg, *idx);
+                }
+
+                // Move all of the source block's operations into the memref.generate entry block.
+                let entry_block = inserter
+                    .get_insertion_block(ctx)
+                    .expect("Inserter must be set to entry block");
+                let body_ops: Vec<_> = source_body.deref(ctx).iter(ctx).collect();
+                for op in body_ops {
+                    state.rewriter.move_operation(
+                        ctx,
+                        op,
+                        OpInsertionPoint::AtBlockEnd(entry_block),
+                    );
+                }
+
                 let yield_value = state.yield_op.get_operand(ctx);
                 // Remove the previous yield as the memref GenerateOp will add a new one.
                 state
@@ -174,7 +181,7 @@ impl BufferizableOpInterface for GenerateOp {
             State {
                 yield_op,
                 rewriter,
-                inline_region: region,
+                source_body: self.get_body(ctx, 0),
             },
         );
         rewriter.append_op(ctx, &generate_op);

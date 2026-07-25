@@ -4,10 +4,12 @@
 //! Dialect conversions from the memref dialect.
 
 use pliron::{
+    basic_block::BasicBlock,
     builtin::{
         attributes::TypeAttr,
         op_interfaces::{
-            CallOpCallable, OneRegionInterface, OneResultInterface, SymbolOpInterface,
+            CallOpCallable, OneOpdInterface, OneResultInterface, SingleBlockRegionInterface,
+            SymbolOpInterface,
         },
         type_interfaces::{FloatTypeInterface, FunctionTypeInterface},
         types::{IntegerType, Signedness},
@@ -17,13 +19,12 @@ use pliron::{
     input_error,
     irbuild::{
         dialect_conversion::{DialectConversion, DialectConversionRewriter, OperandsInfo},
-        inserter::{BlockInsertionPoint, Inserter, OpInsertionPoint},
+        inserter::{Inserter, OpInsertionPoint},
         rewriter::{Rewriter, ScopedRewriter},
     },
-    linked_list::LinkedList,
+    linked_list::ContainsLinkedList,
     op::{Op, op_cast, op_impls},
     operation::Operation,
-    region::Region,
     result::Result,
     symbol_table::{SymbolTableCollection, nearest_symbol_table},
     r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
@@ -46,7 +47,7 @@ use pliron_llvm::{
         BinArithOp, CastOpInterface, FloatBinArithOpWithFastMathFlags,
         IntBinArithOpWithOverflowFlag,
     },
-    ops::{BrOp, CallOp, FuncOp, MulOp},
+    ops::{CallOp, FuncOp, MulOp},
 };
 
 use crate::memref::{
@@ -214,17 +215,15 @@ impl ToCFDialect for GenerateOp {
             let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
             struct State<'a> {
                 rewriter: ScopedRewriter<'a>,
-                generate_op_region: Ptr<Region>,
+                generate_op_body: Ptr<BasicBlock>,
                 yield_op: YieldOp,
                 memref_opd: Value,
-                generate_indices: Vec<Value>,
             }
             let mut state = State {
                 rewriter: scoped_rewriter,
-                generate_op_region: self.get_region(ctx),
+                generate_op_body: self.get_body(ctx, 0),
                 memref_opd: self.get_destination_memref(ctx),
                 yield_op: self.get_yield(ctx),
-                generate_indices: self.get_entry(ctx).deref(ctx).arguments().collect(),
             };
             NDForOp::new(
                 ctx,
@@ -241,29 +240,26 @@ impl ToCFDialect for GenerateOp {
 
                     let rewriter = &mut state.rewriter;
                     rewriter.set_insertion_point(insertion_point);
-                    rewriter.inline_region(
-                        ctx,
-                        state.generate_op_region,
-                        BlockInsertionPoint::AfterBlock(ndfor_entry),
-                    );
-                    // Branch from entry block of our NDForOp to the inlined region's entry block,
-                    // passing the induction variables as arguments.
-                    let branch_to = ndfor_entry
-                        .deref(ctx)
-                        .get_next()
-                        .expect("Failed to get next block for NDForOp entry block");
-                    let branch = BrOp::new(ctx, branch_to, indices);
-                    rewriter.append_op(ctx, &branch);
+
+                    let gen_op_body = state.generate_op_body;
+                    // Replace uses of the GenerateOp body's block arguments with
+                    // the NDForOp's induction variables.
+                    let generate_indices: Vec<_> = gen_op_body.deref(ctx).arguments().collect();
+                    for (generate_arg, iv) in generate_indices.iter().zip(indices.iter()) {
+                        rewriter.replace_value_uses_with(ctx, *generate_arg, *iv);
+                    }
+
+                    // Move all of GenerateOp body's operations into the NDForOp entry block.
+                    let body_ops: Vec<_> = gen_op_body.deref(ctx).iter(ctx).collect();
+                    for op in body_ops {
+                        rewriter.move_operation(ctx, op, OpInsertionPoint::AtBlockEnd(ndfor_entry));
+                    }
 
                     // Store the generated value to the memref.
+                    let generated_value = state.yield_op.get_operand(ctx);
+                    let store_op =
+                        StoreOp::new(ctx, generated_value, state.memref_opd, indices.clone());
                     let yield_operation = state.yield_op.get_operation();
-                    let generated_value = yield_operation.deref(ctx).get_operand(0);
-                    let store_op = StoreOp::new(
-                        ctx,
-                        generated_value,
-                        state.memref_opd,
-                        state.generate_indices.clone(),
-                    );
                     rewriter
                         .set_insertion_point(OpInsertionPoint::BeforeOperation(yield_operation));
                     rewriter.append_op(ctx, &store_op);
