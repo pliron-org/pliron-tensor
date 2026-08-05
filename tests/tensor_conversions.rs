@@ -998,14 +998,22 @@ fn test_extract_slice_tensor_to_memref_sequential() {
     let mut tmm = MallocFreeTMM;
     bufferize(&mut tmm, exec_parsed_op, exec_ctx).expect_ok(exec_ctx);
     let after_tensor_to_memref = format!("{}", exec_module_op.disp(exec_ctx));
-    assert!(
-        !after_tensor_to_memref.contains("tensor.extract_slice"),
-        "both tensor.extract_slice ops should be lowered by TensorToMemref"
-    );
-    assert!(
-        after_tensor_to_memref.matches("memref.subview").count() >= 2,
-        "expected at least two memref.subview ops after lowering"
-    );
+    // Both tensor.extract_slice ops should be lowered to memref.subview by TensorToMemref.
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_extract_slice_runtime_sequential: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(src_p_v0: llvm.ptr (0), out_p_v1: llvm.ptr (0)) !1:
+                src_v2 = llvm.load src_p_v0  : memref.ranked <10x20 : builtin.integer i64> !2;
+                $first_v5 = memref.subview src_v2 [1, 2] [6, 8] [1, 2] : memref.ranked <6x8 : builtin.integer i64> !3;
+                $second_v6 = memref.subview first_v5 [1, 1] [3, 4] [2, 2] : memref.ranked <3x4 : builtin.integer i64> !4;
+                llvm.store *out_p_v1 <- second_v6  !5;
+                llvm.return  !6
+            } !7
+        }"#]].assert_eq(&after_tensor_to_memref);
 
     apply_dialect_conversion(exec_ctx, &mut MemrefToCF, exec_parsed_op).expect_ok(exec_ctx);
     apply_dialect_conversion(exec_ctx, &mut CFToLLVM, exec_parsed_op).expect_ok(exec_ctx);
@@ -1106,20 +1114,24 @@ fn test_extract_slice_live_source_bufferizes_in_place() {
     let after_tensor_to_memref = format!("{}", exec_module_op.disp(exec_ctx));
 
     // Both extract_slices only read `src`, so neither needs a private buffer,
-    // even though `src` is live across the first of them.
-    assert!(
-        !after_tensor_to_memref.contains("memref.alloc"),
-        "read-only aliasing operands must not be copied to a new buffer, got:\n{after_tensor_to_memref}"
-    );
-    assert!(
-        !after_tensor_to_memref.contains("memref.copy"),
-        "read-only aliasing operands must not be copied, got:\n{after_tensor_to_memref}"
-    );
-    assert_eq!(
-        after_tensor_to_memref.matches("memref.subview").count(),
-        2,
-        "expected exactly two memref.subview ops, got:\n{after_tensor_to_memref}"
-    );
+    // even though `src` is live across the first of them: no `memref.alloc` or
+    // `memref.copy`, and exactly two `memref.subview` ops.
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_extract_slice_live_source_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(src_p_v0: llvm.ptr (0), out_first_p_v1: llvm.ptr (0), out_second_p_v2: llvm.ptr (0)) !1:
+                src_v3 = llvm.load src_p_v0  : memref.ranked <10x20 : builtin.integer i64> !2;
+                $first_v6 = memref.subview src_v3 [0, 0] [5, 10] [1, 1] : memref.ranked <5x10 : builtin.integer i64> !3;
+                $second_v7 = memref.subview src_v3 [5, 10] [5, 10] [1, 1] : memref.ranked <5x10 : builtin.integer i64> !4;
+                llvm.store *out_first_p_v1 <- first_v6  !5;
+                llvm.store *out_second_p_v2 <- second_v7  !6;
+                llvm.return  !7
+            } !8
+        }"#]].assert_eq(&after_tensor_to_memref);
 
     apply_dialect_conversion(exec_ctx, &mut MemrefToCF, exec_parsed_op).expect_ok(exec_ctx);
     apply_dialect_conversion(exec_ctx, &mut CFToLLVM, exec_parsed_op).expect_ok(exec_ctx);
@@ -1388,16 +1400,28 @@ fn test_insert_slice_dest_live_after_needs_copy() {
     let after_tensor_to_memref = format!("{}", module_op.disp(ctx));
 
     // `dst` is live after the insert (it's stored to `out_dst_p`), so a new buffer
-    // must be allocated and `dst` copied into it before the in-place write.
-    assert!(
-        after_tensor_to_memref.contains("memref.alloc"),
-        "expected a memref.alloc for the copied destination buffer, got:\n{after_tensor_to_memref}"
-    );
-    assert_eq!(
-        after_tensor_to_memref.matches("memref.copy").count(),
-        2,
-        "expected one memref.copy for the destination buffer and one for the inserted slice, got:\n{after_tensor_to_memref}"
-    );
+    // must be allocated and `dst` copied into it before the in-place write: one
+    // memref.alloc, and one memref.copy each for the destination buffer and the
+    // inserted slice.
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_insert_slice_dest_live_after_runtime: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(src_p_v0: llvm.ptr (0), dst_p_v1: llvm.ptr (0), out_updated_p_v2: llvm.ptr (0), out_dst_p_v3: llvm.ptr (0)) !1:
+                src_v4 = llvm.load src_p_v0  : memref.ranked <5x10 : builtin.integer i64> !2;
+                dst_v5 = llvm.load dst_p_v1  : memref.ranked <10x20 : builtin.integer i64> !3;
+                updated_v7 = memref.alloc  : memref.ranked <10x20 : builtin.integer i64> !4;
+                memref.copy updated_v7 <- dst_v5;
+                $v8 = memref.subview updated_v7 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
+                memref.copy v8 <- src_v4;
+                llvm.store *out_updated_p_v2 <- updated_v7  !5;
+                llvm.store *out_dst_p_v3 <- dst_v5  !6;
+                llvm.return  !7
+            } !8
+        }"#]].assert_eq(&after_tensor_to_memref);
 
     apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
     apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
@@ -1823,41 +1847,64 @@ fn test_tiled_matmul_cf() {
     let after = format!("{}", module_op.disp(ctx));
 
     // The point of the issue: `a` and `b` are only read, so their tiles are plain
-    // subviews. Neither is copied, even though both stay live across every iteration.
-    assert!(
-        after.contains("memref.subview a_v4"),
-        "slice of `a` should be a plain subview, got:\n{after}"
-    );
-    assert!(
-        after.contains("memref.subview b_v5"),
-        "slice of `b` should be a plain subview, got:\n{after}"
-    );
-    // No buffer as large as an input matrix is allocated for a read-only tile.
-    assert!(
-        !after.contains("memref.alloc  : memref.ranked <2x4"),
-        "no buffer should be allocated for the read-only `a` tile, got:\n{after}"
-    );
-    assert!(
-        !after.contains("memref.alloc  : memref.ranked <4x2"),
-        "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
-    );
+    // subviews, never copied, even though both stay live across every iteration.
+    // Only matmul's accumulator tile gets a private buffer (one memref.alloc, and
+    // one memref.copy each to seed the private accumulator and to write the result
+    // back into the loop-carried accumulator); the loop-carried accumulator itself
+    // is never copied.
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_tiled_matmul: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(a_p_v0: llvm.ptr (0), b_p_v1: llvm.ptr (0), c_p_v2: llvm.ptr (0), out_p_v3: llvm.ptr (0)) !1:
+                a_v4 = llvm.load a_p_v0  : memref.ranked <4x4 : builtin.integer i64> !2;
+                b_v5 = llvm.load b_p_v1  : memref.ranked <4x4 : builtin.integer i64> !3;
+                c_v6 = llvm.load c_p_v2  : memref.ranked <4x4 : builtin.integer i64> !4;
+                i_init_v7 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !5;
+                llvm.br ^outer_header_block4v1(i_init_v7, c_v6) !6
 
-    // Only matmul's accumulator tile gets a private buffer.
-    assert_eq!(
-        after.matches("memref.alloc").count(),
-        1,
-        "only matmul's accumulator tile should be allocated, got:\n{after}"
-    );
-    assert_eq!(
-        after.matches("memref.copy").count(),
-        2,
-        "expected one copy seeding matmul's private accumulator and one copy writing \
-         the result back into the loop-carried accumulator, got:\n{after}"
-    );
-    assert!(
-        !after.contains("memref.alloc  : memref.ranked <4x4"),
-        "the loop-carried accumulator should not be copied, got:\n{after}"
-    );
+              ^outer_header_block4v1(i_v8: builtin.integer i64, iv_c_v9: memref.ranked <4x4 : builtin.integer i64>) !7:
+                n_i_v10 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !8;
+                i_lt_v11 = llvm.icmp i_v8 <SLT> n_i_v10 : builtin.integer i1 !9;
+                llvm.cond_br if i_lt_v11 ^outer_body_block6v1(i_v8, iv_c_v9) else ^done_block8v3(iv_c_v9) !10
+
+              ^outer_body_block6v1(i_b_v12: builtin.integer i64, iv_c_b_v13: memref.ranked <4x4 : builtin.integer i64>) !11:
+                j_init_v14 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !12;
+                llvm.br ^inner_header_block7v1(i_b_v12, j_init_v14, iv_c_b_v13) !13
+
+              ^inner_header_block7v1(i_h_v15: builtin.integer i64, j_h_v16: builtin.integer i64, jv_c_v17: memref.ranked <4x4 : builtin.integer i64>) !14:
+                n_j_v18 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !15;
+                j_lt_v19 = llvm.icmp j_h_v16 <SLT> n_j_v18 : builtin.integer i1 !16;
+                llvm.cond_br if j_lt_v19 ^inner_body_block9v1(i_h_v15, j_h_v16, jv_c_v17) else ^outer_latch_block3v9(i_h_v15, jv_c_v17) !17
+
+              ^inner_body_block9v1(i_n_v20: builtin.integer i64, j_n_v21: builtin.integer i64, jv_c_n_v22: memref.ranked <4x4 : builtin.integer i64>) !18:
+                i_idx_v23 = index.from_integer i_n_v20 : index.index  !19;
+                j_idx_v24 = index.from_integer j_n_v21 : index.index  !20;
+                $slice_a_v37 = memref.subview a_v4 [i_idx_v23, 0] [2, 4] [1, 1] : memref.ranked <2x4 : builtin.integer i64> !21;
+                $slice_b_v38 = memref.subview b_v5 [0, j_idx_v24] [4, 2] [1, 1] : memref.ranked <4x2 : builtin.integer i64> !22;
+                $slice_c_v39 = memref.subview jv_c_n_v22 [i_idx_v23, j_idx_v24] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64> !23;
+                v40 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+                memref.copy v40 <- slice_c_v39;
+                tiled_v41 = memref.matmul slice_a_v37, slice_b_v38, v40 : memref.ranked <2x2 : builtin.integer i64> !24;
+                $v42 = memref.subview jv_c_n_v22 [i_idx_v23, j_idx_v24] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
+                memref.copy v42 <- tiled_v41;
+                step_j_v30 = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64 !25;
+                j_next_v31 = llvm.add j_n_v21, step_j_v30 <{nsw=false,nuw=false}>: builtin.integer i64 !26;
+                llvm.br ^inner_header_block7v1(i_n_v20, j_next_v31, jv_c_n_v22) !27
+
+              ^outer_latch_block3v9(i_l_v32: builtin.integer i64, jv_c_l_v33: memref.ranked <4x4 : builtin.integer i64>) !28:
+                step_i_v34 = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64 !29;
+                i_next_v35 = llvm.add i_l_v32, step_i_v34 <{nsw=false,nuw=false}>: builtin.integer i64 !30;
+                llvm.br ^outer_header_block4v1(i_next_v35, jv_c_l_v33) !31
+
+              ^done_block8v3(result_v36: memref.ranked <4x4 : builtin.integer i64>) !32:
+                llvm.store *out_p_v3 <- result_v36  !33;
+                llvm.return  !34
+            } !35
+        }"#]].assert_eq(&after);
 
     apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
     apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
@@ -1991,40 +2038,48 @@ fn test_tiled_matmul_scf_for() {
     let after = format!("{}", module_op.disp(ctx));
 
     // Same expectations as the CF-form test: `a` and `b` are read-only, so their
-    // tiles are plain subviews and no buffer is allocated for them.
-    assert!(
-        after.contains("memref.subview a_v4"),
-        "slice of `a` should be a plain subview, got:\n{after}"
-    );
-    assert!(
-        after.contains("memref.subview b_v5"),
-        "slice of `b` should be a plain subview, got:\n{after}"
-    );
-    assert!(
-        !after.contains("memref.alloc  : memref.ranked <2x4"),
-        "no buffer should be allocated for the read-only `a` tile, got:\n{after}"
-    );
-    assert!(
-        !after.contains("memref.alloc  : memref.ranked <4x2"),
-        "no buffer should be allocated for the read-only `b` tile, got:\n{after}"
-    );
-
-    // Only matmul's accumulator tile gets a private buffer.
-    assert_eq!(
-        after.matches("memref.alloc").count(),
-        1,
-        "only matmul's accumulator tile should be allocated, got:\n{after}"
-    );
-    assert_eq!(
-        after.matches("memref.copy").count(),
-        2,
-        "expected one copy seeding matmul's private accumulator and one copy writing \
-         the result back into the loop-carried accumulator, got:\n{after}"
-    );
-    assert!(
-        !after.contains("memref.alloc  : memref.ranked <4x4"),
-        "the loop-carried accumulator should not be copied, got:\n{after}"
-    );
+    // tiles are plain subviews and no buffer is allocated for them. Only matmul's
+    // accumulator tile gets a private buffer (one memref.alloc, and one memref.copy
+    // each to seed the private accumulator and to write the result back into the
+    // loop-carried accumulator); the loop-carried accumulator itself is never copied.
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_tiled_matmul_scf: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(a_p_v0: llvm.ptr (0), b_p_v1: llvm.ptr (0), c_p_v2: llvm.ptr (0), out_p_v3: llvm.ptr (0)) !1:
+                a_v4 = llvm.load a_p_v0  : memref.ranked <4x4 : builtin.integer i64> !2;
+                b_v5 = llvm.load b_p_v1  : memref.ranked <4x4 : builtin.integer i64> !3;
+                c_v6 = llvm.load c_p_v2  : memref.ranked <4x4 : builtin.integer i64> !4;
+                c0_v7 = index.constant <index.constant 0> : index.index  !5;
+                c2_v8 = index.constant <index.constant 2> : index.index  !6;
+                c4_v9 = index.constant <index.constant 4> : index.index  !7;
+                result_v10 = cf.for c0_v7 to c4_v9 step c2_v8 (c_v6) 
+                {
+                  ^entry_block3v1(i_v11: index.index , iv_c_v12: memref.ranked <4x4 : builtin.integer i64>) !8:
+                    inner_res_v13 = cf.for c0_v7 to c4_v9 step c2_v8 (iv_c_v12) 
+                    {
+                      ^entry_block4v1(j_v14: index.index , jv_c_v15: memref.ranked <4x4 : builtin.integer i64>) !9:
+                        $slice_a_v21 = memref.subview a_v4 [i_v11, 0] [2, 4] [1, 1] : memref.ranked <2x4 : builtin.integer i64> !10;
+                        $slice_b_v22 = memref.subview b_v5 [0, j_v14] [4, 2] [1, 1] : memref.ranked <4x2 : builtin.integer i64> !11;
+                        $slice_c_v23 = memref.subview jv_c_v15 [i_v11, j_v14] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64> !12;
+                        v24 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+                        memref.copy v24 <- slice_c_v23;
+                        tiled_v25 = memref.matmul slice_a_v21, slice_b_v22, v24 : memref.ranked <2x2 : builtin.integer i64> !13;
+                        $v26 = memref.subview jv_c_v15 [i_v11, j_v14] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
+                        memref.copy v26 <- tiled_v25;
+                        cf.yield jv_c_v15 !14
+                    }
+         !15;
+                    cf.yield inner_res_v13 !16
+                }
+         !17;
+                llvm.store *out_p_v3 <- result_v10  !18;
+                llvm.return  !19
+            } !20
+        }"#]].assert_eq(&after);
 
     apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
     apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
@@ -2145,10 +2200,27 @@ fn test_write_through_slice_of_live_tensor_needs_copy() {
     let mut tmm = MallocFreeTMM;
     bufferize(&mut tmm, parsed_op, ctx).expect_ok(ctx);
     let after = format!("{}", module_op.disp(ctx));
-    assert!(
-        after.contains("memref.alloc"),
-        "writing through a slice of the live `t` must allocate a private buffer, got:\n{after}"
-    );
+    // Writing through a slice of the live `t` must allocate a private buffer.
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_write_through_slice: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(t_p_v0: llvm.ptr (0), small_p_v1: llvm.ptr (0), out_u_p_v2: llvm.ptr (0), out_t_p_v3: llvm.ptr (0)) !1:
+                t_v4 = llvm.load t_p_v0  : memref.ranked <4x4 : builtin.integer i64> !2;
+                small_v5 = llvm.load small_p_v1  : memref.ranked <2x2 : builtin.integer i64> !3;
+                $s_v8 = memref.subview t_v4 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64> !4;
+                u_v9 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !5;
+                memref.copy u_v9 <- s_v8;
+                $v10 = memref.subview u_v9 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
+                memref.copy v10 <- small_v5;
+                llvm.store *out_u_p_v2 <- u_v9  !6;
+                llvm.store *out_t_p_v3 <- t_v4  !7;
+                llvm.return  !8
+            } !9
+        }"#]].assert_eq(&after);
 
     apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
     apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
