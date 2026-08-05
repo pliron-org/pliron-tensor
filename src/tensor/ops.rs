@@ -40,7 +40,7 @@ use pliron::{
     verify_err, verify_error,
 };
 
-use pliron_common_dialects::{cf::op_interfaces::YieldingRegion, index::types::IndexType};
+use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::IndexType};
 
 use crate::memref::{
     op_interfaces::{CompatibleShapesOp, GenerateOpInterface},
@@ -81,7 +81,7 @@ use super::{
         NRegionsInterface<1>,
         OneResultInterface,
         NResultsInterface<1>,
-        YieldingRegion<YieldOp>,
+        YieldingRegions<YieldOp>,
         AllResultsOfType<RankedTensorType>,
         AllOperandsOfType<IndexType>,
     ],
@@ -173,7 +173,7 @@ impl GenerateOp {
         let indices = entry_block.deref(ctx).arguments().collect();
         let yield_value = body_builder(ctx, body_builder_state, op_inserter, indices);
         let yield_op = YieldOp::new(ctx, yield_value);
-        op_inserter.set_insertion_point(OpInsertionPoint::AtBlockEnd(opop.get_exit(ctx)));
+        op_inserter.set_insertion_point(OpInsertionPoint::AtBlockEnd(opop.get_exit(ctx, 0)));
         op_inserter.append_op(ctx, &yield_op);
 
         opop

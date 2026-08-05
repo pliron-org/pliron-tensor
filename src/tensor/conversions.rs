@@ -29,7 +29,7 @@ use pliron::{
 };
 use pliron_common_dialects::{
     cf::{
-        op_interfaces::YieldingRegion,
+        op_interfaces::YieldingRegions,
         ops::{ForOp, NDForOp},
     },
     index::ops::IndexConstantOp,
@@ -136,7 +136,7 @@ impl BufferizableOpInterface for GenerateOp {
         )?;
         rewriter.append_operation(ctx, alloc.get_operation());
 
-        let yield_op = self.get_yield(ctx);
+        let yield_op = self.get_yield(ctx, 0);
 
         struct State<'a> {
             yield_op: YieldOp,

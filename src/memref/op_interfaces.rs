@@ -19,7 +19,7 @@ use pliron::{
     value::Value,
     verify_err, verify_error,
 };
-use pliron_common_dialects::{cf::op_interfaces::YieldingRegion, index::types::IndexType};
+use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::IndexType};
 
 use crate::memref::{
     ops::YieldOp,
@@ -38,7 +38,7 @@ pub enum GenerateOpInterfaceVerifyErr {
 }
 
 #[op_interface]
-pub trait GenerateOpInterface: SingleBlockRegionInterface + YieldingRegion<YieldOp> {
+pub trait GenerateOpInterface: SingleBlockRegionInterface + YieldingRegions<YieldOp> {
     /// Get the shape of the memref/tensor we're generating.
     fn get_generated_shape<'a>(&'a self, ctx: &'a Context) -> Ref<'a, dyn ShapedType>;
 
@@ -74,7 +74,7 @@ pub trait GenerateOpInterface: SingleBlockRegionInterface + YieldingRegion<Yield
             );
         }
 
-        let yield_op = op.get_yield(ctx);
+        let yield_op = op.get_yield(ctx, 0);
         if yield_op.get_operand(ctx).get_type(ctx) != result_shape.element_type() {
             return verify_err!(loc, GenerateOpInterfaceVerifyErr::YieldOperandTypeMismatch);
         }

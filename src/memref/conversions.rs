@@ -31,7 +31,7 @@ use pliron::{
     value::{DefiningEntity, Value},
 };
 use pliron_common_dialects::{
-    cf::{ToCFDialect, op_interfaces::YieldingRegion, ops::NDForOp},
+    cf::{ToCFDialect, op_interfaces::YieldingRegions, ops::NDForOp},
     index::{
         ops::{IndexConstantOp, IndexToIntegerOp, IntegerToIndexOp},
         types::IndexType,
@@ -223,7 +223,7 @@ impl ToCFDialect for GenerateOp {
                 rewriter: scoped_rewriter,
                 generate_op_body: self.get_body(ctx, 0),
                 memref_opd: self.get_destination_memref(ctx),
-                yield_op: self.get_yield(ctx),
+                yield_op: self.get_yield(ctx, 0),
             };
             NDForOp::new(
                 ctx,
