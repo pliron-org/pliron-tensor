@@ -20,7 +20,11 @@ use pliron::{
 };
 
 use pliron_common_dialects::cf::to_llvm::CFToLLVM;
-use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::LLVMLLJIT, target::initialize_native};
+use pliron_llvm::llvm_sys::{
+    core::LLVMContext,
+    lljit::{LLVMLLJIT, SimpleJIT},
+    target::initialize_native,
+};
 
 use pliron_tensor::{
     memref::conversions::MemrefToCF,
@@ -98,15 +102,9 @@ fn test_tensor_to_memref_conversion() {
         .unwrap();
 
     // Let's try and execute this function
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_generate_add")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_generate_add") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn(i64, i64) -> i64>(symbol_addr) };
 
     for i in 0..16 {
         for j in 0..16 {
@@ -146,16 +144,10 @@ fn test_successor_operand_aliasing_needs_copy_helper(input_ir: &str) {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_successor_operand_aliasing")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
 
-    let f = unsafe { std::mem::transmute::<u64, fn(bool) -> i64>(symbol_addr) };
+    let f = unsafe { jit.lookup_symbol::<fn(bool) -> i64>("test_successor_operand_aliasing") }
+        .expect("Failed to lookup symbol");
 
     let result = f(false);
 
@@ -299,7 +291,7 @@ fn test_int_tensor_from_rust() {
     tmm.register_runtime_symbols(&jit)
         .expect("Failed to register runtime symbols for TrackedTMM");
 
-    jit.add_module(llvm_ir)
+    jit.add_module(llvm_ctx, llvm_ir)
         .expect("Failed to add module to JIT");
     let symbol_addr = jit
         .lookup_symbol("test_tensor_add")
@@ -450,15 +442,6 @@ fn test_int_tensor_matmul_from_rust(input_ir: &str) {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_tensor_matmul")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
     let t1 = TensorDesciptor::new(
         [4, 4].to_vec(),
         std::mem::size_of::<u64>(),
@@ -476,11 +459,13 @@ fn test_int_tensor_matmul_from_rust(input_ir: &str) {
         std::ptr::null::<u8>(),
     );
 
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
-            symbol_addr,
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            "test_tensor_matmul",
         )
-    };
+    }
+    .expect("Failed to lookup symbol");
 
     let mut accum_data = [1u64; 16];
     let t3 = TensorDesciptor::new(
@@ -560,15 +545,6 @@ fn test_batch_matmul_from_rust() {
     let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
     llvm_ir.verify().unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_tensor_batch_matmul")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
     // Batch 0 lhs: [[1,2,3],[4,5,6]], rhs: [[1,2],[3,4],[5,6]]
     // result: [[22,28],[49,64]]
     // Batch 1 lhs: [[7,8,9],[10,11,12]], rhs: [[7,8],[9,10],[11,12]]
@@ -590,11 +566,13 @@ fn test_batch_matmul_from_rust() {
         std::ptr::null::<u8>(),
     );
 
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
-            symbol_addr,
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            "test_tensor_batch_matmul",
         )
-    };
+    }
+    .expect("Failed to lookup symbol");
 
     let mut accum_data = [1u64, 1, 1, 1, 2, 2, 2, 2];
     let t3 = TensorDesciptor::new(
@@ -675,15 +653,6 @@ fn test_float_tensor_from_rust() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_tensor_add_float")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
     let t1 = TensorDesciptor::new(
         [4, 4].to_vec(),
         std::mem::size_of::<f64>(),
@@ -709,9 +678,13 @@ fn test_float_tensor_from_rust() {
         std::ptr::null::<u8>(),
     );
 
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(symbol_addr)
-    };
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            "test_tensor_add_float",
+        )
+    }
+    .expect("Failed to lookup symbol");
 
     let mut res_ir_descr = res_descr.build_ir_descriptor();
 
@@ -790,15 +763,6 @@ fn test_float_tensor_all_binary_ops_from_rust() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_tensor_all_binops_float")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
     let lhs_data = [
         1.0f64, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
     ];
@@ -823,9 +787,13 @@ fn test_float_tensor_all_binary_ops_from_rust() {
         std::ptr::null::<u8>(),
     );
 
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(symbol_addr)
-    };
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            "test_tensor_all_binops_float",
+        )
+    }
+    .expect("Failed to lookup symbol");
 
     let mut res_ir_descr = res_descr.build_ir_descriptor();
 
@@ -914,17 +882,11 @@ fn test_extract_slice_tensor_to_memref() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_extract_slice_runtime")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
-    let f =
-        unsafe { std::mem::transmute::<u64, extern "C" fn(*const u8, *mut u8) -> ()>(symbol_addr) };
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe {
+        jit.lookup_symbol::<extern "C" fn(*const u8, *mut u8) -> ()>("test_extract_slice_runtime")
+    }
+    .expect("Failed to lookup symbol");
 
     let src_data: Vec<u64> = (0..200_u64).collect();
     let src_descr = TensorDesciptor::new(
@@ -1027,17 +989,13 @@ fn test_extract_slice_tensor_to_memref_sequential() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_extract_slice_runtime_sequential")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
-    let f =
-        unsafe { std::mem::transmute::<u64, extern "C" fn(*const u8, *mut u8) -> ()>(symbol_addr) };
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe {
+        jit.lookup_symbol::<extern "C" fn(*const u8, *mut u8) -> ()>(
+            "test_extract_slice_runtime_sequential",
+        )
+    }
+    .expect("Failed to lookup symbol");
 
     let src_data: Vec<u64> = (0..200_u64).collect();
     let src_descr = TensorDesciptor::new(
@@ -1145,18 +1103,13 @@ fn test_extract_slice_live_source_bufferizes_in_place() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_extract_slice_live_source_runtime")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *mut u8, *mut u8) -> ()>(symbol_addr)
-    };
+        jit.lookup_symbol::<extern "C" fn(*const u8, *mut u8, *mut u8) -> ()>(
+            "test_extract_slice_live_source_runtime",
+        )
+    }
+    .expect("Failed to lookup symbol");
 
     let src_data: Vec<u64> = (0..200_u64).collect();
     let src_descr = TensorDesciptor::new(
@@ -1278,18 +1231,13 @@ fn test_insert_slice_tensor_to_memref() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_insert_slice_runtime")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(symbol_addr)
-    };
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            "test_insert_slice_runtime",
+        )
+    }
+    .expect("Failed to lookup symbol");
 
     let src_data: Vec<u64> = (100..150_u64).collect();
     let dst_data: Vec<u64> = (0..200_u64).collect();
@@ -1434,20 +1382,13 @@ fn test_insert_slice_dest_live_after_needs_copy() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_insert_slice_dest_live_after_runtime")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8, *mut u8) -> ()>(
-            symbol_addr,
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *mut u8, *mut u8) -> ()>(
+            "test_insert_slice_dest_live_after_runtime",
         )
-    };
+    }
+    .expect("Failed to lookup symbol");
 
     let src_data: Vec<u64> = (100..150_u64).collect();
     let dst_data: Vec<u64> = (0..200_u64).collect();
@@ -1605,15 +1546,7 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
         .unwrap();
     log::debug!("LLVM-IR generated:\n{}", llvm_ir);
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_tensor_reshape_extract")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let input = TensorDesciptor::new(
         [2, 3].to_vec(),
         std::mem::size_of::<u64>(),
@@ -1621,8 +1554,11 @@ fn test_tensor_reshape_to_memref_cf_from_rust() {
     );
 
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, i64, i64) -> i64>(symbol_addr)
-    };
+        jit.lookup_symbol::<extern "C" fn(*const u8, i64, i64) -> i64>(
+            "test_tensor_reshape_extract",
+        )
+    }
+    .expect("Failed to lookup symbol");
 
     // 2x3 row-major [1,2,3,4,5,6] reshaped to 3x2 is:
     // [[1,2], [3,4], [5,6]]
@@ -1690,7 +1626,7 @@ fn test_tracked_tmm_complex_tensor_computation_from_rust() {
     let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
     tmm.register_runtime_symbols(&jit)
         .expect("Failed to register runtime symbols for TrackedTMM");
-    jit.add_module(llvm_ir)
+    jit.add_module(llvm_ctx, llvm_ir)
         .expect("Failed to add module to JIT");
     let symbol_addr = jit
         .lookup_symbol("test_tensor_complex_tracked")
@@ -1917,20 +1853,13 @@ fn test_tiled_matmul_cf() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_tiled_matmul")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
-            symbol_addr,
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            "test_tiled_matmul",
         )
-    };
+    }
+    .expect("Failed to lookup symbol");
 
     let a_data: Vec<u64> = (1..=16_u64).collect();
     let b_data: Vec<u64> = (17..=32_u64).collect();
@@ -2092,20 +2021,13 @@ fn test_tiled_matmul_scf_for() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_tiled_matmul_scf")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
-            symbol_addr,
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(
+            "test_tiled_matmul_scf",
         )
-    };
+    }
+    .expect("Failed to lookup symbol");
 
     let a_data: Vec<u64> = (1..=16_u64).collect();
     let b_data: Vec<u64> = (17..=32_u64).collect();
@@ -2233,20 +2155,13 @@ fn test_write_through_slice_of_live_tensor_needs_copy() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_write_through_slice")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe {
-        std::mem::transmute::<u64, extern "C" fn(*const u8, *const u8, *mut u8, *mut u8) -> ()>(
-            symbol_addr,
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *mut u8, *mut u8) -> ()>(
+            "test_write_through_slice",
         )
-    };
+    }
+    .expect("Failed to lookup symbol");
 
     let t_data: Vec<u64> = (0..16_u64).collect();
     let small_data: Vec<u64> = vec![900, 901, 902, 903];

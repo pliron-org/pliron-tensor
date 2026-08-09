@@ -19,7 +19,7 @@ use pliron::{
 };
 
 use pliron_common_dialects::cf::to_llvm::CFToLLVM;
-use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::LLVMLLJIT, target::initialize_native};
+use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::SimpleJIT};
 
 use expect_test::expect;
 use pliron_tensor::memref::conversions::MemrefToCF;
@@ -240,15 +240,9 @@ fn test_alloc_generate() {
     "#]].assert_eq(&llvm_ir.to_string());
 
     // Let's try and execute this function
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_alloc_generate")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_alloc_generate") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn(i64, i64) -> i64>(symbol_addr) };
 
     for i in 0..16 {
         for j in 0..16 {
@@ -343,15 +337,9 @@ fn test_memref_dim_dynamic_index() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_memref_dim")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn(i64) -> i64>("test_memref_dim") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn(i64) -> i64>(symbol_addr) };
 
     assert_eq!(f(0), 16);
     assert_eq!(f(1), 32);
@@ -452,15 +440,9 @@ fn test_memref_dim_const_index() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_memref_dim_const_index")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn() -> i64>("test_memref_dim_const_index") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> i64>(symbol_addr) };
 
     // Encoded return value = dim0 * 1000 + dim1 = 16 * 1000 + 32
     assert_eq!(f(), 16032);
@@ -528,15 +510,9 @@ fn test_subview() {
         .unwrap();
     log::debug!("LLVM-IR generated:\n{}", llvm_ir);
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_subview")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_subview") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn(i64, i64) -> i64>(symbol_addr) };
 
     // dst[i][j] = src[i][1 + j] = i*3 + (1 + j) = i*3 + j + 1
     for i in 0..2_i64 {
@@ -604,15 +580,9 @@ fn test_copy() {
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_copy")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_copy") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn(i64, i64) -> i64>(symbol_addr) };
 
     for i in 0..2_i64 {
         for j in 0..2_i64 {
@@ -705,15 +675,9 @@ fn test_insert_slice_sequence() {
         .unwrap();
     log::debug!("LLVM-IR generated:\n{}", llvm_ir);
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_insert_slice")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_insert_slice") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn(i64, i64) -> i64>(symbol_addr) };
 
     for i in 0..3_i64 {
         for j in 0..4_i64 {
