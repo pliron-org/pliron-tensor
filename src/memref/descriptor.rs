@@ -316,7 +316,7 @@ pub fn unpack_size_dynamic_dim_idx(
     let one = ConstantOp::new(ctx, Box::new(one_attr));
     inserter.append_op(ctx, &one);
 
-    let descriptor_slot = AllocaOp::new(ctx, descriptor_ty, one.get_result(ctx));
+    let descriptor_slot = AllocaOp::new(ctx, descriptor_ty, one.get_result(ctx), 0);
     inserter.append_op(ctx, &descriptor_slot);
     let descriptor_slot_ptr = descriptor_slot.get_result(ctx);
 

@@ -48,6 +48,7 @@ use pliron_llvm::{
         IntBinArithOpWithOverflowFlag,
     },
     ops::{CallOp, FuncOp, MulOp},
+    types::StructLayout,
 };
 
 use crate::memref::{
@@ -994,13 +995,16 @@ impl ToLLVMType for RankedMemrefType {
         let strides_array = sizes_array;
         let struct_ty = pliron_llvm::types::StructType::get_unnamed(
             ctx,
-            vec![
-                ptr.into(),
-                ptr.into(),
-                i64.into(),
-                sizes_array.into(),
-                strides_array.into(),
-            ],
+            (
+                vec![
+                    ptr.into(),
+                    ptr.into(),
+                    i64.into(),
+                    sizes_array.into(),
+                    strides_array.into(),
+                ],
+                StructLayout::Unpacked,
+            ),
         );
         Ok(struct_ty.into())
     }
