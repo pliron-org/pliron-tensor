@@ -6,7 +6,7 @@
 use pliron::{
     builtin::ops::ModuleOp,
     combine::Parser,
-    context::Context,
+    context::{Context, Ptr},
     init_env_logger_for_tests, input_error_noloc,
     irbuild::dialect_conversion::apply_dialect_conversion,
     irfmt::parsers::spaced,
@@ -23,6 +23,51 @@ use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::SimpleJIT};
 
 use expect_test::expect;
 use pliron_tensor::memref::conversions::MemrefToCF;
+
+/// Parse `input_ir` into a module and verify it.
+fn parse_module(ctx: &mut Context, input_ir: &str) -> (Ptr<Operation>, ModuleOp) {
+    init_env_logger_for_tests!();
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    log::debug!("parsed module:\n{}", module_op.disp(ctx));
+    verify_op(&module_op, ctx).expect_ok(ctx);
+    (parsed_op, module_op)
+}
+
+/// Run `input_ir` through Memref -> CF -> LLVM dialect and JIT compile the result.
+/// The converted module and its LLVM-IR are returned as text.
+fn compile_and_jit(ctx: &mut Context, input_ir: &str) -> (SimpleJIT, String, String) {
+    let (parsed_op, module_op) = parse_module(ctx, input_ir);
+
+    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+    let converted = module_op.disp(ctx).to_string();
+    log::debug!("converted module:\n{}", converted);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+    let llvm_ir_text = llvm_ir.to_string();
+    log::debug!("LLVM-IR generated:\n{}", llvm_ir_text);
+
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    (jit, converted, llvm_ir_text)
+}
+
 #[test]
 fn test_alloc_generate() {
     let ctx = &mut Context::new();
@@ -48,24 +93,8 @@ fn test_alloc_generate() {
             }
             "#;
 
-    let state_stream = state_stream_from_iterator(
-        input_ir.chars(),
-        parsable::State::new(ctx, location::Source::InMemory),
-    );
-    let parsed = spaced(Operation::top_level_parser())
-        .parse(state_stream)
-        .map(|(op, _)| op)
-        .map_err(|err| input_error_noloc!(err));
+    let (jit, converted, llvm_ir) = compile_and_jit(ctx, input_ir);
 
-    let parsed_op = parsed.expect_ok(ctx);
-    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
-    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    let print_parsed = format!("{}", module_op.disp(ctx));
     expect![[r#"
         builtin.module @test_module 
         {
@@ -154,14 +183,7 @@ fn test_alloc_generate() {
             } !11;
             llvm.func @malloc: llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>
               []
-        }"#]].assert_eq(&print_parsed);
-
-    let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
-    llvm_ir
-        .verify()
-        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
-        .unwrap();
+        }"#]].assert_eq(&converted);
 
     expect![[r#"
         ; ModuleID = 'test_module'
@@ -237,10 +259,8 @@ fn test_alloc_generate() {
         }
 
         declare ptr @malloc(i64)
-    "#]].assert_eq(&llvm_ir.to_string());
+    "#]].assert_eq(&llvm_ir);
 
-    // Let's try and execute this function
-    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_alloc_generate") }
         .expect("Failed to lookup symbol");
 
@@ -252,106 +272,22 @@ fn test_alloc_generate() {
     }
 }
 
+/// `memref.dim` with a dynamic and with a constant dimension index.
 #[test]
-fn test_memref_dim_dynamic_index() {
+fn test_memref_dim() {
     let ctx = &mut Context::new();
 
     let input_ir = r#"
         builtin.module @test_module {
           ^entry():
-          llvm.func @test_memref_dim: llvm.func <builtin.integer i64 (builtin.integer i64) variadic = false> [] {
+          llvm.func @test_memref_dim_dynamic_index: llvm.func <builtin.integer i64 (builtin.integer i64) variadic = false> [] {
             ^entry(dim_arg: builtin.integer i64):
             memref = memref.alloc : memref.ranked<16 x 32 : builtin.integer i64>;
             dim_idx = index.from_integer dim_arg : index.index;
             dim = memref.dim memref, dim_idx : index.index;
             dim_int = index.to_integer dim to builtin.integer i64;
             llvm.return dim_int
-          }
-        }
-        "#;
-
-    let state_stream = state_stream_from_iterator(
-        input_ir.chars(),
-        parsable::State::new(ctx, location::Source::InMemory),
-    );
-    let parsed = spaced(Operation::top_level_parser())
-        .parse(state_stream)
-        .map(|(op, _)| op)
-        .map_err(|err| input_error_noloc!(err));
-
-    let parsed_op = parsed.expect_ok(ctx);
-    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
-    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    let print_parsed = format!("{}", module_op.disp(ctx));
-    expect![[r#"
-        builtin.module @test_module 
-        {
-          ^entry_block1v1() !0:
-            llvm.func @test_memref_dim: llvm.func <builtin.integer i64(builtin.integer i64) variadic = false>
-              [] 
-            {
-              ^entry_block2v1(dim_arg_v0: builtin.integer i64) !1:
-                v39 = llvm.constant <builtin.integer <16: i64>> : builtin.integer i64;
-                v40 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
-                v41 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
-                v42 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
-                v43 = llvm.constant <builtin.integer <512: i64>> : builtin.integer i64;
-                v10 = llvm.zero : llvm.ptr (0);
-                v11 = llvm.gep <builtin.integer i64> (v10)[Constant(1)] : llvm.ptr (0);
-                v12 = llvm.ptrtoint v11 to builtin.integer i64;
-                v13 = llvm.mul v12, v43 <{nsw=false,nuw=false}>: builtin.integer i64;
-                v14 = llvm.call @malloc (v13) : llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>;
-                v44 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
-                v16 = llvm.undef : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v17 = llvm.insert_value v16[0], v14 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v18 = llvm.insert_value v17[1], v14 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v19 = llvm.insert_value v18[2], v44 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v20 = llvm.undef : llvm.array [2 x builtin.integer i64];
-                v21 = llvm.insert_value v20[0], v39 : llvm.array [2 x builtin.integer i64];
-                v22 = llvm.insert_value v21[1], v40 : llvm.array [2 x builtin.integer i64];
-                v23 = llvm.insert_value v19[3], v22 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v24 = llvm.undef : llvm.array [2 x builtin.integer i64];
-                v25 = llvm.insert_value v24[0], v42 : llvm.array [2 x builtin.integer i64];
-                v26 = llvm.insert_value v25[1], v41 : llvm.array [2 x builtin.integer i64];
-                memref_v27 = llvm.insert_value v23[4], v26 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked> !2;
-                v38 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
-                v29 = llvm.alloca [llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked> x v38]  : llvm.ptr (0);
-                llvm.store *v29 <- memref_v27 ;
-                v30 = llvm.gep <llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>> (v29, dim_arg_v0)[Constant(0), Constant(3), OperandIdx(1)] : llvm.ptr (0);
-                dim_v31 = llvm.load v30  : builtin.integer i64 !3;
-                llvm.return dim_v31 !4
-            } !5;
-            llvm.func @malloc: llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>
-              []
-        }"#]].assert_eq(&print_parsed);
-
-    let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
-    llvm_ir
-        .verify()
-        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
-        .unwrap();
-
-    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
-    let f = unsafe { jit.lookup_symbol::<fn(i64) -> i64>("test_memref_dim") }
-        .expect("Failed to lookup symbol");
-
-    assert_eq!(f(0), 16);
-    assert_eq!(f(1), 32);
-}
-
-#[test]
-fn test_memref_dim_const_index() {
-    let ctx = &mut Context::new();
-
-    let input_ir = r#"
-        builtin.module @test_module {
-          ^entry():
+          };
           llvm.func @test_memref_dim_const_index: llvm.func <builtin.integer i64 () variadic = false> [] {
             ^entry():
             memref = memref.alloc : memref.ranked<16 x 32 : builtin.integer i64>;
@@ -369,169 +305,132 @@ fn test_memref_dim_const_index() {
         }
         "#;
 
-    let state_stream = state_stream_from_iterator(
-        input_ir.chars(),
-        parsable::State::new(ctx, location::Source::InMemory),
-    );
-    let parsed = spaced(Operation::top_level_parser())
-        .parse(state_stream)
-        .map(|(op, _)| op)
-        .map_err(|err| input_error_noloc!(err));
+    let (jit, converted, _) = compile_and_jit(ctx, input_ir);
 
-    let parsed_op = parsed.expect_ok(ctx);
-    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
-    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    let print_parsed = format!("{}", module_op.disp(ctx));
+    // A dynamic index must go through the descriptor in memory, a constant one is
+    // an extract_value of the sizes array.
     expect![[r#"
         builtin.module @test_module 
         {
           ^entry_block1v1() !0:
+            llvm.func @test_memref_dim_dynamic_index: llvm.func <builtin.integer i64(builtin.integer i64) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(dim_arg_v0: builtin.integer i64) !1:
+                v85 = llvm.constant <builtin.integer <16: i64>> : builtin.integer i64;
+                v86 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
+                v87 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                v88 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
+                v89 = llvm.constant <builtin.integer <512: i64>> : builtin.integer i64;
+                v20 = llvm.zero : llvm.ptr (0);
+                v21 = llvm.gep <builtin.integer i64> (v20)[Constant(1)] : llvm.ptr (0);
+                v22 = llvm.ptrtoint v21 to builtin.integer i64;
+                v23 = llvm.mul v22, v89 <{nsw=false,nuw=false}>: builtin.integer i64;
+                v24 = llvm.call @malloc (v23) : llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>;
+                v90 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                v26 = llvm.undef : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v27 = llvm.insert_value v26[0], v24 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v28 = llvm.insert_value v27[1], v24 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v29 = llvm.insert_value v28[2], v90 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v30 = llvm.undef : llvm.array [2 x builtin.integer i64];
+                v31 = llvm.insert_value v30[0], v85 : llvm.array [2 x builtin.integer i64];
+                v32 = llvm.insert_value v31[1], v86 : llvm.array [2 x builtin.integer i64];
+                v33 = llvm.insert_value v29[3], v32 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v34 = llvm.undef : llvm.array [2 x builtin.integer i64];
+                v35 = llvm.insert_value v34[0], v88 : llvm.array [2 x builtin.integer i64];
+                v36 = llvm.insert_value v35[1], v87 : llvm.array [2 x builtin.integer i64];
+                memref_v37 = llvm.insert_value v33[4], v36 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked> !2;
+                v75 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                v39 = llvm.alloca [llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked> x v75]  : llvm.ptr (0);
+                llvm.store *v39 <- memref_v37 ;
+                v40 = llvm.gep <llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>> (v39, dim_arg_v0)[Constant(0), Constant(3), OperandIdx(1)] : llvm.ptr (0);
+                dim_v41 = llvm.load v40  : builtin.integer i64 !3;
+                llvm.return dim_v41 !4
+            } !5;
             llvm.func @test_memref_dim_const_index: llvm.func <builtin.integer i64() variadic = false>
               [] 
             {
-              ^entry_block2v1() !1:
-                v46 = llvm.constant <builtin.integer <16: i64>> : builtin.integer i64;
-                v47 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
-                v48 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
-                v49 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
-                v50 = llvm.constant <builtin.integer <512: i64>> : builtin.integer i64;
-                v15 = llvm.zero : llvm.ptr (0);
-                v16 = llvm.gep <builtin.integer i64> (v15)[Constant(1)] : llvm.ptr (0);
-                v17 = llvm.ptrtoint v16 to builtin.integer i64;
-                v18 = llvm.mul v17, v50 <{nsw=false,nuw=false}>: builtin.integer i64;
-                v19 = llvm.call @malloc (v18) : llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>;
-                v51 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
-                v21 = llvm.undef : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v22 = llvm.insert_value v21[0], v19 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v23 = llvm.insert_value v22[1], v19 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v24 = llvm.insert_value v23[2], v51 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v25 = llvm.undef : llvm.array [2 x builtin.integer i64];
-                v26 = llvm.insert_value v25[0], v46 : llvm.array [2 x builtin.integer i64];
-                v27 = llvm.insert_value v26[1], v47 : llvm.array [2 x builtin.integer i64];
-                v28 = llvm.insert_value v24[3], v27 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
-                v29 = llvm.undef : llvm.array [2 x builtin.integer i64];
-                v30 = llvm.insert_value v29[0], v49 : llvm.array [2 x builtin.integer i64];
-                v31 = llvm.insert_value v30[1], v48 : llvm.array [2 x builtin.integer i64];
-                memref_v32 = llvm.insert_value v28[4], v31 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked> !2;
-                idx0_v52 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !3;
-                idx1_v53 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
-                v33 = llvm.extract_value memref_v32[3] : llvm.array [2 x builtin.integer i64];
-                dim0_v34 = llvm.extract_value v33[0] : builtin.integer i64 !5;
-                v35 = llvm.extract_value memref_v32[3] : llvm.array [2 x builtin.integer i64];
-                dim1_v36 = llvm.extract_value v35[1] : builtin.integer i64 !6;
-                thousand_v45 = llvm.constant <builtin.integer <1000: i64>> : builtin.integer i64 !7;
-                scaled_v8 = llvm.mul dim0_v34, thousand_v45 <{nsw=false,nuw=false}>: builtin.integer i64 !8;
-                encoded_v9 = llvm.add scaled_v8, dim1_v36 <{nsw=false,nuw=false}>: builtin.integer i64 !9;
-                llvm.return encoded_v9 !10
-            } !11;
+              ^entry_block3v1() !6:
+                v91 = llvm.constant <builtin.integer <16: i64>> : builtin.integer i64;
+                v92 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
+                v93 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                v94 = llvm.constant <builtin.integer <32: i64>> : builtin.integer i64;
+                v95 = llvm.constant <builtin.integer <512: i64>> : builtin.integer i64;
+                v47 = llvm.zero : llvm.ptr (0);
+                v48 = llvm.gep <builtin.integer i64> (v47)[Constant(1)] : llvm.ptr (0);
+                v49 = llvm.ptrtoint v48 to builtin.integer i64;
+                v50 = llvm.mul v49, v95 <{nsw=false,nuw=false}>: builtin.integer i64;
+                v51 = llvm.call @malloc (v50) : llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>;
+                v96 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                v53 = llvm.undef : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v54 = llvm.insert_value v53[0], v51 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v55 = llvm.insert_value v54[1], v51 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v56 = llvm.insert_value v55[2], v96 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v57 = llvm.undef : llvm.array [2 x builtin.integer i64];
+                v58 = llvm.insert_value v57[0], v91 : llvm.array [2 x builtin.integer i64];
+                v59 = llvm.insert_value v58[1], v92 : llvm.array [2 x builtin.integer i64];
+                v60 = llvm.insert_value v56[3], v59 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked>;
+                v61 = llvm.undef : llvm.array [2 x builtin.integer i64];
+                v62 = llvm.insert_value v61[0], v94 : llvm.array [2 x builtin.integer i64];
+                v63 = llvm.insert_value v62[1], v93 : llvm.array [2 x builtin.integer i64];
+                memref_v64 = llvm.insert_value v60[4], v63 : llvm.struct <{ llvm.ptr (0), llvm.ptr (0), builtin.integer i64, llvm.array [2 x builtin.integer i64], llvm.array [2 x builtin.integer i64] } : Unpacked> !7;
+                idx0_v97 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !8;
+                idx1_v98 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !9;
+                v65 = llvm.extract_value memref_v64[3] : llvm.array [2 x builtin.integer i64];
+                dim0_v66 = llvm.extract_value v65[0] : builtin.integer i64 !10;
+                v67 = llvm.extract_value memref_v64[3] : llvm.array [2 x builtin.integer i64];
+                dim1_v68 = llvm.extract_value v67[1] : builtin.integer i64 !11;
+                thousand_v84 = llvm.constant <builtin.integer <1000: i64>> : builtin.integer i64 !12;
+                scaled_v13 = llvm.mul dim0_v66, thousand_v84 <{nsw=false,nuw=false}>: builtin.integer i64 !13;
+                encoded_v14 = llvm.add scaled_v13, dim1_v68 <{nsw=false,nuw=false}>: builtin.integer i64 !14;
+                llvm.return encoded_v14 !15
+            } !16;
             llvm.func @malloc: llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>
               []
-        }"#]].assert_eq(&print_parsed);
+        }"#]].assert_eq(&converted);
 
-    let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
-    llvm_ir
-        .verify()
-        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
-        .unwrap();
+    let dynamic_index =
+        unsafe { jit.lookup_symbol::<fn(i64) -> i64>("test_memref_dim_dynamic_index") }
+            .expect("Failed to lookup symbol");
+    assert_eq!(dynamic_index(0), 16);
+    assert_eq!(dynamic_index(1), 32);
 
-    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
-    let f = unsafe { jit.lookup_symbol::<fn() -> i64>("test_memref_dim_const_index") }
+    let const_index = unsafe { jit.lookup_symbol::<fn() -> i64>("test_memref_dim_const_index") }
         .expect("Failed to lookup symbol");
-
     // Encoded return value = dim0 * 1000 + dim1 = 16 * 1000 + 32
-    assert_eq!(f(), 16032);
+    assert_eq!(const_index(), 16032);
 }
 
-/// Test that `memref.subview` is correctly lowered to CF / LLVM.
-/// The function allocates a 2×3 source memref, fills it with `src[i][j] = i*3 + j`,
-/// then creates a 2×2 subview with offsets [0, 1] and steps [1, 1], and returns
-/// `view[i_arg][j_arg]`.
+/// `memref.subview`, `memref.copy`, and the `memref.copy + memref.subview +
+/// memref.copy` insertion sequence, lowered to CF / LLVM.
 ///
-/// Expected: `view[i][j] = src[i][1 + j] = i*3 + j + 1`.
+/// Every function fills its memrefs with `memref.generate` and returns the element
+/// at the index it is called with.
 #[test]
-fn test_subview() {
-    init_env_logger_for_tests!();
-    let ctx = &mut Context::new();
-
-    let input_ir = r#"
-            builtin.module @test_module {
-              ^entry():
-                llvm.func @test_subview: llvm.func <builtin.integer i64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
-                  ^entry(i_arg: builtin.integer i64, j_arg: builtin.integer i64):
-                    src = memref.alloc : memref.ranked<2 x 3 : builtin.integer i64>;
-                    memref.generate src {
-                      ^entry(i : index.index, j : index.index):
-                        i_int = index.to_integer i to builtin.integer i64;
-                        j_int = index.to_integer j to builtin.integer i64;
-                        three = builtin.constant <builtin.integer <3: i64>> : builtin.integer i64;
-                        row = llvm.mul i_int, three <{nsw = false, nuw = false}> : builtin.integer i64;
-                        val = llvm.add row, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
-                        memref.yield val
-                    };
-                      view = memref.subview src [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64>;
-                    i_idx = index.from_integer i_arg : index.index;
-                    j_idx = index.from_integer j_arg : index.index;
-                      result = memref.load view[i_idx, j_idx]: builtin.integer i64;
-                    llvm.return result
-                }
-            }
-            "#;
-
-    let state_stream = state_stream_from_iterator(
-        input_ir.chars(),
-        parsable::State::new(ctx, location::Source::InMemory),
-    );
-    let parsed = spaced(Operation::top_level_parser())
-        .parse(state_stream)
-        .map(|(op, _)| op)
-        .map_err(|err| input_error_noloc!(err));
-
-    let parsed_op = parsed.expect_ok(ctx);
-    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
-    log::debug!("parsed module:\n{}", module_op.disp(ctx));
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
-    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
-    log::debug!("converted module:\n{}", module_op.disp(ctx));
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
-    llvm_ir
-        .verify()
-        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
-        .unwrap();
-    log::debug!("LLVM-IR generated:\n{}", llvm_ir);
-
-    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
-    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_subview") }
-        .expect("Failed to lookup symbol");
-
-    // dst[i][j] = src[i][1 + j] = i*3 + (1 + j) = i*3 + j + 1
-    for i in 0..2_i64 {
-        for j in 0..2_i64 {
-            let result = f(i, j);
-            assert_eq!(result, i * 3 + j + 1, "f({i}, {j}) = {result}");
-        }
-    }
-}
-
-/// Test that `memref.copy` is correctly lowered to CF / LLVM.
-#[test]
-fn test_copy() {
-    init_env_logger_for_tests!();
+fn test_subview_copy_and_insert_slice() {
     let ctx = &mut Context::new();
 
     let input_ir = r#"
         builtin.module @test_module {
           ^entry():
+          llvm.func @test_subview: llvm.func <builtin.integer i64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
+            ^entry(i_arg: builtin.integer i64, j_arg: builtin.integer i64):
+            src = memref.alloc : memref.ranked<2 x 3 : builtin.integer i64>;
+            memref.generate src {
+              ^entry(i : index.index, j : index.index):
+              i_int = index.to_integer i to builtin.integer i64;
+              j_int = index.to_integer j to builtin.integer i64;
+              three = builtin.constant <builtin.integer <3: i64>> : builtin.integer i64;
+              row = llvm.mul i_int, three <{nsw = false, nuw = false}> : builtin.integer i64;
+              val = llvm.add row, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
+              memref.yield val
+            };
+            view = memref.subview src [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64>;
+            i_idx = index.from_integer i_arg : index.index;
+            j_idx = index.from_integer j_arg : index.index;
+            result = memref.load view[i_idx, j_idx]: builtin.integer i64;
+            llvm.return result
+          };
           llvm.func @test_copy: llvm.func <builtin.integer i64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
             ^entry(i_arg: builtin.integer i64, j_arg: builtin.integer i64):
             src = memref.alloc : memref.ranked<2 x 2 : builtin.integer i64>;
@@ -550,67 +449,7 @@ fn test_copy() {
             j_idx = index.from_integer j_arg : index.index;
             result = memref.load dst[i_idx, j_idx]: builtin.integer i64;
             llvm.return result
-          }
-        }
-        "#;
-
-    let state_stream = state_stream_from_iterator(
-        input_ir.chars(),
-        parsable::State::new(ctx, location::Source::InMemory),
-    );
-    let parsed = spaced(Operation::top_level_parser())
-        .parse(state_stream)
-        .map(|(op, _)| op)
-        .map_err(|err| input_error_noloc!(err));
-
-    let parsed_op = parsed.expect_ok(ctx);
-    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
-    log::debug!("parsed module:\n{}", module_op.disp(ctx));
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
-    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
-    log::debug!("converted module:\n{}", module_op.disp(ctx));
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
-    llvm_ir
-        .verify()
-        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
-        .unwrap();
-
-    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
-    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_copy") }
-        .expect("Failed to lookup symbol");
-
-    for i in 0..2_i64 {
-        for j in 0..2_i64 {
-            let result = f(i, j);
-            assert_eq!(result, i * 10 + j, "f({i}, {j}) = {result}");
-        }
-    }
-}
-
-/// Test that a `memref.copy + memref.subview + memref.copy` insertion sequence
-/// is correctly lowered to CF / LLVM.
-///
-/// The function initializes:
-/// - `src[i][j] = i*10 + j` for a 2x2 source memref
-/// - `dst[i][j] = 100 + i*4 + j` for a 3x4 destination memref
-///
-/// Then inserts `src` into `dst` at offsets [1, 1] by:
-/// - copying `dst` into `res`
-/// - taking `sub = memref.subview res [...]`
-/// - copying `src` into `sub`
-#[test]
-fn test_insert_slice_sequence() {
-    init_env_logger_for_tests!();
-    let ctx = &mut Context::new();
-
-    let input_ir = r#"
-        builtin.module @test_module {
-          ^entry():
+          };
           llvm.func @test_insert_slice: llvm.func <builtin.integer i64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
             ^entry(i_arg: builtin.integer i64, j_arg: builtin.integer i64):
             src = memref.alloc : memref.ranked<2 x 2 : builtin.integer i64>;
@@ -625,15 +464,15 @@ fn test_insert_slice_sequence() {
             };
             dst = memref.alloc : memref.ranked<3 x 4 : builtin.integer i64>;
             memref.generate dst {
-                      ^entry(di : index.index, dj : index.index):
-                        di_int = index.to_integer di to builtin.integer i64;
-                        dj_int = index.to_integer dj to builtin.integer i64;
+              ^entry(di : index.index, dj : index.index):
+              di_int = index.to_integer di to builtin.integer i64;
+              dj_int = index.to_integer dj to builtin.integer i64;
               four = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
               hundred = builtin.constant <builtin.integer <100: i64>> : builtin.integer i64;
-                        drow = llvm.mul di_int, four <{nsw = false, nuw = false}> : builtin.integer i64;
-                        dbase = llvm.add hundred, drow <{nsw = false, nuw = false}> : builtin.integer i64;
-                        dval = llvm.add dbase, dj_int <{nsw = false, nuw = false}> : builtin.integer i64;
-                        memref.yield dval
+              drow = llvm.mul di_int, four <{nsw = false, nuw = false}> : builtin.integer i64;
+              dbase = llvm.add hundred, drow <{nsw = false, nuw = false}> : builtin.integer i64;
+              dval = llvm.add dbase, dj_int <{nsw = false, nuw = false}> : builtin.integer i64;
+              memref.yield dval
             };
             res = memref.alloc : memref.ranked<3 x 4 : builtin.integer i64>;
             one = index.constant <index.constant 1> : index.index;
@@ -648,46 +487,42 @@ fn test_insert_slice_sequence() {
         }
         "#;
 
-    let state_stream = state_stream_from_iterator(
-        input_ir.chars(),
-        parsable::State::new(ctx, location::Source::InMemory),
-    );
-    let parsed = spaced(Operation::top_level_parser())
-        .parse(state_stream)
-        .map(|(op, _)| op)
-        .map_err(|err| input_error_noloc!(err));
+    let (jit, _, _) = compile_and_jit(ctx, input_ir);
 
-    let parsed_op = parsed.expect_ok(ctx);
-    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
-    log::debug!("parsed module:\n{}", module_op.disp(ctx));
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
-    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
-    log::debug!("converted module:\n{}", module_op.disp(ctx));
-    verify_op(&module_op, ctx).expect_ok(ctx);
-
-    let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
-    llvm_ir
-        .verify()
-        .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
-        .unwrap();
-    log::debug!("LLVM-IR generated:\n{}", llvm_ir);
-
-    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
-    let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_insert_slice") }
+    // src is a 2x3 memref with src[i][j] = i*3 + j, and the view has offsets [0, 1]:
+    // view[i][j] = src[i][1 + j] = i*3 + j + 1.
+    let subview = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_subview") }
         .expect("Failed to lookup symbol");
+    for i in 0..2_i64 {
+        for j in 0..2_i64 {
+            let result = subview(i, j);
+            assert_eq!(result, i * 3 + j + 1, "test_subview({i}, {j}) = {result}");
+        }
+    }
 
+    // dst is a copy of src, which has src[i][j] = i*10 + j.
+    let copy = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_copy") }
+        .expect("Failed to lookup symbol");
+    for i in 0..2_i64 {
+        for j in 0..2_i64 {
+            let result = copy(i, j);
+            assert_eq!(result, i * 10 + j, "test_copy({i}, {j}) = {result}");
+        }
+    }
+
+    // res is dst, with dst[i][j] = 100 + i*4 + j, with the 2x2 src inserted at
+    // offsets [1, 1].
+    let insert_slice = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_insert_slice") }
+        .expect("Failed to lookup symbol");
     for i in 0..3_i64 {
         for j in 0..4_i64 {
-            let result = f(i, j);
+            let result = insert_slice(i, j);
             let expected = if (1..3).contains(&i) && (1..3).contains(&j) {
                 (i - 1) * 10 + (j - 1)
             } else {
                 100 + i * 4 + j
             };
-            assert_eq!(result, expected, "f({i}, {j}) = {result}");
+            assert_eq!(result, expected, "test_insert_slice({i}, {j}) = {result}");
         }
     }
 }
