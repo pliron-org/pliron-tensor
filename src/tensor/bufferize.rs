@@ -204,10 +204,12 @@ pub trait BufferizableOpInterface {
     /// It will only be called on aliasing operands that have a tensor type.
     fn get_dynamic_dimensions(&self, ctx: &Context, opd: Use<Value>) -> Option<Vec<Value>>;
 
-    /// Return true if `value` -- a result of this op, or an argument of a block
-    /// belonging to one of this op's regions -- can be written to in place.
+    /// Return true if `value` can be written to in place.
     ///
-    /// It will only be called on values that have a tensor type.
+    /// The method is called only when
+    /// 1. `value` is a result of this op, or an argument of a block
+    ///    belonging to one of this op's regions.
+    /// 2. `value`is of a tensor type.
     ///
     /// Default: results are writable, block arguments are not.
     /// An op with a region must explicitly opt a block argument into being writable.
