@@ -6,12 +6,15 @@
 use std::cell::Ref;
 
 use pliron::{
-    builtin::op_interfaces::{
-        AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, AtLeastNResultsInterface,
-        IsTerminatorInterface, NOpdsInterface, NRegionsInterface, NResultsInterface,
-        OneOpdInterface, OneRegionInterface, OneResultInterface, OperandNOfType,
-        OperandSegmentInterface, ResultNOfType, SameOperandsType, SameResultsType,
-        SingleBlockRegionInterface,
+    builtin::{
+        attributes::{BoolAttr, IdentifierAttr, TypeAttr},
+        op_interfaces::{
+            AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, AtLeastNResultsInterface,
+            IsTerminatorInterface, NOpdsInterface, NRegionsInterface, NResultsInterface,
+            OneOpdInterface, OneRegionInterface, OneResultInterface, OperandNOfType,
+            OperandSegmentInterface, ResultNOfType, SameOperandsType, SameResultsType,
+            SingleBlockRegionInterface, SymbolOpInterface, SymbolUserOpInterface,
+        },
     },
     combine::{
         Parser, attempt,
@@ -19,7 +22,7 @@ use pliron::{
     },
     common_traits::Verify,
     context::Context,
-    derive::pliron_op,
+    derive::{op_interface_impl, pliron_op},
     identifier::Identifier,
     irbuild::{
         inserter::{BlockInsertionPoint, IRInserter, Inserter, OpInsertionPoint},
@@ -38,6 +41,7 @@ use pliron::{
     parsable::{self, IntoParseResult, Parsable},
     printable::{self, ListSeparator, Printable},
     result::Result,
+    symbol_table::SymbolTableCollection,
     r#type::{TypeHandle, Typed, TypedHandle, type_cast},
     value::Value,
     verify_err, verify_error,
@@ -48,7 +52,7 @@ use pliron_common_dialects::{
 };
 
 use crate::memref::{
-    attributes::{SliceParamAttr, SliceParamsAttr},
+    attributes::{DenseElementsAttr, SliceParamAttr, SliceParamsAttr},
     op_interfaces::{CompatibleShapesOp, ElementWiseBinaryMemrefOpInterface, GenerateOpInterface},
     type_interfaces::{MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
@@ -1642,5 +1646,237 @@ impl ReshapeOp {
     /// Get the dynamic dimension operands.
     pub fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
         self.get_operation().deref(ctx).operands().skip(1).collect()
+    }
+}
+
+/// Holds a memref at module scope. Use [GetGlobalOp] to get a memref for it.
+#[pliron_op(
+    name = "memref.global",
+    format = "`@` attr($builtin_sym_name, $IdentifierAttr) ` : ` attr($memref_global_type, $TypeAttr) \
+        ` ` attr($memref_global_constant, $BoolAttr, label($constant), delimiters(`[`, `]`))",
+    interfaces = [
+        NOpdsInterface<0>,
+        NResultsInterface<0>,
+        SymbolOpInterface,
+    ],
+    attributes = (
+        memref_global_type: TypeAttr,
+        memref_global_initializer: DenseElementsAttr,
+        memref_global_constant: BoolAttr
+    ),
+)]
+pub struct GlobalOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum GlobalOpVerifyErr {
+    #[error("memref.global does not have a type attribute")]
+    MissingType,
+    #[error("memref.global of type {ty} has a value attribute of type {value}")]
+    ValueTypeMismatch { ty: String, value: String },
+    #[error("memref.global @{0} must be of a ranked memref type with a fully static shape")]
+    NotAStaticMemref(String),
+}
+
+impl GlobalOp {
+    /// Make a [GlobalOp] named `name` of type `ty`.
+    pub fn new(
+        ctx: &mut Context,
+        name: Identifier,
+        ty: TypedHandle<RankedMemrefType>,
+        initializer: Option<DenseElementsAttr>,
+        is_constant: bool,
+    ) -> Self {
+        let op = Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 0);
+        let op = GlobalOp { op };
+        op.set_symbol_name(ctx, name);
+        op.set_attr_memref_global_type(ctx, TypeAttr::new(ty.into()));
+        op.set_attr_memref_global_constant(ctx, is_constant.into());
+        if let Some(value) = initializer {
+            op.set_attr_memref_global_initializer(ctx, value);
+        }
+        op
+    }
+
+    /// Is this global a constant?
+    pub fn is_constant(&self, ctx: &Context) -> bool {
+        self.get_attr_memref_global_constant(ctx)
+            .is_some_and(|attr| bool::from(attr.clone()))
+    }
+
+    /// Get this global's initializer, if it has one.
+    /// The [Ref] is a borrow of the containing [Operation] object.
+    ///
+    /// Use [pliron::dyn_clone::clone_box] to clone the value if required.
+    pub fn initializer<'a>(&self, ctx: &'a Context) -> Option<Ref<'a, DenseElementsAttr>> {
+        self.get_attr_memref_global_initializer(ctx)
+    }
+
+    /// Move this global's initializer out of it, if it has one.
+    ///
+    /// **WARNING**: `self` becomes a declaration, with no initializer.
+    pub fn take_initializer(&self, ctx: &Context) -> Option<DenseElementsAttr> {
+        self.get_operation()
+            .deref_mut(ctx)
+            .attributes
+            .0
+            .remove(&*global_op_attr_names::ATTR_KEY_MEMREF_GLOBAL_INITIALIZER)
+            .map(|initializer| {
+                *initializer
+                    .downcast::<DenseElementsAttr>()
+                    .expect("the initializer of a memref.global must be a DenseElementsAttr")
+            })
+    }
+
+    /// Get the memref type of this global.
+    pub fn memref_type(&self, ctx: &Context) -> TypedHandle<RankedMemrefType> {
+        let ty = pliron::r#type::Typed::get_type(
+            &*self
+                .get_attr_memref_global_type(ctx)
+                .expect("memref.global must have a type attribute"),
+            ctx,
+        );
+        TypedHandle::<RankedMemrefType>::from_handle(ty, ctx)
+            .expect("memref.global must be of a ranked memref type")
+    }
+}
+
+impl Verify for GlobalOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let loc = self.loc(ctx);
+        let Some(ty_attr) = self.get_attr_memref_global_type(ctx) else {
+            return verify_err!(loc, GlobalOpVerifyErr::MissingType);
+        };
+        let ty = pliron::r#type::Typed::get_type(&*ty_attr, ctx);
+        if let Some(value) = self.get_attr_memref_global_initializer(ctx) {
+            // The type of the attribute and that of the global must match.
+            if TypeHandle::from(value.ty()) != ty {
+                return verify_err!(
+                    loc,
+                    GlobalOpVerifyErr::ValueTypeMismatch {
+                        ty: ty.disp(ctx).to_string(),
+                        value: TypeHandle::from(value.ty()).disp(ctx).to_string(),
+                    }
+                );
+            }
+        }
+        let is_static_memref = ty
+            .deref(ctx)
+            .downcast_ref::<RankedMemrefType>()
+            .is_some_and(|memref_ty| memref_ty.has_static_shape());
+        if !is_static_memref {
+            return verify_err!(
+                loc,
+                GlobalOpVerifyErr::NotAStaticMemref(self.get_symbol_name(ctx).to_string())
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Op to get a memref for a [GlobalOp].
+///
+/// ### Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | A memref for the named global. |
+#[pliron_op(
+    name = "memref.get_global",
+    format = "`@` attr($memref_global_name, $IdentifierAttr) ` : ` type($0)",
+    interfaces = [
+        NOpdsInterface<0>,
+        NResultsInterface<1>,
+        OneResultInterface,
+        ResultNOfType<0, RankedMemrefType>,
+        AllResultsOfType<RankedMemrefType>,
+    ],
+    attributes = (memref_global_name: IdentifierAttr),
+)]
+pub struct GetGlobalOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum GetGlobalOpVerifyErr {
+    #[error("memref.get_global does not have a global name attribute")]
+    MissingGlobalName,
+    #[error("memref.get_global refers to @{0}, which is not a memref.global of the symbol table")]
+    NotAGlobal(String),
+    #[error("memref.get_global of type {result} refers to @{name}, which is of type {global}")]
+    TypeMismatch {
+        name: String,
+        result: String,
+        global: String,
+    },
+}
+
+impl GetGlobalOp {
+    /// Create a new [GetGlobalOp] for the global `name`, of type `result_ty`.
+    pub fn new(
+        ctx: &mut Context,
+        name: Identifier,
+        result_ty: TypedHandle<RankedMemrefType>,
+    ) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            vec![result_ty.into()],
+            vec![],
+            vec![],
+            0,
+        );
+        let op = GetGlobalOp { op };
+        op.set_attr_memref_global_name(ctx, IdentifierAttr::new(name));
+        op
+    }
+
+    /// Get the name of the global that this op refers to.
+    pub fn global_name(&self, ctx: &Context) -> Identifier {
+        self.get_attr_memref_global_name(ctx)
+            .expect("memref.get_global must have a global name attribute")
+            .as_ref()
+            .clone()
+    }
+}
+
+impl Verify for GetGlobalOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        if self.get_attr_memref_global_name(ctx).is_none() {
+            return verify_err!(self.loc(ctx), GetGlobalOpVerifyErr::MissingGlobalName);
+        }
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl SymbolUserOpInterface for GetGlobalOp {
+    fn used_symbols(&self, ctx: &Context) -> Vec<Identifier> {
+        vec![self.global_name(ctx)]
+    }
+
+    fn verify_symbol_uses(
+        &self,
+        ctx: &Context,
+        symbol_tables: &mut SymbolTableCollection,
+    ) -> Result<()> {
+        let loc = self.loc(ctx);
+        let name = self.global_name(ctx);
+
+        let global = symbol_tables
+            .lookup_symbol_in_nearest_table(ctx, self.get_operation(), &name)
+            .and_then(|symbol| Operation::get_op::<GlobalOp>(symbol.get_operation(), ctx));
+        let Some(global) = global else {
+            return verify_err!(loc, GetGlobalOpVerifyErr::NotAGlobal(name.to_string()));
+        };
+
+        let result_ty = self.result_type(ctx);
+        if global.memref_type(ctx).to_handle() != result_ty {
+            return verify_err!(
+                loc,
+                GetGlobalOpVerifyErr::TypeMismatch {
+                    name: name.to_string(),
+                    result: result_ty.disp(ctx).to_string(),
+                    global: global.memref_type(ctx).disp(ctx).to_string(),
+                }
+            );
+        }
+        Ok(())
     }
 }

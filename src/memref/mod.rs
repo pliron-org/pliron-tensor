@@ -15,25 +15,29 @@ use pliron::{
     context::Context,
     derive::type_interface,
     result::Result,
-    r#type::{Type, TypeHandle},
+    r#type::{Type, TypeHandle, type_cast},
 };
-
-/// A function pointer type for the [ToMemrefType] interface.
-pub type ToMemrefTypeFn = fn(self_ty: TypeHandle, &mut Context) -> Result<TypeHandle>;
 
 /// Interface for converting to a Memref type.
 #[type_interface]
 pub trait ToMemrefType {
-    /// Get a function to convert [self] to a Memref type.
-    // We don't directly specify a conversion function here because
-    // the caller cannot get `&dyn ToMemrefType` (&self) while also
-    // passing `&mut Context` to the conversion function.
-    fn converter(&self) -> ToMemrefTypeFn;
+    /// Convert [self] to a Memref type.
+    fn convert(&self, ctx: &Context) -> Result<TypeHandle>;
 
     fn verify(_ty: &dyn Type, _ctx: &Context) -> Result<()>
     where
         Self: Sized,
     {
         Ok(())
+    }
+}
+
+/// Convert `ty` to its memref equivalent.
+///
+/// A type that does not implement [ToMemrefType] is simply returned.
+pub fn to_memref_type(ty: TypeHandle, ctx: &Context) -> Result<TypeHandle> {
+    match type_cast::<dyn ToMemrefType>(&*ty.deref(ctx)) {
+        Some(converter) => converter.convert(ctx),
+        None => Ok(ty),
     }
 }

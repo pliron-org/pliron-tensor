@@ -49,10 +49,101 @@ use crate::memref::{
 };
 
 use super::{
-    attributes::{SliceParamAttr, SliceParamsAttr},
+    attributes::{DenseElementsAttr, SliceParamAttr, SliceParamsAttr},
     op_interfaces::ElementWiseBinaryTensorOpInterface,
     types::RankedTensorType,
 };
+
+/// Op to define a constant tensor.
+///
+/// ### Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | The constant tensor. |
+#[pliron_op(
+    name = "tensor.constant",
+    format = "`: ` type($0)",
+    interfaces = [
+        NOpdsInterface<0>,
+        OneResultInterface,
+        NResultsInterface<1>,
+        AllResultsOfType<RankedTensorType>,
+    ],
+    attributes = (tensor_constant_value: DenseElementsAttr),
+)]
+pub struct ConstantOp;
+
+#[derive(thiserror::Error, Debug)]
+pub enum ConstantOpVerifyErr {
+    #[error("tensor.constant does not have a value attribute")]
+    MissingValue,
+    #[error("tensor.constant of type {result} has a value attribute of type {value}")]
+    ValueTypeMismatch { result: String, value: String },
+}
+
+impl ConstantOp {
+    /// Create a new [ConstantOp] with the value `value`.
+    pub fn new(ctx: &mut Context, value: DenseElementsAttr) -> Self {
+        let result_ty = value.ty();
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            vec![result_ty.into()],
+            vec![],
+            vec![],
+            0,
+        );
+        let op = ConstantOp { op };
+        op.set_attr_tensor_constant_value(ctx, value);
+        op
+    }
+
+    /// Get the value attribute of this constant.
+    /// The [Ref] is a borrow of the containing [Operation] object.
+    ///
+    /// Use [pliron::dyn_clone::clone_box] to clone the value if required.
+    pub fn value<'a>(&self, ctx: &'a Context) -> Ref<'a, DenseElementsAttr> {
+        self.get_attr_tensor_constant_value(ctx)
+            .expect("tensor.constant must have a value attribute")
+    }
+
+    /// Move the value attribute out of this constant.
+    ///
+    /// **WARNING**: `self` will fail to verify after this operation.
+    pub fn take_value(&self, ctx: &Context) -> DenseElementsAttr {
+        *self
+            .get_operation()
+            .deref_mut(ctx)
+            .attributes
+            .0
+            .remove(&*constant_op_attr_names::ATTR_KEY_TENSOR_CONSTANT_VALUE)
+            .expect("tensor.constant must have a value attribute")
+            .downcast::<DenseElementsAttr>()
+            .expect("the value of tensor.constant must be a DenseElementsAttr")
+    }
+}
+
+impl Verify for ConstantOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let loc = self.loc(ctx);
+        let Some(value) = self.get_attr_tensor_constant_value(ctx) else {
+            return verify_err!(loc, ConstantOpVerifyErr::MissingValue);
+        };
+        // Result type and attribute type must match.
+        let value_ty = TypeHandle::from(value.ty());
+        let result_ty = self.result_type(ctx);
+        if value_ty != result_ty {
+            return verify_err!(
+                loc,
+                ConstantOpVerifyErr::ValueTypeMismatch {
+                    result: result_ty.disp(ctx).to_string(),
+                    value: value_ty.disp(ctx).to_string(),
+                }
+            );
+        }
+        Ok(())
+    }
+}
 
 /// Op to generate a tensor by applying a function to generate the value at each index.
 /// See MLIR's [GenerateOp](https://mlir.llvm.org/docs/Dialects/TensorOps/#tensorgenerate-tensorgenerateop).

@@ -4,6 +4,7 @@
 //! Dialect conversions from the memref dialect.
 
 use pliron::{
+    attribute::AttrObj,
     basic_block::BasicBlock,
     builtin::{
         attributes::TypeAttr,
@@ -11,12 +12,14 @@ use pliron::{
             CallOpCallable, OneOpdInterface, OneResultInterface, SingleBlockRegionInterface,
             SymbolOpInterface,
         },
+        ops::ModuleOp,
         type_interfaces::{FloatTypeInterface, FunctionTypeInterface},
         types::{IntegerType, Signedness},
     },
     context::{Context, Ptr},
     derive::{op_interface_impl, type_interface_impl},
-    input_error,
+    graph::find_ancestor_of_op_type,
+    input_err, input_error,
     irbuild::{
         dialect_conversion::{DialectConversion, DialectConversionRewriter, OperandsInfo},
         inserter::{Inserter, OpInsertionPoint},
@@ -25,6 +28,7 @@ use pliron::{
     linked_list::ContainsLinkedList,
     op::{Op, op_cast, op_impls},
     operation::Operation,
+    printable::Printable,
     result::Result,
     symbol_table::{SymbolTableCollection, nearest_symbol_table},
     r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
@@ -39,27 +43,31 @@ use pliron_common_dialects::{
 };
 use pliron_llvm::{
     ToLLVMType,
-    attributes::{FastmathFlagsAttr, IntegerOverflowFlagsAttr},
+    attributes::{
+        AggregateAttr, BytesAttr, FastmathFlagsAttr, IntegerOverflowFlagsAttr, LinkageAttr,
+        ZeroAttr,
+    },
+    data_layout::DataLayout,
     function_call_utils::{
         compute_type_size_in_bytes, lookup_or_create_free_fn, lookup_or_create_malloc_fn,
     },
     op_interfaces::{
-        BinArithOp, CastOpInterface, FloatBinArithOpWithFastMathFlags,
+        AlignableOpInterface, BinArithOp, CastOpInterface, FloatBinArithOpWithFastMathFlags,
         IntBinArithOpWithOverflowFlag,
     },
-    ops::{CallOp, FuncOp, MulOp},
-    types::StructLayout,
+    ops::{AddressOfOp, CallOp, FuncOp, GlobalOp as LlvmGlobalOp, MulOp},
+    types::{ArrayType, StructLayout},
 };
 
 use crate::memref::{
     descriptor,
     op_interfaces::ElementWiseBinaryMemrefOpInterface,
     ops::{
-        AddOp, AllocOp, CopyOp, DeallocOp, DimOp, DivOp, GenerateOp, LoadOp,
+        AddOp, AllocOp, CopyOp, DeallocOp, DimOp, DivOp, GenerateOp, GetGlobalOp, GlobalOp, LoadOp,
         MatMulOp as MemrefMatMulOp, MulOp as MemrefMulOp, ReshapeOp, SliceParam, StoreOp, SubOp,
         SubviewOp, YieldOp,
     },
-    type_interfaces::{MultiDimensionalType, ShapedType},
+    type_interfaces::{DenseElementTypeHandle, MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
 };
 
@@ -1112,6 +1120,148 @@ impl ToCFDialect for ReshapeOp {
         )?;
 
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![reshaped]);
+        Ok(())
+    }
+}
+
+/// Compute the data-layout of `op`.
+/// It's either from an reachable module or the host if none exists.
+fn data_layout(ctx: &Context, op: Ptr<Operation>) -> Result<DataLayout> {
+    let module = Operation::get_op::<ModuleOp>(op, ctx)
+        .or_else(|| find_ancestor_of_op_type::<ModuleOp>(ctx, op));
+    match module {
+        Some(module) => DataLayout::from_module_layout(ctx, module),
+        None => DataLayout::host(),
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum GlobalOpConversionErr {
+    #[error("memref.global of element type {0} cannot lower: the element type has no raw bytes")]
+    UnsupportedElementType(String),
+}
+
+// Replace [GlobalOp] with an [LlvmGlobalOp] holding the same data.
+// If the layout packing matches that of LLVM, the raw-buffer is wrapped with [BytesAttr].
+// and if not, each element is mapped to its own attribute and wraped with [AggregateAttr].
+#[op_interface_impl]
+impl ToCFDialect for GlobalOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let memref_ty = self.memref_type(ctx);
+        let (element_ty, num_elements) = {
+            let memref_ty = memref_ty.deref(ctx);
+            (
+                memref_ty.element_type(),
+                memref_ty
+                    .num_elements()
+                    .expect("The verifier establishes the static shape of memref.global"),
+            )
+        };
+        let Ok(element) = DenseElementTypeHandle::from_handle(element_ty, ctx) else {
+            return input_err!(
+                self.loc(ctx),
+                GlobalOpConversionErr::UnsupportedElementType(element_ty.disp(ctx).to_string())
+            );
+        };
+        let element_size = element.deref(ctx).element_size();
+        let mut layout = data_layout(ctx, self.get_operation())?;
+        assert_eq!(
+            element_size as u64,
+            layout.type_store_size(ctx, element_ty)?,
+            "the buffer of {} does not pack its elements as LLVM stores them",
+            element_ty.disp(ctx)
+        );
+        let packs_exactly = layout.packs_exactly(ctx, element_ty)?;
+        let array_ty = if packs_exactly {
+            let i8_ty = IntegerType::get(ctx, 8, Signedness::Signless);
+            ArrayType::get(ctx, i8_ty.into(), (num_elements * element_size) as u64)
+        } else {
+            ArrayType::get(ctx, element_ty, num_elements as u64)
+        };
+
+        let llvm_global = LlvmGlobalOp::new(ctx, self.get_symbol_name(ctx), array_ty.into());
+        llvm_global.set_constant(ctx, self.is_constant(ctx));
+        llvm_global.set_alignment(ctx, layout.abi_type_align(ctx, element_ty)?);
+
+        // We delete this op right after, and thus move the initializer out.
+        let initializer = self.take_initializer(ctx);
+
+        // The absense of an initializer is assumed to indicate external linkage.
+        // TODO: We may want to revisit this later and introduce an actual linkage attribute.
+        let linkage = if initializer.is_none() {
+            LinkageAttr::ExternalLinkage
+        } else {
+            LinkageAttr::PrivateLinkage
+        };
+        llvm_global.set_attr_llvm_global_linkage(ctx, linkage);
+
+        if let Some(init) = initializer {
+            let init = if init.is_all_zero() {
+                Box::new(ZeroAttr(array_ty.into())) as AttrObj
+            } else if packs_exactly {
+                Box::new(BytesAttr::new(init.into_expanded_data(ctx))) as AttrObj
+            } else {
+                let element = element.deref(ctx);
+                let elements = init
+                    .into_expanded_data(ctx)
+                    .chunks(element_size)
+                    .map(|bytes| element.element_attr(ctx, bytes))
+                    .collect();
+                Box::new(AggregateAttr::new(elements, array_ty.into())) as AttrObj
+            };
+            llvm_global.set_initializer_value(ctx, init);
+        }
+
+        rewriter.append_op(ctx, &llvm_global);
+        rewriter.replace_operation(ctx, self.get_operation(), llvm_global.get_operation());
+        Ok(())
+    }
+}
+
+// Replace [GetGlobalOp] with
+// * The address of the LLVM global that holds the constant.
+// * A memref descriptor built around that address.
+#[op_interface_impl]
+impl ToCFDialect for GetGlobalOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let memref_ty = TypedHandle::<RankedMemrefType>::from_handle(self.result_type(ctx), ctx)
+            .expect("The result type of GetGlobalOp must be a RankedMemrefType");
+
+        let address_of = AddressOfOp::new(ctx, self.global_name(ctx), 0);
+        rewriter.append_op(ctx, &address_of);
+        let global_ptr = address_of.get_result(ctx);
+
+        assert!(memref_ty.deref(ctx).has_static_shape());
+        let (sizes, strides, _num_elems) =
+            descriptor::compute_sizes_strides(ctx, rewriter, memref_ty, vec![]);
+
+        let offset = IndexConstantOp::new(ctx, 0);
+        rewriter.append_op(ctx, &offset);
+
+        let descriptor = descriptor::pack_descriptor(
+            ctx,
+            rewriter,
+            memref_ty,
+            descriptor::Descriptor {
+                allocated_ptr: global_ptr,
+                aligned_ptr: global_ptr,
+                offset: offset.get_result(ctx),
+                sizes,
+                strides,
+            },
+        )?;
+
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![descriptor]);
         Ok(())
     }
 }

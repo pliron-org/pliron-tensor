@@ -6,7 +6,7 @@
 //! - Memref -> CF -> LLVM dialect
 //! - execution of the result in a JIT.
 
-use expect_test::expect;
+use expect_test::{expect, expect_file};
 use pliron::{
     builtin::ops::ModuleOp,
     combine::Parser,
@@ -97,17 +97,28 @@ fn lower_to_llvm_ir(
     llvm_ctx_module
 }
 
-/// Run `input_ir` through the full pipeline and JIT compile the result. The
-/// bufferized IR is returned as text.
+/// Run `input_ir` through the full pipeline and return
+/// (LLVMContext, lowered LLVM module, bufferized pliron IR)
+fn compile<TMM: TensorMemoryManager>(
+    ctx: &mut Context,
+    tmm: &mut TMM,
+    input_ir: &str,
+) -> (LLVMContext, LLVMModule, String) {
+    let (parsed_op, module_op) = parse_module(ctx, input_ir);
+    let after_bufferization = bufferize_module(ctx, tmm, parsed_op, module_op);
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = lower_to_llvm_ir(ctx, parsed_op, module_op, &llvm_ctx);
+    (llvm_ctx, llvm_ir, after_bufferization)
+}
+
+/// Calls [compile] and returns the JIT object for the LLVM module.
+/// The bufferized pliron IR is also returned as-is.
 fn compile_and_jit<TMM: TensorMemoryManager>(
     ctx: &mut Context,
     tmm: &mut TMM,
     input_ir: &str,
 ) -> (SimpleJIT, String) {
-    let (parsed_op, module_op) = parse_module(ctx, input_ir);
-    let after_bufferization = bufferize_module(ctx, tmm, parsed_op, module_op);
-    let llvm_ctx = LLVMContext::default();
-    let llvm_ir = lower_to_llvm_ir(ctx, parsed_op, module_op, &llvm_ctx);
+    let (llvm_ctx, llvm_ir, after_bufferization) = compile(ctx, tmm, input_ir);
     let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     (jit, after_bufferization)
 }
@@ -675,7 +686,8 @@ fn test_extract_slice() {
                 llvm.store *out_second_p_v11 <- second_v19  !19;
                 llvm.return  !20
             } !21
-        }"#]].assert_eq(&after_bufferization);
+        }"#]]
+    .assert_eq(&after_bufferization);
 
     let src_data: Vec<u64> = (0..200_u64).collect();
     let src = input_tensor(&[10, 20], &src_data);
@@ -838,7 +850,8 @@ fn test_insert_slice() {
                 llvm.store *out_t_p_v16 <- t_v17  !21;
                 llvm.return  !22
             } !23
-        }"#]].assert_eq(&after_bufferization);
+        }"#]]
+    .assert_eq(&after_bufferization);
 
     let src_data: Vec<u64> = (100..150_u64).collect();
     let dst_data: Vec<u64> = (0..200_u64).collect();
@@ -965,7 +978,8 @@ fn test_tensor_reshape_from_rust() {
                 res_v9 = memref.load reshaped_v8[i_idx_v5, j_idx_v6] : builtin.integer i64 !6;
                 llvm.return res_v9 !7
             } !8
-        }"#]].assert_eq(&after_bufferization);
+        }"#]]
+    .assert_eq(&after_bufferization);
 
     let input_data = [1u64, 2, 3, 4, 5, 6];
     let input = input_tensor(&[2, 3], &input_data);
@@ -1156,7 +1170,8 @@ fn test_tiled_matmul() {
                 llvm.store *out_p_v40 <- result_v47  !53;
                 llvm.return  !54
             } !55
-        }"#]].assert_eq(&after_bufferization);
+        }"#]]
+    .assert_eq(&after_bufferization);
 
     let a_data: Vec<u64> = (1..=16_u64).collect();
     let b_data: Vec<u64> = (17..=32_u64).collect();
@@ -1198,4 +1213,175 @@ fn test_tiled_matmul() {
             "{name} produced wrong values"
         );
     }
+}
+
+#[test]
+fn test_constant_from_rust() {
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+            builtin.module @test_module {
+              ^entry():
+                llvm.func @test_constant_extract: llvm.func <builtin.fp64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
+                  ^entry(i_arg: builtin.integer i64, j_arg: builtin.integer i64):
+                    weights = tensor.constant : tensor.ranked<2x3:builtin.fp64> !100;
+                    i_idx = index.from_integer i_arg : index.index;
+                    j_idx = index.from_integer j_arg : index.index;
+                    res = tensor.extract weights[i_idx, j_idx]: builtin.fp64;
+                    llvm.return res
+                };
+                llvm.func @test_constant_add: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(arg_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+                    arg = llvm.load arg_p : tensor.ranked<2x3:builtin.fp64>;
+                    bias = tensor.constant : tensor.ranked<2x3:builtin.fp64> !101;
+                    res = tensor.add arg, bias : tensor.ranked<2x3:builtin.fp64>;
+                    llvm.store *res_p <- res;
+                    llvm.return
+                };
+                llvm.func @test_constant_accumulator: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+                  ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+                    lhs = llvm.load lhs_p : tensor.ranked<2x2:builtin.integer i64>;
+                    rhs = llvm.load rhs_p : tensor.ranked<2x2:builtin.integer i64>;
+                    accum = tensor.constant : tensor.ranked<2x2:builtin.integer i64> !102;
+                    res = tensor.matmul lhs, rhs, accum : tensor.ranked<2x2:builtin.integer i64>;
+                    llvm.store *res_p <- res;
+                    llvm.return
+                };
+                llvm.func @test_constant_splat: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {
+                  ^entry(res_p: llvm.ptr(0)):
+                    ones = tensor.constant : tensor.ranked<4x4:builtin.fp64> !103;
+                    llvm.store *res_p <- ones;
+                    llvm.return
+                }
+            }
+
+            outlined_attributes:
+            !100 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.fp64> = [1, 2, 3, 4, 5, 6]>]
+            !101 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.fp64> = [1, 2, 3, 4, 5, 6]>]
+            !102 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i64> = [10, 20, 30, 40]>]
+            !103 = [tensor_constant_value = memref.dense_elements <tensor.ranked<4x4:builtin.fp64> = splat 1>]
+            "#;
+
+    let (llvm_ctx, llvm_ir, after_bufferization) = compile(ctx, &mut MallocFreeTMM, input_ir);
+
+    // - Each constant gets its own `memref.global`
+    // - The accumulator of the matmul is written in place
+    // - The constant's buffer is read-only, so its bufferization is not in-place.
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_constant_extract: llvm.func <builtin.fp64 (builtin.integer i64, builtin.integer i64) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(i_arg_v0: builtin.integer i64, j_arg_v1: builtin.integer i64) !1:
+                weights_v20 = memref.get_global @__constant_2x3xfp64_8B_0 : memref.ranked <2x3 : builtin.fp64 > !2;
+                i_idx_v3 = index.from_integer i_arg_v0 : index.index  !3;
+                j_idx_v4 = index.from_integer j_arg_v1 : index.index  !4;
+                res_v21 = memref.load weights_v20[i_idx_v3, j_idx_v4] : builtin.fp64  !5;
+                llvm.return res_v21 !6
+            } !7;
+            llvm.func @test_constant_add: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block3v1(arg_p_v6: llvm.ptr (0), res_p_v7: llvm.ptr (0)) !8:
+                arg_v8 = llvm.load arg_p_v6  : memref.ranked <2x3 : builtin.fp64 > !9;
+                bias_v22 = memref.get_global @__constant_2x3xfp64_8B_1 : memref.ranked <2x3 : builtin.fp64 > !10;
+                res_v23 = memref.alloc  : memref.ranked <2x3 : builtin.fp64 > !11;
+                memref.add res_v23 <- arg_v8 + bias_v22;
+                llvm.store *res_p_v7 <- res_v23  !12;
+                llvm.return  !13
+            } !14;
+            llvm.func @test_constant_accumulator: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block4v1(lhs_p_v11: llvm.ptr (0), rhs_p_v12: llvm.ptr (0), res_p_v13: llvm.ptr (0)) !15:
+                lhs_v14 = llvm.load lhs_p_v11  : memref.ranked <2x2 : builtin.integer i64> !16;
+                rhs_v15 = llvm.load rhs_p_v12  : memref.ranked <2x2 : builtin.integer i64> !17;
+                accum_v24 = memref.get_global @__constant_2x2xinteger_8B_2 : memref.ranked <2x2 : builtin.integer i64> !18;
+                v25 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+                memref.copy v25 <- accum_v24;
+                res_v26 = memref.matmul lhs_v14, rhs_v15, v25 : memref.ranked <2x2 : builtin.integer i64> !19;
+                llvm.store *res_p_v13 <- res_v26  !20;
+                llvm.return  !21
+            } !22;
+            llvm.func @test_constant_splat: llvm.func <llvm.void (llvm.ptr (0)) variadic = false>
+              [] 
+            {
+              ^entry_block5v1(res_p_v18: llvm.ptr (0)) !23:
+                ones_v27 = memref.get_global @__constant_4x4xfp64_8B_3 : memref.ranked <4x4 : builtin.fp64 > !24;
+                llvm.store *res_p_v18 <- ones_v27  !25;
+                llvm.return  !26
+            } !27;
+            memref.global @__constant_2x3xfp64_8B_0 : memref.ranked <2x3 : builtin.fp64 > [constant : true] !28;
+            memref.global @__constant_2x3xfp64_8B_1 : memref.ranked <2x3 : builtin.fp64 > [constant : true] !29;
+            memref.global @__constant_2x2xinteger_8B_2 : memref.ranked <2x2 : builtin.integer i64> [constant : true] !30;
+            memref.global @__constant_4x4xfp64_8B_3 : memref.ranked <4x4 : builtin.fp64 > [constant : true] !31
+        }"#]]
+    .assert_eq(&after_bufferization);
+
+    expect_file!["resources/test_constant_from_rust.expect.ll"].assert_eq(&llvm_ir.to_string());
+
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+
+    let extract =
+        unsafe { jit.lookup_symbol::<extern "C" fn(i64, i64) -> f64>("test_constant_extract") }
+            .expect("Failed to lookup symbol");
+    for i in 0..2i64 {
+        for j in 0..3i64 {
+            assert_eq!(extract(i, j), (i * 3 + j + 1) as f64);
+        }
+    }
+
+    let add = unsafe {
+        jit.lookup_symbol::<extern "C" fn(*const u8, *mut u8) -> ()>("test_constant_add")
+    }
+    .expect("Failed to lookup symbol");
+    let arg_data = [10.0f64, 20.0, 30.0, 40.0, 50.0, 60.0];
+    let arg = input_tensor(&[2, 3], &arg_data);
+    let mut add_res_ir_descr = output_tensor::<f64>(&[2, 3]).build_ir_descriptor();
+    add(
+        arg.build_ir_descriptor().as_ptr(),
+        add_res_ir_descr.as_mut_ptr(),
+    );
+    assert_eq!(
+        unsafe { output_data::<f64>(&add_res_ir_descr, 2) },
+        [11.0, 22.0, 33.0, 44.0, 55.0, 66.0]
+    );
+
+    // The matmul writes to its accumulator, which is a constant here. It must write to
+    // a copy (inserted by the bufferizer), and thus two calls must give the same result.
+    let accumulate = unsafe {
+        jit.lookup_symbol::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            "test_constant_accumulator",
+        )
+    }
+    .expect("Failed to lookup symbol");
+    let lhs_data = [1i64, 2, 3, 4];
+    let rhs_data = [5i64, 6, 7, 8];
+    let lhs = input_tensor(&[2, 2], &lhs_data);
+    let rhs = input_tensor(&[2, 2], &rhs_data);
+    // [[1,2],[3,4]] * [[5,6],[7,8]] = [[19,22],[43,50]], plus [[10,20],[30,40]].
+    for call in 0..2 {
+        let mut res_ir_descr = output_tensor::<i64>(&[2, 2]).build_ir_descriptor();
+        accumulate(
+            lhs.build_ir_descriptor().as_ptr(),
+            rhs.build_ir_descriptor().as_ptr(),
+            res_ir_descr.as_mut_ptr(),
+        );
+        assert_eq!(
+            unsafe { output_data::<i64>(&res_ir_descr, 2) },
+            [29i64, 42, 73, 90],
+            "call {call} of test_constant_accumulator wrote to the constant"
+        );
+    }
+
+    let splat = unsafe { jit.lookup_symbol::<extern "C" fn(*mut u8) -> ()>("test_constant_splat") }
+        .expect("Failed to lookup symbol");
+    let mut splat_res_ir_descr = output_tensor::<f64>(&[4, 4]).build_ir_descriptor();
+    splat(splat_res_ir_descr.as_mut_ptr());
+    assert_eq!(
+        unsafe { output_data::<f64>(&splat_res_ir_descr, 2) },
+        [1.0f64; 16]
+    );
 }

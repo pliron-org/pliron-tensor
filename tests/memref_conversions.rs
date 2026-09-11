@@ -19,9 +19,12 @@ use pliron::{
 };
 
 use pliron_common_dialects::cf::to_llvm::CFToLLVM;
-use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::SimpleJIT};
+use pliron_llvm::llvm_sys::{
+    core::{LLVMContext, LLVMModule},
+    lljit::SimpleJIT,
+};
 
-use expect_test::expect;
+use expect_test::{expect, expect_file};
 use pliron_tensor::memref::conversions::MemrefToCF;
 
 /// Parse `input_ir` into a module and verify it.
@@ -44,16 +47,14 @@ fn parse_module(ctx: &mut Context, input_ir: &str) -> (Ptr<Operation>, ModuleOp)
     (parsed_op, module_op)
 }
 
-/// Run `input_ir` through Memref -> CF -> LLVM dialect and JIT compile the result.
-/// The converted module and its LLVM-IR are returned as text.
-fn compile_and_jit(ctx: &mut Context, input_ir: &str) -> (SimpleJIT, String, String) {
+/// Run `input_ir` through Memref -> CF -> LLVM dialect. The converted values are returned.
+fn compile(ctx: &mut Context, input_ir: &str) -> (LLVMContext, LLVMModule, ModuleOp) {
     let (parsed_op, module_op) = parse_module(ctx, input_ir);
 
     apply_dialect_conversion(ctx, &mut MemrefToCF, parsed_op).expect_ok(ctx);
     apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
     verify_op(&module_op, ctx).expect_ok(ctx);
-    let converted = module_op.disp(ctx).to_string();
-    log::debug!("converted module:\n{}", converted);
+    log::debug!("converted module:\n{}", module_op.disp(ctx));
 
     let llvm_ctx = LLVMContext::default();
     let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
@@ -61,11 +62,16 @@ fn compile_and_jit(ctx: &mut Context, input_ir: &str) -> (SimpleJIT, String, Str
         .verify()
         .inspect_err(|e| eprintln!("LLVM-IR verification failed: {}", e))
         .unwrap();
-    let llvm_ir_text = llvm_ir.to_string();
-    log::debug!("LLVM-IR generated:\n{}", llvm_ir_text);
+    log::debug!("LLVM-IR generated:\n{}", llvm_ir);
 
+    (llvm_ctx, llvm_ir, module_op)
+}
+
+/// Calls [compile] and returns the converted module and its JIT object.
+fn compile_and_jit(ctx: &mut Context, input_ir: &str) -> (SimpleJIT, ModuleOp) {
+    let (llvm_ctx, llvm_ir, module_op) = compile(ctx, input_ir);
     let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
-    (jit, converted, llvm_ir_text)
+    (jit, module_op)
 }
 
 #[test]
@@ -93,7 +99,7 @@ fn test_alloc_generate() {
             }
             "#;
 
-    let (jit, converted, llvm_ir) = compile_and_jit(ctx, input_ir);
+    let (llvm_ctx, llvm_ir, module_op) = compile(ctx, input_ir);
 
     expect![[r#"
         builtin.module @test_module 
@@ -183,83 +189,12 @@ fn test_alloc_generate() {
             } !11;
             llvm.func @malloc: llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>
               []
-        }"#]].assert_eq(&converted);
+        }"#]]
+    .assert_eq(&module_op.disp(ctx).to_string());
 
-    expect![[r#"
-        ; ModuleID = 'test_module'
-        source_filename = "test_module"
+    expect_file!["resources/test_alloc_generate.expect.ll"].assert_eq(&llvm_ir.to_string());
 
-        define i64 @test_alloc_generate(i64 %0, i64 %1) {
-        entry_block2v1:
-          %v19 = mul i64 ptrtoint (ptr getelementptr (i64, ptr null, i32 1) to i64), 256
-          %v20 = call ptr @malloc(i64 %v19)
-          %v23 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } undef, ptr %v20, 0
-          %v24 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %v23, ptr %v20, 1
-          %v25 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %v24, i64 0, 2
-          %v29 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %v25, [2 x i64] [i64 16, i64 16], 3
-          %memref_v33 = insertvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %v29, [2 x i64] [i64 16, i64 1], 4
-          %v34 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %memref_v33, 3
-          %v35 = extractvalue [2 x i64] %v34, 0
-          %v36 = extractvalue [2 x i64] %v34, 1
-          br label %for_op_header_block9v1
-
-        for_op_header_block9v1:                           ; preds = %entry_split_block6v1, %entry_block2v1
-          %v83 = phi i64 [ 0, %entry_block2v1 ], [ %v85, %entry_split_block6v1 ]
-          %v84 = icmp ult i64 %v83, %v35
-          br i1 %v84, label %entry_block5v1, label %entry_split_block8v1
-
-        entry_block5v1:                                   ; preds = %for_op_header_block9v1
-          %iv_v73 = phi i64 [ %v83, %for_op_header_block9v1 ]
-          br label %for_op_header_block7v1
-
-        for_op_header_block7v1:                           ; preds = %entry_block4v1, %entry_block5v1
-          %v80 = phi i64 [ 0, %entry_block5v1 ], [ %v82, %entry_block4v1 ]
-          %v81 = icmp ult i64 %v80, %v36
-          br i1 %v81, label %entry_block3v3, label %entry_split_block6v1
-
-        entry_block3v3:                                   ; preds = %for_op_header_block7v1
-          %iv_v72 = phi i64 [ %v80, %for_op_header_block7v1 ]
-          br label %entry_block4v1
-
-        entry_block4v1:                                   ; preds = %entry_block3v3
-          %i_v39 = phi i64 [ %iv_v73, %entry_block3v3 ]
-          %j_v40 = phi i64 [ %iv_v72, %entry_block3v3 ]
-          %sum_v7 = add i64 %i_v39, %1
-          %v52 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %memref_v33, 1
-          %v53 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %memref_v33, 4
-          %v54 = extractvalue [2 x i64] %v53, 0
-          %v55 = extractvalue [2 x i64] %v53, 1
-          %v56 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %memref_v33, 2
-          %v57 = getelementptr i64, ptr %v52, i64 %v56
-          %v58 = mul i64 %v54, %i_v39
-          %v59 = mul i64 %v55, %j_v40
-          %v60 = add i64 %v59, %v58
-          %v61 = getelementptr i64, ptr %v57, i64 %v60
-          store i64 %sum_v7, ptr %v61, align 4
-          %v82 = add i64 %iv_v72, 1
-          br label %for_op_header_block7v1
-
-        entry_split_block6v1:                             ; preds = %for_op_header_block7v1
-          %v85 = add i64 %iv_v73, 1
-          br label %for_op_header_block9v1
-
-        entry_split_block8v1:                             ; preds = %for_op_header_block9v1
-          %v41 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %memref_v33, 1
-          %v42 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %memref_v33, 4
-          %v43 = extractvalue [2 x i64] %v42, 0
-          %v44 = extractvalue [2 x i64] %v42, 1
-          %v45 = extractvalue { ptr, ptr, i64, [2 x i64], [2 x i64] } %memref_v33, 2
-          %v46 = getelementptr i64, ptr %v41, i64 %v45
-          %v47 = mul i64 %v43, %0
-          %v48 = mul i64 %v44, %1
-          %v49 = add i64 %v48, %v47
-          %v50 = getelementptr i64, ptr %v46, i64 %v49
-          %result_v51 = load i64, ptr %v50, align 4
-          ret i64 %result_v51
-        }
-
-        declare ptr @malloc(i64)
-    "#]].assert_eq(&llvm_ir);
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
 
     let f = unsafe { jit.lookup_symbol::<fn(i64, i64) -> i64>("test_alloc_generate") }
         .expect("Failed to lookup symbol");
@@ -305,7 +240,7 @@ fn test_memref_dim() {
         }
         "#;
 
-    let (jit, converted, _) = compile_and_jit(ctx, input_ir);
+    let (jit, module_op) = compile_and_jit(ctx, input_ir);
 
     // A dynamic index must go through the descriptor in memory, a constant one is
     // an extract_value of the sizes array.
@@ -387,7 +322,8 @@ fn test_memref_dim() {
             } !16;
             llvm.func @malloc: llvm.func <llvm.ptr (0)(builtin.integer i64) variadic = false>
               []
-        }"#]].assert_eq(&converted);
+        }"#]]
+    .assert_eq(&module_op.disp(ctx).to_string());
 
     let dynamic_index =
         unsafe { jit.lookup_symbol::<fn(i64) -> i64>("test_memref_dim_dynamic_index") }
@@ -487,7 +423,7 @@ fn test_subview_copy_and_insert_slice() {
         }
         "#;
 
-    let (jit, _, _) = compile_and_jit(ctx, input_ir);
+    let (jit, _) = compile_and_jit(ctx, input_ir);
 
     // src is a 2x3 memref with src[i][j] = i*3 + j, and the view has offsets [0, 1]:
     // view[i][j] = src[i][1 + j] = i*3 + j + 1.
@@ -525,4 +461,82 @@ fn test_subview_copy_and_insert_slice() {
             assert_eq!(result, expected, "test_insert_slice({i}, {j}) = {result}");
         }
     }
+}
+
+#[test]
+fn test_globals() {
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+          ^entry():
+            memref.global @counter : memref.ranked<2 : builtin.integer i64> [constant : false] !100;
+            memref.global @defined_elsewhere : memref.ranked<2 : builtin.integer i64> [constant : false];
+            memref.global @odd : memref.ranked<3 : builtin.integer i24> [constant : true] !101;
+            llvm.func @bump: llvm.func <builtin.integer i64 (builtin.integer i64) variadic = false> [] {
+              ^entry(delta: builtin.integer i64):
+                counter = memref.get_global @counter : memref.ranked<2 : builtin.integer i64>;
+                idx0 = index.constant <index.constant 0> : index.index;
+                old = memref.load counter[idx0]: builtin.integer i64;
+                new = llvm.add old, delta <{nsw = false, nuw = false}> : builtin.integer i64;
+                memref.store new to counter[idx0];
+                llvm.return new
+            };
+            llvm.func @read: llvm.func <builtin.integer i24 (builtin.integer i64) variadic = false> [] {
+              ^entry(i_arg: builtin.integer i64):
+                odd = memref.get_global @odd : memref.ranked<3 : builtin.integer i24>;
+                i_idx = index.from_integer i_arg : index.index;
+                res = memref.load odd[i_idx]: builtin.integer i24;
+                llvm.return res
+            }
+        }
+
+        outlined_attributes:
+        !100 = [memref_global_initializer = memref.dense_elements <memref.ranked<2 : builtin.integer i64> = splat 0>]
+        !101 = [memref_global_initializer = memref.dense_elements <memref.ranked<3 : builtin.integer i24> = [11, 22, 33]>]
+        "#;
+
+    let (llvm_ctx, llvm_ir, _) = compile(ctx, input_ir);
+
+    expect![[r#"
+        ; ModuleID = 'test_module'
+        source_filename = "test_module"
+
+        @counter = private global [16 x i8] zeroinitializer, align 8
+        @defined_elsewhere = external global [16 x i8], align 8
+        @odd = private constant [3 x i24] [i24 11, i24 22, i24 33], align 4
+
+        define i64 @bump(i64 %0) {
+        entry_block2v1:
+          %old_v31 = load i64, ptr @counter, align 4
+          %new_v4 = add i64 %old_v31, %0
+          store i64 %new_v4, ptr @counter, align 4
+          ret i64 %new_v4
+        }
+
+        define i24 @read(i64 %0) {
+        entry_block3v1:
+          %v59 = mul i64 1, %0
+          %v60 = getelementptr i24, ptr @odd, i64 %v59
+          %res_v61 = load i24, ptr %v60, align 4
+          ret i24 %res_v61
+        }
+    "#]]
+    .assert_eq(&llvm_ir.to_string());
+
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+
+    // The mutable global must keep its value between calls.
+    let bump = unsafe { jit.lookup_symbol::<extern "C" fn(i64) -> i64>("bump") }
+        .expect("Failed to lookup symbol");
+    assert_eq!(bump(5), 5);
+    assert_eq!(bump(7), 12);
+    assert_eq!(bump(0), 12);
+
+    // Read all elements of @odd
+    let read = unsafe { jit.lookup_symbol::<extern "C" fn(i64) -> i32>("read") }
+        .expect("Failed to lookup symbol");
+    assert_eq!(read(0), 11);
+    assert_eq!(read(1), 22);
+    assert_eq!(read(2), 33);
 }

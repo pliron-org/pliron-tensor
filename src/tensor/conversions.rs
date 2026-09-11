@@ -15,16 +15,20 @@ use pliron::{
     },
     context::{Context, Ptr},
     derive::{op_interface_impl, type_interface_impl},
+    identifier::Identifier,
+    input_error,
     irbuild::{
         dialect_conversion::{DialectConversionRewriter, OperandsInfo},
         inserter::{Inserter, OpInsertionPoint},
         rewriter::{Rewriter, ScopedRewriter},
     },
     linked_list::ContainsLinkedList,
+    location::Located,
     op::Op,
     operation::Operation,
     result::Result,
-    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
+    symbol_table::nearest_symbol_table,
+    r#type::{TypeHandle, Typed, TypedHandle},
     value::{Use, Value},
 };
 use pliron_common_dialects::{
@@ -38,23 +42,26 @@ use pliron_llvm::ops::FuncOp;
 
 use crate::{
     memref::{
-        self, ToMemrefType, ToMemrefTypeFn, descriptor,
+        self, ToMemrefType,
+        attributes::DenseElementsAttr,
+        descriptor,
         op_interfaces::ElementWiseBinaryMemrefOpInterface,
         ops::{
-            CopyOp as MemrefCopyOp, MatMulOp as MemrefMatMulOp, ReshapeOp as MemrefReshapeOp,
-            SliceParam, SubviewOp as MemrefSubviewOp, YieldOp,
+            CopyOp as MemrefCopyOp, GetGlobalOp as MemrefGetGlobalOp, GlobalOp as MemrefGlobalOp,
+            MatMulOp as MemrefMatMulOp, ReshapeOp as MemrefReshapeOp, SliceParam,
+            SubviewOp as MemrefSubviewOp, YieldOp,
         },
         type_interfaces::{Dimension, MultiDimensionalType, ShapedType},
         types::RankedMemrefType,
     },
     tensor::{
-        bufferize::{Alias, AliasKind, BufferRelation, BufferizableOpInterface},
-        memory_management::TensorMemoryManager,
+        bufferize::{Alias, AliasKind, BufferRelation, BufferizableOpInterface, BufferizerState},
         op_interfaces::ElementWiseBinaryTensorOpInterface,
         ops::{
-            AddOp, BatchMatMulOp, DivOp, ExtractOp, ExtractSliceOp as TensorExtractSliceOp,
-            GenerateOp, InsertSliceOp as TensorInsertSliceOp, MatMulOp, MulOp,
-            ReshapeOp as TensorReshapeOp, SubOp,
+            AddOp, BatchMatMulOp, ConstantOp, DivOp, ExtractOp,
+            ExtractSliceOp as TensorExtractSliceOp, GenerateOp,
+            InsertSliceOp as TensorInsertSliceOp, MatMulOp, MulOp, ReshapeOp as TensorReshapeOp,
+            SubOp,
         },
         types::RankedTensorType,
     },
@@ -62,21 +69,9 @@ use crate::{
 
 #[type_interface_impl]
 impl ToMemrefType for RankedTensorType {
-    fn converter(&self) -> ToMemrefTypeFn {
-        |self_ty, ctx| {
-            let (element_ty, shape) = {
-                let ranked_tensor_ty = self_ty.deref(ctx);
-                let ranked_tensor_ty = ranked_tensor_ty
-                    .downcast_ref::<RankedTensorType>()
-                    .expect("Expected a RankedTensorType");
-                (
-                    ranked_tensor_ty.element_type(),
-                    ranked_tensor_ty.shape().clone(),
-                )
-            };
-            let memref_ty = RankedMemrefType::get(ctx, element_ty, shape);
-            Ok(memref_ty.into())
-        }
+    fn convert(&self, ctx: &Context) -> Result<TypeHandle> {
+        let memref_ty = RankedMemrefType::get(ctx, self.element_type(), self.shape().clone());
+        Ok(memref_ty.into())
     }
 }
 
@@ -84,16 +79,127 @@ impl ToMemrefType for RankedTensorType {
 /// memref equivalent. Returns an error if it cannot do the conversion.
 fn tensor_type_to_memref_type(
     ty: TypeHandle,
-    ctx: &mut Context,
+    ctx: &Context,
 ) -> Result<TypedHandle<RankedMemrefType>> {
-    let maybe_conv: Option<ToMemrefTypeFn> =
-        type_cast::<dyn ToMemrefType>(&*ty.deref(ctx)).map(|t| t.converter());
-    let memref_ty_ptr = if let Some(conv) = maybe_conv {
-        conv(ty, ctx)?
-    } else {
-        ty
+    TypedHandle::<RankedMemrefType>::from_handle(memref::to_memref_type(ty, ctx)?, ctx)
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ConstantOpConversionErr {
+    #[error("Nearest symbol table not found")]
+    NearestSymbolTableNotFound,
+}
+
+/// Build a name for a constant global from its shaped type. The caller should unique the name.
+fn constant_global_name(ctx: &Context, value: &DenseElementsAttr) -> Identifier {
+    use core::fmt::Write;
+
+    let mut name = String::from("__constant_");
+    let shaped_ty = value.ty();
+    let shaped_ty = shaped_ty.deref(ctx);
+    for dim in shaped_ty.shape() {
+        let Dimension::Static(extent) = dim else {
+            panic!("A constant global must have a fully static shape");
+        };
+        let _ = write!(name, "{extent}x");
+    }
+    let element_ty = shaped_ty.element_type();
+    let element_name = Identifier::from(element_ty.deref(ctx).get_type_id().name.clone());
+    let _ = write!(name, "{element_name}_{}B", value.element_size(ctx));
+    name.try_into()
+        .expect("What we just built must be a valid identifier")
+}
+
+/// Create a [MemrefGlobalOp] that holds `value` in the symbol table nearest to `op`.
+/// Return its name.
+fn create_constant_global(
+    ctx: &mut Context,
+    bufferizer_state: &mut BufferizerState,
+    op: Ptr<Operation>,
+    memref_ty: TypedHandle<RankedMemrefType>,
+    value: DenseElementsAttr,
+) -> Result<Identifier> {
+    let symbol_table_op = nearest_symbol_table(ctx, op).ok_or_else(|| {
+        input_error!(
+            op.deref(ctx).loc(),
+            ConstantOpConversionErr::NearestSymbolTableNotFound
+        )
+    })?;
+    let symbol_table = bufferizer_state
+        .symbol_tables
+        .get_symbol_table(ctx, symbol_table_op);
+
+    // Build a new identifier from an existing one and a counter suffic.
+    let append_count = |id, count| {
+        id + format!("_{count}")
+            .try_into()
+            .expect("_i must be an Identifier")
     };
-    TypedHandle::<RankedMemrefType>::from_handle(memref_ty_ptr, ctx)
+
+    // Come up with a name for this global and unique it.
+    let hint = constant_global_name(ctx, &value);
+    let mut name = append_count(hint.clone(), bufferizer_state.name_counter);
+    while symbol_table.lookup(&name).is_some() {
+        bufferizer_state.name_counter += 1;
+        name = append_count(hint.clone(), bufferizer_state.name_counter);
+    }
+    bufferizer_state.name_counter += 1;
+
+    // Create and insert the global in the symbol table (op).
+    let global = MemrefGlobalOp::new(ctx, name.clone(), memref_ty, Some(value), true);
+    symbol_table.insert(ctx, Box::new(global), None)?;
+    Ok(name)
+}
+
+// A constant bufferizes to a [MemrefGlobalOp] at module scope,
+// and a [MemrefGetGlobalOp] to access it.
+#[op_interface_impl]
+impl BufferizableOpInterface for ConstantOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+
+    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        vec![]
+    }
+
+    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+        None
+    }
+
+    fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
+        // Constant storage isn't writable
+        false
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let memref_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
+        // `take_value` here makes `self` incorrect, but we delete `self` right after.
+        let mut value = self.take_value(ctx);
+        value.set_type(ctx, memref_ty.into())?;
+        let name = create_constant_global(
+            ctx,
+            bufferizer_state,
+            self.get_operation(),
+            memref_ty,
+            value,
+        )?;
+
+        let get_global = MemrefGetGlobalOp::new(ctx, name, memref_ty);
+        rewriter.append_op(ctx, &get_global);
+        rewriter.replace_operation(ctx, self.get_operation(), get_global.get_operation());
+        Ok(())
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -124,12 +230,12 @@ impl BufferizableOpInterface for GenerateOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
 
-        let alloc = bufferizer_callbacks.create_memref_alloc(
+        let alloc = bufferizer_state.tmm.create_memref_alloc(
             ctx,
             result_ty,
             self.dynamic_dimensions(ctx),
@@ -213,7 +319,7 @@ impl BufferizableOpInterface for ExtractOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let operand = self.get_tensor_operand(ctx);
@@ -233,7 +339,7 @@ trait ElementWiseBinaryTensorOpToMemref: ElementWiseBinaryTensorOpInterface {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let lhs = self.get_operation().deref(ctx).get_operand(0);
@@ -259,7 +365,9 @@ trait ElementWiseBinaryTensorOpToMemref: ElementWiseBinaryTensorOpInterface {
         let result_ty = RankedMemrefType::get(ctx, elem_ty, compatible_shape);
 
         let alloc =
-            bufferizer_callbacks.create_memref_alloc(ctx, result_ty, dynamic_dim_operands)?;
+            bufferizer_state
+                .tmm
+                .create_memref_alloc(ctx, result_ty, dynamic_dim_operands)?;
         rewriter.append_operation(ctx, alloc.get_operation());
         let add = self.build_memref_op(ctx, alloc.get_result(ctx), lhs, rhs);
         rewriter.append_operation(ctx, add);
@@ -352,14 +460,14 @@ macro_rules! impl_non_aliasing_bufferizable {
                 &self,
                 ctx: &mut Context,
                 rewriter: &mut DialectConversionRewriter,
-                bufferizer_callbacks: &mut dyn TensorMemoryManager,
+                bufferizer_state: &mut BufferizerState,
                 _operands_info: &OperandsInfo,
             ) -> Result<()> {
                 <Self as ElementWiseBinaryTensorOpToMemref>::rewrite(
                     self,
                     ctx,
                     rewriter,
-                    bufferizer_callbacks,
+                    bufferizer_state,
                     _operands_info,
                 )
             }
@@ -396,17 +504,11 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let loaded_ty = self.get_result(ctx).get_type(ctx);
-        let to_memref_ty =
-            type_cast::<dyn ToMemrefType>(&*loaded_ty.deref(ctx)).map(|t| t.converter());
-        let memref_ty = if let Some(to_memref_ty) = to_memref_ty {
-            (to_memref_ty)(loaded_ty, ctx)?
-        } else {
-            loaded_ty
-        };
+        let memref_ty = memref::to_memref_type(loaded_ty, ctx)?;
         rewriter.set_value_type(ctx, self.get_result(ctx), memref_ty);
         Ok(())
     }
@@ -451,7 +553,7 @@ impl BufferizableOpInterface for ForOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let iter_args_init = self.get_iter_args_init(ctx);
@@ -495,7 +597,7 @@ impl BufferizableOpInterface for MatMulOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let lhs = self.get_operation().deref(ctx).get_operand(0);
@@ -539,7 +641,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         use crate::memref::type_interfaces::Dimension;
@@ -834,25 +936,11 @@ pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> 
     // update the function type to convert any tensor types in the signature to memref types.
     let func_ty = func_op.get_type(ctx);
     let res_ty = func_ty.deref(ctx).result_type();
-    let res_ty_converter = type_cast::<dyn ToMemrefType>(&*res_ty.deref(ctx))
-        .map(|to_memref_ty| to_memref_ty.converter());
-    let res_ty = if let Some(res_ty_converter) = res_ty_converter {
-        (res_ty_converter)(res_ty, ctx)?
-    } else {
-        res_ty
-    };
+    let res_ty = memref::to_memref_type(res_ty, ctx)?;
     let arg_tys = func_ty.deref(ctx).arg_types();
     let arg_tys = arg_tys
         .iter()
-        .map(|arg_ty| {
-            let arg_ty_converter = type_cast::<dyn ToMemrefType>(&*arg_ty.deref(ctx))
-                .map(|to_memref_ty| to_memref_ty.converter());
-            if let Some(arg_ty_converter) = arg_ty_converter {
-                (arg_ty_converter)(*arg_ty, ctx)
-            } else {
-                Ok(*arg_ty)
-            }
-        })
+        .map(|arg_ty| memref::to_memref_type(*arg_ty, ctx))
         .collect::<Result<Vec<_>>>()?;
     let new_func_ty = pliron_llvm::types::FuncType::get(ctx, res_ty, arg_tys, false);
     func_op.set_attr_llvm_func_type(ctx, TypeAttr::new(new_func_ty.into()));
@@ -864,14 +952,7 @@ pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> 
 
     let args = entry_block.deref(ctx).arguments().collect::<Vec<_>>();
     for arg in args {
-        let arg_ty = arg.get_type(ctx);
-        let arg_ty_converter = type_cast::<dyn ToMemrefType>(&*arg_ty.deref(ctx))
-            .map(|to_memref_ty| to_memref_ty.converter());
-        let arg_ty = if let Some(arg_ty_converter) = arg_ty_converter {
-            (arg_ty_converter)(arg_ty, ctx)?
-        } else {
-            arg_ty
-        };
+        let arg_ty = memref::to_memref_type(arg.get_type(ctx), ctx)?;
         arg.set_type(ctx, arg_ty);
     }
 
@@ -911,7 +992,7 @@ impl BufferizableOpInterface for FuncOp {
         &self,
         ctx: &mut Context,
         _rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         lower_func_op_to_llvm(self, ctx)
@@ -946,7 +1027,7 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let subview = MemrefSubviewOp::new(
@@ -990,7 +1071,7 @@ impl BufferizableOpInterface for TensorInsertSliceOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let destination = self.destination(ctx);
@@ -1039,7 +1120,7 @@ impl BufferizableOpInterface for TensorReshapeOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_callbacks: &mut dyn TensorMemoryManager,
+        _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;

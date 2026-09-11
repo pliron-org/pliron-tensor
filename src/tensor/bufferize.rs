@@ -67,6 +67,7 @@ use pliron::{
     op::{Op, op_cast, op_impls},
     operation::Operation,
     result::Result,
+    symbol_table::SymbolTableCollection,
     r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
     utils::union_find::UnionFind,
     value::{DefiningEntity, Use, Value},
@@ -236,7 +237,7 @@ pub trait BufferizableOpInterface {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        tmm: &mut dyn TensorMemoryManager,
+        bufferizer_state: &mut BufferizerState,
         operands_info: &OperandsInfo,
     ) -> Result<()>;
 
@@ -301,8 +302,8 @@ fn is_value_writable(ctx: &Context, value: Value) -> bool {
 
 /// A helper struct that implements [DialectConversion]
 /// to bufferize from tensor semantics to memref semantics.
-struct Bufferizer<'tmm, TMM: TensorMemoryManager> {
-    tmm: &'tmm mut TMM,
+struct Bufferizer<'a> {
+    state: BufferizerState<'a>,
     /// Aliasing operands that must be copied to a fresh buffer before the op runs.
     out_of_place_operands: FxHashSet<Use<Value>>,
     /// Set of successor operands that must be copied before being passed to a successor block,
@@ -311,7 +312,17 @@ struct Bufferizer<'tmm, TMM: TensorMemoryManager> {
     successor_operands_needing_copy: FxHashSet<Use<Value>>,
 }
 
-impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM> {
+/// Common state required by Ops implementing [BufferizableOpInterface].
+pub struct BufferizerState<'a> {
+    /// Cached symbol tables
+    pub symbol_tables: SymbolTableCollection,
+    /// Tensor memory manager
+    pub tmm: &'a mut dyn TensorMemoryManager,
+    /// A counter for new names generated, helps with uniquing.
+    pub name_counter: u64,
+}
+
+impl<'a> DialectConversion for Bufferizer<'a> {
     fn can_convert_op(&self, ctx: &Context, op: Ptr<Operation>) -> bool {
         op_impls::<dyn BufferizableOpInterface>(Operation::get_op_dyn(op, ctx).as_ref())
             || op
@@ -370,9 +381,10 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
                 }
                 dynamic_sizes
             };
-            let alloc_op = self
-                .tmm
-                .create_memref_alloc(ctx, ranked_memref_ty, dynamic_sizes)?;
+            let alloc_op =
+                self.state
+                    .tmm
+                    .create_memref_alloc(ctx, ranked_memref_ty, dynamic_sizes)?;
             let new_buffer = alloc_op.get_result(ctx);
             rewriter.append_operation(ctx, alloc_op.get_operation());
 
@@ -385,7 +397,7 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
 
         // Rewrite the op to use memref semantics.
         if let Some(op_iface) = op_iface_opt {
-            op_iface.rewrite(ctx, rewriter, self.tmm, _operands_info)?;
+            op_iface.rewrite(ctx, rewriter, &mut self.state, _operands_info)?;
         }
         Ok(())
     }
@@ -395,12 +407,7 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
     }
 
     fn convert_type(&mut self, ctx: &mut Context, ty: TypeHandle) -> Result<TypeHandle> {
-        let to_memref_ty = type_cast::<dyn ToMemrefType>(&*ty.deref(ctx)).map(|t| t.converter());
-        if let Some(to_memref_ty) = to_memref_ty {
-            to_memref_ty(ty, ctx)
-        } else {
-            Ok(ty)
-        }
+        crate::memref::to_memref_type(ty, ctx)
     }
 }
 
@@ -430,8 +437,8 @@ impl<'tmm, TMM: TensorMemoryManager> DialectConversion for Bufferizer<'tmm, TMM>
 /// 4. Rewrite the IR using dialect conversion, which invokes [BufferizableOpInterface::rewrite].
 ///
 /// The algorithm is, at worst, O(n^2) in the number of ops.
-pub fn bufferize<TMM: TensorMemoryManager>(
-    tmm: &mut TMM,
+pub fn bufferize(
+    tmm: &mut dyn TensorMemoryManager,
     op: Ptr<Operation>,
     ctx: &mut Context,
 ) -> Result<IRStatus> {
@@ -747,8 +754,12 @@ pub fn bufferize<TMM: TensorMemoryManager>(
         }
     }
 
-    let mut bufferizer = Bufferizer::<TMM> {
-        tmm,
+    let mut bufferizer = Bufferizer {
+        state: BufferizerState {
+            tmm,
+            symbol_tables: SymbolTableCollection::new(),
+            name_counter: 0,
+        },
         out_of_place_operands: analysis.out_of_place_operands,
         successor_operands_needing_copy: analysis.successor_operands_needing_copy,
     };
