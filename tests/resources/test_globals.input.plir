@@ -1,0 +1,26 @@
+builtin.module @test_module {
+  ^entry():
+    memref.global @counter : memref.ranked<2 : builtin.integer i64> [constant : false] !100;
+    memref.global @defined_elsewhere : memref.ranked<2 : builtin.integer i64> [constant : false];
+    memref.global @odd : memref.ranked<3 : builtin.integer i24> [constant : true] !101;
+    llvm.func @bump: llvm.func <builtin.integer i64 (builtin.integer i64) variadic = false> [] {
+      ^entry(delta: builtin.integer i64):
+        counter = memref.get_global @counter : memref.ranked<2 : builtin.integer i64>;
+        idx0 = index.constant <index.constant 0> : index.index;
+        old = memref.load counter[idx0]: builtin.integer i64;
+        new = llvm.add old, delta <{nsw = false, nuw = false}> : builtin.integer i64;
+        memref.store new to counter[idx0];
+        llvm.return new
+    };
+    llvm.func @read: llvm.func <builtin.integer i24 (builtin.integer i64) variadic = false> [] {
+      ^entry(i_arg: builtin.integer i64):
+        odd = memref.get_global @odd : memref.ranked<3 : builtin.integer i24>;
+        i_idx = index.from_integer i_arg : index.index;
+        res = memref.load odd[i_idx]: builtin.integer i24;
+        llvm.return res
+    }
+}
+
+outlined_attributes:
+!100 = [memref_global_initializer = memref.dense_elements <memref.ranked<2 : builtin.integer i64> = splat 0>]
+!101 = [memref_global_initializer = memref.dense_elements <memref.ranked<3 : builtin.integer i24> = [11, 22, 33]>]

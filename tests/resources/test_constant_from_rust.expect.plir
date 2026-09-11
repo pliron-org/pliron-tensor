@@ -1,0 +1,75 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_constant_extract: llvm.func <builtin.fp64 (builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(i_arg_v0: builtin.integer i64, j_arg_v1: builtin.integer i64) !0:
+        weights_v20 = memref.get_global @__constant_2x3xfp64_8B_0 : memref.ranked <2x3 : builtin.fp64 > !1;
+        i_idx_v3 = index.from_integer i_arg_v0 : index.index  !2;
+        j_idx_v4 = index.from_integer j_arg_v1 : index.index  !3;
+        res_v21 = memref.load weights_v20[i_idx_v3, j_idx_v4] : builtin.fp64  !4;
+        llvm.return res_v21
+    };
+    llvm.func @test_constant_add: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(arg_p_v6: llvm.ptr (0), res_p_v7: llvm.ptr (0)) !5:
+        arg_v8 = llvm.load arg_p_v6  : memref.ranked <2x3 : builtin.fp64 > !6;
+        bias_v22 = memref.get_global @__constant_2x3xfp64_8B_1 : memref.ranked <2x3 : builtin.fp64 > !7;
+        res_v23 = memref.alloc  : memref.ranked <2x3 : builtin.fp64 > !8;
+        memref.add res_v23 <- arg_v8 + bias_v22;
+        llvm.store *res_p_v7 <- res_v23 ;
+        llvm.return 
+    };
+    llvm.func @test_constant_accumulator: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block4v1(lhs_p_v11: llvm.ptr (0), rhs_p_v12: llvm.ptr (0), res_p_v13: llvm.ptr (0)) !9:
+        lhs_v14 = llvm.load lhs_p_v11  : memref.ranked <2x2 : builtin.integer i64> !10;
+        rhs_v15 = llvm.load rhs_p_v12  : memref.ranked <2x2 : builtin.integer i64> !11;
+        accum_v24 = memref.get_global @__constant_2x2xinteger_8B_2 : memref.ranked <2x2 : builtin.integer i64> !12;
+        v25 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v25 <- accum_v24;
+        res_v26 = memref.matmul lhs_v14, rhs_v15, v25 : memref.ranked <2x2 : builtin.integer i64> !13;
+        llvm.store *res_p_v13 <- res_v26 ;
+        llvm.return 
+    };
+    llvm.func @test_constant_splat: llvm.func <llvm.void (llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block5v1(res_p_v18: llvm.ptr (0)) !14:
+        ones_v27 = memref.get_global @__constant_4x4xfp64_8B_3 : memref.ranked <4x4 : builtin.fp64 > !15;
+        llvm.store *res_p_v18 <- ones_v27 ;
+        llvm.return 
+    };
+    memref.global @__constant_2x3xfp64_8B_0 : memref.ranked <2x3 : builtin.fp64 > [constant : true] !16;
+    memref.global @__constant_2x3xfp64_8B_1 : memref.ranked <2x3 : builtin.fp64 > [constant : true] !17;
+    memref.global @__constant_2x2xinteger_8B_2 : memref.ranked <2x2 : builtin.integer i64> [constant : true] !18;
+    memref.global @__constant_4x4xfp64_8B_3 : memref.ranked <4x4 : builtin.fp64 > [constant : true] !19
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [i_arg, j_arg]]
+!1 = [builtin_given_names = builtin.given_names [weights]]
+!2 = [builtin_given_names = builtin.given_names [i_idx]]
+!3 = [builtin_given_names = builtin.given_names [j_idx]]
+!4 = [builtin_given_names = builtin.given_names [res]]
+!5 = [builtin_given_names = builtin.given_names [arg_p, res_p]]
+!6 = [builtin_given_names = builtin.given_names [arg]]
+!7 = [builtin_given_names = builtin.given_names [bias]]
+!8 = [builtin_given_names = builtin.given_names [res]]
+!9 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, res_p]]
+!10 = [builtin_given_names = builtin.given_names [lhs]]
+!11 = [builtin_given_names = builtin.given_names [rhs]]
+!12 = [builtin_given_names = builtin.given_names [accum]]
+!13 = [builtin_given_names = builtin.given_names [res]]
+!14 = [builtin_given_names = builtin.given_names [res_p]]
+!15 = [builtin_given_names = builtin.given_names [ones]]
+!16 = [memref_global_initializer = !20]
+!17 = [memref_global_initializer = !20]
+!18 = [memref_global_initializer = !21]
+!19 = [memref_global_initializer = !22]
+!20 = memref.dense_elements <memref.ranked <2x3 : builtin.fp64 > = [1, 2, 3, 4, 5, 6]>
+!21 = memref.dense_elements <memref.ranked <2x2 : builtin.integer i64> = [10, 20, 30, 40]>
+!22 = memref.dense_elements <memref.ranked <4x4 : builtin.fp64 > = splat 1>

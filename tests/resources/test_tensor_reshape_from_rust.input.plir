@@ -1,0 +1,12 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(arg_p: llvm.ptr(0), i_res: builtin.integer i64, j_res: builtin.integer i64):
+        arg = llvm.load arg_p : tensor.ranked<2x3:builtin.integer i64>;
+        reshaped = tensor.reshape arg() : tensor.ranked<3x2:builtin.integer i64>;
+        i_idx = index.from_integer i_res : index.index;
+        j_idx = index.from_integer j_res : index.index;
+        res = tensor.extract reshaped[i_idx, j_idx]: builtin.integer i64;
+        llvm.return res
+    }
+}

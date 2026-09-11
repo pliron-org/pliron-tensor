@@ -1,0 +1,128 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_tiled_matmul_cf: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(a_p_v0: llvm.ptr (0), b_p_v1: llvm.ptr (0), c_p_v2: llvm.ptr (0), out_p_v3: llvm.ptr (0)) !0:
+        a_v4 = llvm.load a_p_v0  : memref.ranked <4x4 : builtin.integer i64> !1;
+        b_v5 = llvm.load b_p_v1  : memref.ranked <4x4 : builtin.integer i64> !2;
+        c_v6 = llvm.load c_p_v2  : memref.ranked <4x4 : builtin.integer i64> !3;
+        i_init_v7 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !4;
+        llvm.br ^outer_header_block4v1(i_init_v7, c_v6)
+
+      ^outer_header_block4v1(i_v8: builtin.integer i64, iv_c_v9: memref.ranked <4x4 : builtin.integer i64>) !5:
+        n_i_v10 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !6;
+        i_lt_v11 = llvm.icmp i_v8 <SLT> n_i_v10 : builtin.integer i1 !7;
+        llvm.cond_br if i_lt_v11 ^outer_body_block6v1(i_v8, iv_c_v9) else ^done_block8v3(iv_c_v9)
+
+      ^outer_body_block6v1(i_b_v12: builtin.integer i64, iv_c_b_v13: memref.ranked <4x4 : builtin.integer i64>) !8:
+        j_init_v14 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !9;
+        llvm.br ^inner_header_block7v1(i_b_v12, j_init_v14, iv_c_b_v13)
+
+      ^inner_header_block7v1(i_h_v15: builtin.integer i64, j_h_v16: builtin.integer i64, jv_c_v17: memref.ranked <4x4 : builtin.integer i64>) !10:
+        n_j_v18 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !11;
+        j_lt_v19 = llvm.icmp j_h_v16 <SLT> n_j_v18 : builtin.integer i1 !12;
+        llvm.cond_br if j_lt_v19 ^inner_body_block9v1(i_h_v15, j_h_v16, jv_c_v17) else ^outer_latch_block3v9(i_h_v15, jv_c_v17)
+
+      ^inner_body_block9v1(i_n_v20: builtin.integer i64, j_n_v21: builtin.integer i64, jv_c_n_v22: memref.ranked <4x4 : builtin.integer i64>) !13:
+        i_idx_v23 = index.from_integer i_n_v20 : index.index  !14;
+        j_idx_v24 = index.from_integer j_n_v21 : index.index  !15;
+        $slice_a_v58 = memref.subview a_v4 [i_idx_v23, 0] [2, 4] [1, 1] : memref.ranked <2x4 : builtin.integer i64> !16;
+        $slice_b_v59 = memref.subview b_v5 [0, j_idx_v24] [4, 2] [1, 1] : memref.ranked <4x2 : builtin.integer i64> !17;
+        $slice_c_v60 = memref.subview jv_c_n_v22 [i_idx_v23, j_idx_v24] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64> !18;
+        v61 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v61 <- slice_c_v60;
+        tiled_v62 = memref.matmul slice_a_v58, slice_b_v59, v61 : memref.ranked <2x2 : builtin.integer i64> !19;
+        $v63 = memref.subview jv_c_n_v22 [i_idx_v23, j_idx_v24] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v63 <- tiled_v62;
+        step_j_v30 = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64 !20;
+        j_next_v31 = llvm.add j_n_v21, step_j_v30 <{nsw=false,nuw=false}>: builtin.integer i64 !21;
+        llvm.br ^inner_header_block7v1(i_n_v20, j_next_v31, jv_c_n_v22)
+
+      ^outer_latch_block3v9(i_l_v32: builtin.integer i64, jv_c_l_v33: memref.ranked <4x4 : builtin.integer i64>) !22:
+        step_i_v34 = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64 !23;
+        i_next_v35 = llvm.add i_l_v32, step_i_v34 <{nsw=false,nuw=false}>: builtin.integer i64 !24;
+        llvm.br ^outer_header_block4v1(i_next_v35, jv_c_l_v33)
+
+      ^done_block8v3(result_v36: memref.ranked <4x4 : builtin.integer i64>) !25:
+        llvm.store *out_p_v3 <- result_v36 ;
+        llvm.return 
+    };
+    llvm.func @test_tiled_matmul_scf: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block5v3(a_p_v37: llvm.ptr (0), b_p_v38: llvm.ptr (0), c_p_v39: llvm.ptr (0), out_p_v40: llvm.ptr (0)) !26:
+        a_v41 = llvm.load a_p_v37  : memref.ranked <4x4 : builtin.integer i64> !27;
+        b_v42 = llvm.load b_p_v38  : memref.ranked <4x4 : builtin.integer i64> !28;
+        c_v43 = llvm.load c_p_v39  : memref.ranked <4x4 : builtin.integer i64> !29;
+        c0_v44 = index.constant <index.constant 0> : index.index  !30;
+        c2_v45 = index.constant <index.constant 2> : index.index  !31;
+        c4_v46 = index.constant <index.constant 4> : index.index  !32;
+        result_v47 = cf.for c0_v44 to c4_v46 step c2_v45 (c_v43) 
+        {
+          ^entry_block10v1(i_v48: index.index , iv_c_v49: memref.ranked <4x4 : builtin.integer i64>) !33:
+            inner_res_v50 = cf.for c0_v44 to c4_v46 step c2_v45 (iv_c_v49) 
+            {
+              ^entry_block11v1(j_v51: index.index , jv_c_v52: memref.ranked <4x4 : builtin.integer i64>) !34:
+                $slice_a_v64 = memref.subview a_v41 [i_v48, 0] [2, 4] [1, 1] : memref.ranked <2x4 : builtin.integer i64> !35;
+                $slice_b_v65 = memref.subview b_v42 [0, j_v51] [4, 2] [1, 1] : memref.ranked <4x2 : builtin.integer i64> !36;
+                $slice_c_v66 = memref.subview jv_c_v52 [i_v48, j_v51] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64> !37;
+                v67 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+                memref.copy v67 <- slice_c_v66;
+                tiled_v68 = memref.matmul slice_a_v64, slice_b_v65, v67 : memref.ranked <2x2 : builtin.integer i64> !38;
+                $v69 = memref.subview jv_c_v52 [i_v48, j_v51] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
+                memref.copy v69 <- tiled_v68;
+                cf.yield jv_c_v52
+            }
+ !39;
+            cf.yield inner_res_v50
+        }
+ !40;
+        llvm.store *out_p_v40 <- result_v47 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [a_p, b_p, c_p, out_p]]
+!1 = [builtin_given_names = builtin.given_names [a]]
+!2 = [builtin_given_names = builtin.given_names [b]]
+!3 = [builtin_given_names = builtin.given_names [c]]
+!4 = [builtin_given_names = builtin.given_names [i_init]]
+!5 = [builtin_given_names = builtin.given_names [i, iv_c]]
+!6 = [builtin_given_names = builtin.given_names [n_i]]
+!7 = [builtin_given_names = builtin.given_names [i_lt]]
+!8 = [builtin_given_names = builtin.given_names [i_b, iv_c_b]]
+!9 = [builtin_given_names = builtin.given_names [j_init]]
+!10 = [builtin_given_names = builtin.given_names [i_h, j_h, jv_c]]
+!11 = [builtin_given_names = builtin.given_names [n_j]]
+!12 = [builtin_given_names = builtin.given_names [j_lt]]
+!13 = [builtin_given_names = builtin.given_names [i_n, j_n, jv_c_n]]
+!14 = [builtin_given_names = builtin.given_names [i_idx]]
+!15 = [builtin_given_names = builtin.given_names [j_idx]]
+!16 = [builtin_given_names = builtin.given_names [slice_a]]
+!17 = [builtin_given_names = builtin.given_names [slice_b]]
+!18 = [builtin_given_names = builtin.given_names [slice_c]]
+!19 = [builtin_given_names = builtin.given_names [tiled]]
+!20 = [builtin_given_names = builtin.given_names [step_j]]
+!21 = [builtin_given_names = builtin.given_names [j_next]]
+!22 = [builtin_given_names = builtin.given_names [i_l, jv_c_l]]
+!23 = [builtin_given_names = builtin.given_names [step_i]]
+!24 = [builtin_given_names = builtin.given_names [i_next]]
+!25 = [builtin_given_names = builtin.given_names [result]]
+!26 = [builtin_given_names = builtin.given_names [a_p, b_p, c_p, out_p]]
+!27 = [builtin_given_names = builtin.given_names [a]]
+!28 = [builtin_given_names = builtin.given_names [b]]
+!29 = [builtin_given_names = builtin.given_names [c]]
+!30 = [builtin_given_names = builtin.given_names [c0]]
+!31 = [builtin_given_names = builtin.given_names [c2]]
+!32 = [builtin_given_names = builtin.given_names [c4]]
+!33 = [builtin_given_names = builtin.given_names [i, iv_c]]
+!34 = [builtin_given_names = builtin.given_names [j, jv_c]]
+!35 = [builtin_given_names = builtin.given_names [slice_a]]
+!36 = [builtin_given_names = builtin.given_names [slice_b]]
+!37 = [builtin_given_names = builtin.given_names [slice_c]]
+!38 = [builtin_given_names = builtin.given_names [tiled]]
+!39 = [builtin_given_names = builtin.given_names [inner_res]]
+!40 = [builtin_given_names = builtin.given_names [result]]

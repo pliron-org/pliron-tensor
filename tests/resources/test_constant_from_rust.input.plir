@@ -1,0 +1,40 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_constant_extract: llvm.func <builtin.fp64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(i_arg: builtin.integer i64, j_arg: builtin.integer i64):
+        weights = tensor.constant : tensor.ranked<2x3:builtin.fp64> !100;
+        i_idx = index.from_integer i_arg : index.index;
+        j_idx = index.from_integer j_arg : index.index;
+        res = tensor.extract weights[i_idx, j_idx]: builtin.fp64;
+        llvm.return res
+    };
+    llvm.func @test_constant_add: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(arg_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        arg = llvm.load arg_p : tensor.ranked<2x3:builtin.fp64>;
+        bias = tensor.constant : tensor.ranked<2x3:builtin.fp64> !101;
+        res = tensor.add arg, bias : tensor.ranked<2x3:builtin.fp64>;
+        llvm.store *res_p <- res;
+        llvm.return
+    };
+    llvm.func @test_constant_accumulator: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<2x2:builtin.integer i64>;
+        rhs = llvm.load rhs_p : tensor.ranked<2x2:builtin.integer i64>;
+        accum = tensor.constant : tensor.ranked<2x2:builtin.integer i64> !102;
+        res = tensor.matmul lhs, rhs, accum : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.store *res_p <- res;
+        llvm.return
+    };
+    llvm.func @test_constant_splat: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {
+      ^entry(res_p: llvm.ptr(0)):
+        ones = tensor.constant : tensor.ranked<4x4:builtin.fp64> !103;
+        llvm.store *res_p <- ones;
+        llvm.return
+    }
+}
+
+outlined_attributes:
+!100 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.fp64> = [1, 2, 3, 4, 5, 6]>]
+!101 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.fp64> = [1, 2, 3, 4, 5, 6]>]
+!102 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i64> = [10, 20, 30, 40]>]
+!103 = [tensor_constant_value = memref.dense_elements <tensor.ranked<4x4:builtin.fp64> = splat 1>]

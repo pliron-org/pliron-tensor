@@ -1,0 +1,25 @@
+builtin.module @test_module {
+  ^entry():
+  llvm.func @test_memref_dim_dynamic_index: llvm.func <builtin.integer i64 (builtin.integer i64) variadic = false> [] {
+    ^entry(dim_arg: builtin.integer i64):
+    memref = memref.alloc : memref.ranked<16 x 32 : builtin.integer i64>;
+    dim_idx = index.from_integer dim_arg : index.index;
+    dim = memref.dim memref, dim_idx : index.index;
+    dim_int = index.to_integer dim to builtin.integer i64;
+    llvm.return dim_int
+  };
+  llvm.func @test_memref_dim_const_index: llvm.func <builtin.integer i64 () variadic = false> [] {
+    ^entry():
+    memref = memref.alloc : memref.ranked<16 x 32 : builtin.integer i64>;
+    idx0 = index.constant <index.constant 0> : index.index;
+    idx1 = index.constant <index.constant 1> : index.index;
+    dim0 = memref.dim memref, idx0 : index.index;
+    dim1 = memref.dim memref, idx1 : index.index;
+    dim0_i64 = index.to_integer dim0 to builtin.integer i64;
+    dim1_i64 = index.to_integer dim1 to builtin.integer i64;
+    thousand = builtin.constant <builtin.integer <1000: i64>> : builtin.integer i64;
+    scaled = llvm.mul dim0_i64, thousand <{nsw = false, nuw = false}> : builtin.integer i64;
+    encoded = llvm.add scaled, dim1_i64 <{nsw = false, nuw = false}> : builtin.integer i64;
+    llvm.return encoded
+  }
+}

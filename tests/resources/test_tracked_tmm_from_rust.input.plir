@@ -1,0 +1,23 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_tensor_add_tracked: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
+        arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
+        res = tensor.add arg1, arg2 : tensor.ranked<4x4:builtin.integer i64>;
+        llvm.store *res_p <- res;
+        llvm.return
+    };
+    llvm.func @test_tensor_complex_tracked: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), arg3_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
+        arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
+        arg3 = llvm.load arg3_p : tensor.ranked<4x4:builtin.integer i64>;
+        mat = tensor.matmul arg1, arg2, arg3 : tensor.ranked<4x4:builtin.integer i64>;
+        sum = tensor.add mat, arg1 : tensor.ranked<4x4:builtin.integer i64>;
+        diff = tensor.sub sum, arg2 : tensor.ranked<4x4:builtin.integer i64>;
+        res = tensor.mul diff, arg1 : tensor.ranked<4x4:builtin.integer i64>;
+        llvm.store *res_p <- res;
+        llvm.return
+    }
+}

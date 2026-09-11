@@ -1,0 +1,18 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_alloc_generate: llvm.func <builtin.integer i64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(i_res: builtin.integer i64, j_res: builtin.integer i64):
+        memref = memref.alloc : memref.ranked<16 x 16 : builtin.integer i64>;
+        memref.generate memref {
+          ^entry(i : index.index, j : index.index):
+            i_int = index.to_integer i to builtin.integer i64;
+            j_int = index.to_integer j to builtin.integer i64;
+            sum = llvm.add i_int, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
+            memref.yield sum
+        };
+        i_index = index.from_integer i_res : index.index;
+        j_index = index.from_integer j_res : index.index;
+        result = memref.load memref[i_index, j_index]: builtin.integer i64;
+        llvm.return result
+    }
+}

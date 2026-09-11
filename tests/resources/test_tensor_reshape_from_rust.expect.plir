@@ -1,0 +1,23 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_tensor_reshape_extract: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(arg_p_v0: llvm.ptr (0), i_res_v1: builtin.integer i64, j_res_v2: builtin.integer i64) !0:
+        arg_v3 = llvm.load arg_p_v0  : memref.ranked <2x3 : builtin.integer i64> !1;
+        reshaped_v8 = memref.reshape arg_v3 : memref.ranked <3x2 : builtin.integer i64> !2;
+        i_idx_v5 = index.from_integer i_res_v1 : index.index  !3;
+        j_idx_v6 = index.from_integer j_res_v2 : index.index  !4;
+        res_v9 = memref.load reshaped_v8[i_idx_v5, j_idx_v6] : builtin.integer i64 !5;
+        llvm.return res_v9
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [arg_p, i_res, j_res]]
+!1 = [builtin_given_names = builtin.given_names [arg]]
+!2 = [builtin_given_names = builtin.given_names [reshaped]]
+!3 = [builtin_given_names = builtin.given_names [i_idx]]
+!4 = [builtin_given_names = builtin.given_names [j_idx]]
+!5 = [builtin_given_names = builtin.given_names [res]]

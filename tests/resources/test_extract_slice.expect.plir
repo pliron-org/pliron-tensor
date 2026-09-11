@@ -1,0 +1,47 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_extract_slice: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(src_p_v0: llvm.ptr (0), out_p_v1: llvm.ptr (0)) !0:
+        src_v2 = llvm.load src_p_v0  : memref.ranked <10x20 : builtin.integer i64> !1;
+        $slice_v15 = memref.subview src_v2 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64> !2;
+        llvm.store *out_p_v1 <- slice_v15 ;
+        llvm.return 
+    };
+    llvm.func @test_extract_slice_sequential: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(src_p_v4: llvm.ptr (0), out_p_v5: llvm.ptr (0)) !3:
+        src_v6 = llvm.load src_p_v4  : memref.ranked <10x20 : builtin.integer i64> !4;
+        $first_v16 = memref.subview src_v6 [1, 2] [6, 8] [1, 2] : memref.ranked <6x8 : builtin.integer i64> !5;
+        $second_v17 = memref.subview first_v16 [1, 1] [3, 4] [2, 2] : memref.ranked <3x4 : builtin.integer i64> !6;
+        llvm.store *out_p_v5 <- second_v17 ;
+        llvm.return 
+    };
+    llvm.func @test_extract_slice_live_source: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block4v1(src_p_v9: llvm.ptr (0), out_first_p_v10: llvm.ptr (0), out_second_p_v11: llvm.ptr (0)) !7:
+        src_v12 = llvm.load src_p_v9  : memref.ranked <10x20 : builtin.integer i64> !8;
+        $first_v18 = memref.subview src_v12 [0, 0] [5, 10] [1, 1] : memref.ranked <5x10 : builtin.integer i64> !9;
+        $second_v19 = memref.subview src_v12 [5, 10] [5, 10] [1, 1] : memref.ranked <5x10 : builtin.integer i64> !10;
+        llvm.store *out_first_p_v10 <- first_v18 ;
+        llvm.store *out_second_p_v11 <- second_v19 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [src_p, out_p]]
+!1 = [builtin_given_names = builtin.given_names [src]]
+!2 = [builtin_given_names = builtin.given_names [slice]]
+!3 = [builtin_given_names = builtin.given_names [src_p, out_p]]
+!4 = [builtin_given_names = builtin.given_names [src]]
+!5 = [builtin_given_names = builtin.given_names [first]]
+!6 = [builtin_given_names = builtin.given_names [second]]
+!7 = [builtin_given_names = builtin.given_names [src_p, out_first_p, out_second_p]]
+!8 = [builtin_given_names = builtin.given_names [src]]
+!9 = [builtin_given_names = builtin.given_names [first]]
+!10 = [builtin_given_names = builtin.given_names [second]]

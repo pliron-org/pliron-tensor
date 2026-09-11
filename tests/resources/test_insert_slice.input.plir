@@ -1,0 +1,30 @@
+builtin.module @test_module {
+    ^entry():
+        llvm.func @test_insert_slice: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(src_p: llvm.ptr(0), dst_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+                src = llvm.load src_p : tensor.ranked<5x10:builtin.integer i64>;
+                dst = llvm.load dst_p : tensor.ranked<10x20:builtin.integer i64>;
+                updated = tensor.insert_slice src into dst [0, 2] [5, 10] [1, 2] : tensor.ranked<10x20:builtin.integer i64>;
+                llvm.store *out_p <- updated;
+                llvm.return
+        };
+        llvm.func @test_insert_slice_dest_live_after: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(src_p: llvm.ptr(0), dst_p: llvm.ptr(0), out_updated_p: llvm.ptr(0), out_dst_p: llvm.ptr(0)):
+                src = llvm.load src_p : tensor.ranked<5x10:builtin.integer i64>;
+                dst = llvm.load dst_p : tensor.ranked<10x20:builtin.integer i64>;
+                updated = tensor.insert_slice src into dst [0, 2] [5, 10] [1, 2] : tensor.ranked<10x20:builtin.integer i64>;
+                llvm.store *out_updated_p <- updated;
+                llvm.store *out_dst_p <- dst;
+                llvm.return
+        };
+        llvm.func @test_write_through_slice_of_live_tensor: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(t_p: llvm.ptr(0), small_p: llvm.ptr(0), out_u_p: llvm.ptr(0), out_t_p: llvm.ptr(0)):
+                t = llvm.load t_p : tensor.ranked<4x4:builtin.integer i64>;
+                small = llvm.load small_p : tensor.ranked<2x2:builtin.integer i64>;
+                s = tensor.extract_slice t [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                u = tensor.insert_slice small into s [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                llvm.store *out_u_p <- u;
+                llvm.store *out_t_p <- t;
+                llvm.return
+        }
+}

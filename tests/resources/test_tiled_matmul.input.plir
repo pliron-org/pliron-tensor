@@ -1,0 +1,70 @@
+builtin.module @test_module {
+^entry():
+    llvm.func @test_tiled_matmul_cf: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+    ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        a = llvm.load a_p : tensor.ranked<4x4:builtin.integer i64>;
+        b = llvm.load b_p : tensor.ranked<4x4:builtin.integer i64>;
+        c = llvm.load c_p : tensor.ranked<4x4:builtin.integer i64>;
+        i_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        llvm.br ^outer_header(i_init, c)
+
+    ^outer_header(i: builtin.integer i64, iv_c: tensor.ranked<4x4:builtin.integer i64>):
+        n_i = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
+        i_lt = llvm.icmp i <SLT> n_i : builtin.integer i1;
+        llvm.cond_br if i_lt ^outer_body(i, iv_c) else ^done(iv_c)
+
+    ^outer_body(i_b: builtin.integer i64, iv_c_b: tensor.ranked<4x4:builtin.integer i64>):
+        j_init = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        llvm.br ^inner_header(i_b, j_init, iv_c_b)
+
+    ^inner_header(i_h: builtin.integer i64, j_h: builtin.integer i64, jv_c: tensor.ranked<4x4:builtin.integer i64>):
+        n_j = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64;
+        j_lt = llvm.icmp j_h <SLT> n_j : builtin.integer i1;
+        llvm.cond_br if j_lt ^inner_body(i_h, j_h, jv_c) else ^outer_latch(i_h, jv_c)
+
+    ^inner_body(i_n: builtin.integer i64, j_n: builtin.integer i64, jv_c_n: tensor.ranked<4x4:builtin.integer i64>):
+        i_idx = index.from_integer i_n : index.index;
+        j_idx = index.from_integer j_n : index.index;
+        slice_a = tensor.extract_slice a [i_idx, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.integer i64>;
+        slice_b = tensor.extract_slice b [0, j_idx] [4, 2] [1, 1] : tensor.ranked<4x2:builtin.integer i64>;
+        slice_c = tensor.extract_slice jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        tiled = tensor.matmul slice_a, slice_b, slice_c : tensor.ranked<2x2:builtin.integer i64>;
+        updated = tensor.insert_slice tiled into jv_c_n [i_idx, j_idx] [2, 2] [1, 1] : tensor.ranked<4x4:builtin.integer i64>;
+        step_j = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
+        j_next = llvm.add j_n, step_j <{nsw = false, nuw = false}> : builtin.integer i64;
+        llvm.br ^inner_header(i_n, j_next, updated)
+
+    ^outer_latch(i_l: builtin.integer i64, jv_c_l: tensor.ranked<4x4:builtin.integer i64>):
+        step_i = builtin.constant <builtin.integer <2: i64>> : builtin.integer i64;
+        i_next = llvm.add i_l, step_i <{nsw = false, nuw = false}> : builtin.integer i64;
+        llvm.br ^outer_header(i_next, jv_c_l)
+
+    ^done(result: tensor.ranked<4x4:builtin.integer i64>):
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_tiled_matmul_scf: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+    ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        a = llvm.load a_p : tensor.ranked<4x4:builtin.integer i64>;
+        b = llvm.load b_p : tensor.ranked<4x4:builtin.integer i64>;
+        c = llvm.load c_p : tensor.ranked<4x4:builtin.integer i64>;
+        c0 = index.constant <index.constant 0> : index.index;
+        c2 = index.constant <index.constant 2> : index.index;
+        c4 = index.constant <index.constant 4> : index.index;
+        result = cf.for c0 to c4 step c2 (c) {
+            ^entry(i: index.index, iv_c: tensor.ranked<4x4:builtin.integer i64>):
+                inner_res = cf.for c0 to c4 step c2 (iv_c) {
+                    ^entry(j: index.index, jv_c: tensor.ranked<4x4:builtin.integer i64>):
+                        slice_a = tensor.extract_slice a [i, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.integer i64>;
+                        slice_b = tensor.extract_slice b [0, j] [4, 2] [1, 1] : tensor.ranked<4x2:builtin.integer i64>;
+                        slice_c = tensor.extract_slice jv_c [i, j] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+                        tiled = tensor.matmul slice_a, slice_b, slice_c : tensor.ranked<2x2:builtin.integer i64>;
+                        updated = tensor.insert_slice tiled into jv_c [i, j] [2, 2] [1, 1] : tensor.ranked<4x4:builtin.integer i64>;
+                        cf.yield updated
+                };
+                cf.yield inner_res
+        };
+        llvm.store *out_p <- result;
+        llvm.return
+    }
+}

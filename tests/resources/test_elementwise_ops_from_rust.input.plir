@@ -1,0 +1,53 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_generate_add: llvm.func <builtin.integer i64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(i_res: builtin.integer i64, j_res: builtin.integer i64):
+        input1 = tensor.generate : tensor.ranked<16x16:builtin.integer i64> {
+          ^entry(i_1 : index.index, j_1 : index.index):
+            i_int_1 = index.to_integer i_1 to builtin.integer i64;
+            j_int_1 = index.to_integer j_1 to builtin.integer i64;
+            sum_1 = llvm.add i_int_1, j_int_1 <{nsw = false, nuw = false}> : builtin.integer i64;
+            memref.yield sum_1
+        };
+        input2 = tensor.generate : tensor.ranked<16x16:builtin.integer i64> {
+          ^entry(i_2 : index.index, j_2 : index.index):
+            i_int_2 = index.to_integer i_2 to builtin.integer i64;
+            j_int_2 = index.to_integer j_2 to builtin.integer i64;
+            sum_2 = llvm.add i_int_2, j_int_2 <{nsw = false, nuw = false}> : builtin.integer i64;
+            memref.yield sum_2
+        };
+        res_tensor = tensor.add input1, input2 : tensor.ranked<16x16:builtin.integer i64>;
+        i_res_index = index.from_integer i_res : index.index;
+        j_res_index = index.from_integer j_res : index.index;
+        res = tensor.extract res_tensor[i_res_index, j_res_index]: builtin.integer i64;
+        llvm.return res
+    };
+    llvm.func @test_tensor_add_int: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.integer i64>;
+        arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.integer i64>;
+        res = tensor.add arg1, arg2 : tensor.ranked<4x4:builtin.integer i64>;
+        llvm.store *res_p <- res;
+        llvm.return
+    };
+    llvm.func @test_tensor_add_float: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.fp64>;
+        arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.fp64>;
+        res = tensor.add arg1, arg2 : tensor.ranked<4x4:builtin.fp64>;
+        llvm.store *res_p <- res;
+        llvm.return
+    };
+    llvm.func @test_tensor_all_binops_float: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(arg1_p: llvm.ptr(0), arg2_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        arg1 = llvm.load arg1_p : tensor.ranked<4x4:builtin.fp64>;
+        arg2 = llvm.load arg2_p : tensor.ranked<4x4:builtin.fp64>;
+        zero = tensor.sub arg2, arg2 : tensor.ranked<4x4:builtin.fp64>;
+        sum = tensor.add arg1, arg2 : tensor.ranked<4x4:builtin.fp64>;
+        sum_norm = tensor.add sum, zero : tensor.ranked<4x4:builtin.fp64>;
+        prod = tensor.mul sum_norm, arg2 : tensor.ranked<4x4:builtin.fp64>;
+        res = tensor.div prod, arg1 : tensor.ranked<4x4:builtin.fp64>;
+        llvm.store *res_p <- res;
+        llvm.return
+    }
+}

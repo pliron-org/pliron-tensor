@@ -1,0 +1,54 @@
+builtin.module @test_module {
+    ^entry():
+        llvm.func @test_aliasing_br: llvm.func <builtin.integer i64 (builtin.integer i1) variadic = false> [] {
+            ^entry(flag: builtin.integer i1):
+                x = tensor.generate : tensor.ranked<4:builtin.integer i64> {
+                    ^entry(i_1 : index.index):
+                        i_int = index.to_integer i_1 to builtin.integer i64;
+                        one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                        x_elem = llvm.add i_int, one <{nsw = false, nuw = false}> : builtin.integer i64;
+                        memref.yield x_elem
+                };
+                llvm.br ^block_b(x)
+
+            ^block_b(z: tensor.ranked<4:builtin.integer i64>):
+                src = tensor.generate : tensor.ranked<1:builtin.integer i64> {
+                    ^entry(i_2 : index.index):
+                        ten = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64;
+                        memref.yield ten
+                };
+                y = tensor.insert_slice src into z [0] [1] [1] : tensor.ranked<4:builtin.integer i64>;
+                sum = tensor.add x, y : tensor.ranked<4:builtin.integer i64>;
+                zero_idx_i64 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                zero_idx = index.from_integer zero_idx_i64 : index.index;
+                res = tensor.extract sum[zero_idx]: builtin.integer i64;
+                llvm.return res
+        };
+        llvm.func @test_aliasing_cond_br: llvm.func <builtin.integer i64 (builtin.integer i1) variadic = false> [] {
+            ^entry(flag: builtin.integer i1):
+                x = tensor.generate : tensor.ranked<4:builtin.integer i64> {
+                    ^entry(i_1 : index.index):
+                        i_int = index.to_integer i_1 to builtin.integer i64;
+                        one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                        x_elem = llvm.add i_int, one <{nsw = false, nuw = false}> : builtin.integer i64;
+                        memref.yield x_elem
+                };
+                llvm.cond_br if flag ^block_b(x, x) else ^block_c(x, x)
+
+            ^block_c(z_c: tensor.ranked<4:builtin.integer i64>, x_c: tensor.ranked<4:builtin.integer i64>):
+                src = tensor.generate : tensor.ranked<1:builtin.integer i64> {
+                    ^entry(i_2 : index.index):
+                        ten = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64;
+                        memref.yield ten
+                };
+                y = tensor.insert_slice src into x_c [0] [1] [1] : tensor.ranked<4:builtin.integer i64>;
+                llvm.br ^block_b(z_c, y)
+
+            ^block_b(z: tensor.ranked<4:builtin.integer i64>, y_b: tensor.ranked<4:builtin.integer i64>):
+                sum = tensor.add z, y_b : tensor.ranked<4:builtin.integer i64>;
+                zero_idx_i64 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                zero_idx = index.from_integer zero_idx_i64 : index.index;
+                res = tensor.extract sum[zero_idx]: builtin.integer i64;
+                llvm.return res
+        }
+}
