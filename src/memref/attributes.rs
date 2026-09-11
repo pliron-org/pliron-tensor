@@ -282,8 +282,11 @@ impl DenseElementType for IntegerType {
     }
 
     fn print_element(&self, bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        let signed = self.signedness() == Signedness::Signed;
-        write!(f, "{}", decode_int(bytes, self).to_string_decimal(signed))
+        write!(
+            f,
+            "{}",
+            decode_int(bytes, self).to_string_decimal(self.prints_as_signed())
+        )
     }
 
     fn element_parser<'a>(
@@ -701,7 +704,6 @@ mod tests {
         expect!["<tensor.ranked <2 : builtin.integer si128> = [-1, 42]>"]
             .assert_eq(&round_trip(ctx, &attr));
 
-        // A signless i64 must print all one bits as the largest 64 bit value
         let ty = tensor_of(
             ctx,
             IntegerType::get(ctx, 64, Signedness::Signless).into(),
@@ -710,17 +712,35 @@ mod tests {
         let mut data = vec![0xFFu8; 8];
         data.extend_from_slice(&7u64.to_ne_bytes());
         let attr = DenseElementsAttr::new(ctx, ty, data).expect_ok(ctx);
-        expect!["<tensor.ranked <2 : builtin.integer i64> = [18446744073709551615, 7]>"]
+        // A signless element prints as a signed element.
+        expect!["<tensor.ranked <2 : builtin.integer i64> = [-1, 7]>"]
             .assert_eq(&round_trip(ctx, &attr));
 
-        // A signless i8 must be able to hold 200.
-        let attr = parse_from_str(
+        // A signless i8 must be able to hold 200 (or equivalently -56).
+        let from_unsigned = parse_from_str(
             DenseElementsAttr::parser(()),
             ctx,
             "<tensor.ranked <1 : builtin.integer i8> = [200]>",
         )
         .expect_ok(ctx);
-        expect!["<tensor.ranked <1 : builtin.integer i8> = splat 200>"]
+        let from_signed = parse_from_str(
+            DenseElementsAttr::parser(()),
+            ctx,
+            "<tensor.ranked <1 : builtin.integer i8> = [-56]>",
+        )
+        .expect_ok(ctx);
+        assert_eq!(from_unsigned.raw_data(), from_signed.raw_data());
+        expect!["<tensor.ranked <1 : builtin.integer i8> = splat -56>"]
+            .assert_eq(&round_trip(ctx, &from_unsigned));
+
+        // A signless element of one bit holds a boolean. It prints as unsigned.
+        let ty = tensor_of(
+            ctx,
+            IntegerType::get(ctx, 1, Signedness::Signless).into(),
+            vec![2],
+        );
+        let attr = DenseElementsAttr::new(ctx, ty, vec![1u8, 0u8]).expect_ok(ctx);
+        expect!["<tensor.ranked <2 : builtin.integer i1> = [1, 0]>"]
             .assert_eq(&round_trip(ctx, &attr));
 
         // The buffer holds an element of more bits than that of any Rust integer.
