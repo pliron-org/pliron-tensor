@@ -3,8 +3,6 @@
 
 //! Memref op interfaces
 
-use std::cell::Ref;
-
 use pliron::{
     builtin::op_interfaces::{
         AllOperandsOfType, AllResultsOfType, NOpdsInterface, NResultsInterface, OneOpdInterface,
@@ -22,6 +20,7 @@ use pliron::{
 use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::IndexType};
 
 use crate::memref::{
+    attributes::ShapedTypeHandle,
     ops::YieldOp,
     type_interfaces::{Dimension, ShapedType},
     types::RankedMemrefType,
@@ -40,7 +39,7 @@ pub enum GenerateOpInterfaceVerifyErr {
 #[op_interface]
 pub trait GenerateOpInterface: SingleBlockRegionInterface + YieldingRegions<YieldOp> {
     /// Get the shape of the memref/tensor we're generating.
-    fn get_generated_shape<'a>(&'a self, ctx: &'a Context) -> Ref<'a, dyn ShapedType>;
+    fn get_generated_shape(&self, ctx: &Context) -> ShapedTypeHandle;
 
     fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
     where
@@ -52,7 +51,7 @@ pub trait GenerateOpInterface: SingleBlockRegionInterface + YieldingRegions<Yiel
 
         let entry_block = op.get_body(ctx, 0);
         let result_shape = op.get_generated_shape(ctx);
-        let rank = result_shape.rank();
+        let rank = result_shape.deref(ctx).rank();
         let entry_block = &*entry_block.deref(ctx);
         if entry_block.get_num_arguments() != rank {
             return verify_err!(
@@ -75,7 +74,7 @@ pub trait GenerateOpInterface: SingleBlockRegionInterface + YieldingRegions<Yiel
         }
 
         let yield_op = op.get_yield(ctx, 0);
-        if yield_op.get_operand(ctx).get_type(ctx) != result_shape.element_type() {
+        if yield_op.get_operand(ctx).get_type(ctx) != result_shape.deref(ctx).element_type() {
             return verify_err!(loc, GenerateOpInterfaceVerifyErr::YieldOperandTypeMismatch);
         }
 

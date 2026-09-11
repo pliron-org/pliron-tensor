@@ -35,7 +35,7 @@ use pliron::{
     parsable::{self, IntoParseResult, Parsable},
     printable::{self, ListSeparator, Printable},
     result::Result,
-    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
+    r#type::{TypeHandle, Typed, TypedHandle},
     value::Value,
     verify_err, verify_error,
 };
@@ -43,6 +43,7 @@ use pliron::{
 use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::IndexType};
 
 use crate::memref::{
+    attributes::ShapedTypeHandle,
     op_interfaces::{CompatibleShapesOp, GenerateOpInterface},
     ops::{SliceParam, YieldOp},
     type_interfaces::{MultiDimensionalType, ShapedType},
@@ -191,7 +192,7 @@ impl Verify for GenerateOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
         let loc = self.loc(ctx);
         let result_shape = self.get_generated_shape(ctx);
-        let num_dynamic_dims = result_shape.num_dynamic_dimensions();
+        let num_dynamic_dims = result_shape.deref(ctx).num_dynamic_dimensions();
 
         let dynamic_dim_operands = self
             .get_operation()
@@ -213,11 +214,9 @@ impl Verify for GenerateOp {
 }
 
 impl GenerateOpInterface for GenerateOp {
-    fn get_generated_shape<'a>(&'a self, ctx: &'a Context) -> Ref<'a, dyn ShapedType> {
-        let result_ty = self.result_type(ctx).deref(ctx);
-        Ref::map(result_ty, |result_ty| {
-            type_cast::<dyn ShapedType>(result_ty).expect("The result type must be a shaped type")
-        })
+    fn get_generated_shape(&self, ctx: &Context) -> ShapedTypeHandle {
+        ShapedTypeHandle::from_handle(self.result_type(ctx), ctx)
+            .expect("The result type must be a shaped type")
     }
 }
 

@@ -42,7 +42,7 @@ use pliron::{
     printable::{self, ListSeparator, Printable},
     result::Result,
     symbol_table::SymbolTableCollection,
-    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
+    r#type::{TypeHandle, Typed, TypedHandle},
     value::Value,
     verify_err, verify_error,
 };
@@ -52,7 +52,7 @@ use pliron_common_dialects::{
 };
 
 use crate::memref::{
-    attributes::{DenseElementsAttr, SliceParamAttr, SliceParamsAttr},
+    attributes::{DenseElementsAttr, ShapedTypeHandle, SliceParamAttr, SliceParamsAttr},
     op_interfaces::{CompatibleShapesOp, ElementWiseBinaryMemrefOpInterface, GenerateOpInterface},
     type_interfaces::{MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
@@ -284,12 +284,8 @@ impl GenerateOp {
 
 impl GenerateOpInterface for GenerateOp {
     /// Get the shape of the destination memref.
-    fn get_generated_shape<'a>(&'a self, ctx: &'a Context) -> Ref<'a, dyn ShapedType> {
-        let memref_ty = self.get_destination_memref_type(ctx).deref(ctx);
-        Ref::map(memref_ty, |memref_ty| {
-            type_cast::<dyn ShapedType>(memref_ty)
-                .expect("The memref operand type must implement ShapedType")
-        })
+    fn get_generated_shape(&self, ctx: &Context) -> ShapedTypeHandle {
+        self.get_destination_memref_type(ctx).into()
     }
 }
 
