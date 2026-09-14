@@ -29,7 +29,7 @@ use pliron_tensor::tensor::{
 };
 
 mod common;
-use common::{lookup_fn, lower_to_llvm_ir, parse_module};
+use common::{assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module};
 
 /// Bufferize the module with `tmm` and return the bufferized IR as text.
 fn bufferize_module<TMM: TensorMemoryManager>(
@@ -124,8 +124,14 @@ unsafe fn output_data<T: Copy>(out_ir_descr: &[u8], rank: usize) -> Vec<T> {
     data
 }
 
-/// Explicit broadcasting, scalar splatting, and element-wise casts compose
-/// with the existing element-wise arithmetic pipeline.
+/// Every tensor operation must print in a form that parses back.
+#[test]
+fn test_tensor_ops_round_trip() {
+    assert_module_round_trips(include_str!(
+        "resources/test_tensor_ops_round_trip.input.plir"
+    ));
+}
+
 #[test]
 fn test_broadcast_splat_and_elementwise_cast_from_rust() {
     let ctx = &mut Context::new();

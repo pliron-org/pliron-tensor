@@ -28,7 +28,7 @@ builtin.module @test_module
         };
         y_v38 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !10;
         memref.copy y_v38 <- z_v6;
-        $v39 = memref.subview y_v38 [0] [1] [1] : memref.ranked <1 : builtin.integer i64>;
+        v39 = memref.subview y_v38 [0] [1] [1] : memref.ranked <1 : builtin.integer i64>;
         memref.copy v39 <- src_v36;
         sum_v40 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !11;
         memref.add sum_v40 <- x_v33 + y_v38;
@@ -70,7 +70,7 @@ builtin.module @test_module
         };
         y_v50 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !25;
         memref.copy y_v50 <- x_c_v22;
-        $v51 = memref.subview y_v50 [0] [1] [1] : memref.ranked <1 : builtin.integer i64>;
+        v51 = memref.subview y_v50 [0] [1] [1] : memref.ranked <1 : builtin.integer i64>;
         memref.copy v51 <- src_v48;
         llvm.br ^block_b_block11v1(z_c_v21, y_v50)
 

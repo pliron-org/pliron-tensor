@@ -1,0 +1,54 @@
+builtin.module @test_module {
+  ^entry():
+    memref.global @gbl : memref.ranked<2 : builtin.integer i64> [constant : true] !100;
+
+    llvm.func @memref_ops: llvm.func <builtin.integer i64 (builtin.integer i64) variadic = false> [] {
+      ^entry(arg: builtin.integer i64):
+        a = memref.alloc : memref.ranked<2 x 3 : builtin.integer i64>;
+        memref.generate a {
+          ^entry(i : index.index, j : index.index):
+            i_int = index.to_integer i to builtin.integer i64;
+            j_int = index.to_integer j to builtin.integer i64;
+            val = llvm.add i_int, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
+            memref.yield val
+        };
+
+        b = memref.alloc : memref.ranked<2 x 3 : builtin.integer i64>;
+        memref.copy b <- a;
+
+        c = memref.alloc : memref.ranked<2 x 3 : builtin.integer i64>;
+        memref.add c <- a + b;
+        memref.sub c <- a - b;
+        memref.mul c <- a * b;
+        memref.div c <- a / b;
+
+        idx0 = index.constant <index.constant 0> : index.index;
+        idx1 = index.constant <index.constant 1> : index.index;
+        rows = memref.dim a, idx0 : index.index;
+
+        view = memref.subview a [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64>;
+        dynamic_view = memref.subview a [idx0, idx1] [2, 2] [idx1, idx1] : memref.ranked<2 x 2 : builtin.integer i64>;
+
+        memref.store arg to c[idx0, idx1];
+        loaded = memref.load c[idx0, idx1]: builtin.integer i64;
+
+        flat = memref.reshape a : memref.ranked<6 : builtin.integer i64>;
+
+        rhs = memref.alloc : memref.ranked<3 x 2 : builtin.integer i64>;
+        accum = memref.alloc : memref.ranked<2 x 2 : builtin.integer i64>;
+        product = memref.matmul a, rhs, accum : memref.ranked<2 x 2 : builtin.integer i64>;
+
+        global_ref = memref.get_global @gbl : memref.ranked<2 : builtin.integer i64>;
+        from_global = memref.load global_ref[idx0]: builtin.integer i64;
+
+        memref.dealloc a;
+        memref.dealloc b;
+        memref.dealloc c;
+        memref.dealloc rhs;
+        memref.dealloc accum;
+        llvm.return loaded
+    }
+}
+
+outlined_attributes:
+!100 = [memref_global_initializer = memref.dense_elements <memref.ranked<2 : builtin.integer i64> = [7, 9]>]

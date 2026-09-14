@@ -1,0 +1,46 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @elementwise_and_slices: llvm.func <builtin.fp64 (llvm.ptr(0), builtin.fp32) variadic = false> [] {
+      ^entry(input_p: llvm.ptr(0), scalar: builtin.fp32):
+        input = llvm.load input_p : tensor.ranked<1x1x4:builtin.fp32>;
+        broadcast = tensor.broadcast input : tensor.ranked<2x3x4:builtin.fp32>;
+        splat = tensor.splat scalar : tensor.ranked<2x3x4:builtin.fp32>;
+        sum = tensor.add broadcast, splat : tensor.ranked<2x3x4:builtin.fp32>;
+        difference = tensor.sub sum, splat : tensor.ranked<2x3x4:builtin.fp32>;
+        product = tensor.mul difference, splat : tensor.ranked<2x3x4:builtin.fp32>;
+        quotient = tensor.div product, splat : tensor.ranked<2x3x4:builtin.fp32>;
+        cast = tensor.elementwise_cast quotient : tensor.ranked<2x3x4:builtin.fp64> {input_is_signed=false,result_is_signed=false};
+        reshaped = tensor.reshape cast() : tensor.ranked<6x4:builtin.fp64>;
+        slice = tensor.extract_slice reshaped [0, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.fp64>;
+        inserted = tensor.insert_slice slice into reshaped [0, 0] [2, 4] [1, 1] : tensor.ranked<6x4:builtin.fp64>;
+        i = index.constant <index.constant 0> : index.index;
+        element = tensor.extract inserted[i, i]: builtin.fp64;
+        llvm.return element
+    };
+    llvm.func @generate_and_products: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {
+      ^entry(res_p: llvm.ptr(0)):
+        generated = tensor.generate : tensor.ranked<2x3:builtin.integer i64> {
+          ^entry(i : index.index, j : index.index):
+            i_int = index.to_integer i to builtin.integer i64;
+            j_int = index.to_integer j to builtin.integer i64;
+            val = llvm.add i_int, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
+            memref.yield val
+        };
+        rhs = tensor.constant : tensor.ranked<3x2:builtin.integer i64> !100;
+        accum = tensor.constant : tensor.ranked<2x2:builtin.integer i64> !101;
+        product = tensor.matmul generated, rhs, accum : tensor.ranked<2x2:builtin.integer i64>;
+        batch_lhs = tensor.constant : tensor.ranked<2x2x3:builtin.integer i64> !102;
+        batch_rhs = tensor.constant : tensor.ranked<2x3x2:builtin.integer i64> !103;
+        batch_accum = tensor.constant : tensor.ranked<2x2x2:builtin.integer i64> !104;
+        batch = tensor.batch_matmul batch_lhs, batch_rhs, batch_accum : tensor.ranked<2x2x2:builtin.integer i64>;
+        llvm.store *res_p <- batch;
+        llvm.return
+    }
+}
+
+outlined_attributes:
+!100 = [tensor_constant_value = memref.dense_elements <tensor.ranked<3x2:builtin.integer i64> = [1, 2, 3, 4, 5, 6]>]
+!101 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i64> = splat 0>]
+!102 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2x3:builtin.integer i64> = splat 1>]
+!103 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3x2:builtin.integer i64> = splat 2>]
+!104 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2x2:builtin.integer i64> = splat 0>]

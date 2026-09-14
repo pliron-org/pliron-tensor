@@ -184,7 +184,8 @@ impl Printable for BroadcastOp {
     ) -> std::fmt::Result {
         write!(
             f,
-            "{} {} : {}",
+            "{} = {} {} : {}",
+            self.get_result(ctx).disp(ctx),
             Self::get_opid_static(),
             iter_with_sep(
                 self.get_operation().deref(ctx).operands(),
@@ -333,7 +334,8 @@ impl Printable for SplatOp {
     ) -> std::fmt::Result {
         write!(
             f,
-            "{} {} : {}",
+            "{} = {} {} : {}",
+            self.get_result(ctx).disp(ctx),
             Self::get_opid_static(),
             iter_with_sep(
                 self.get_operation().deref(ctx).operands(),
@@ -671,7 +673,8 @@ impl Printable for ExtractOp {
         let indices = self.get_index_operands(ctx);
         write!(
             f,
-            "{} {}[{}] : {}",
+            "{} = {} {}[{}] : {}",
+            self.get_result(ctx).disp(ctx),
             Self::get_opid_static(),
             tensor.disp(ctx),
             iter_with_sep(
@@ -1462,7 +1465,13 @@ impl Printable for ExtractSliceOp {
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         let source = self.source(ctx);
-        write!(f, "{} {}", Self::get_opid_static(), source.disp(ctx))?;
+        write!(
+            f,
+            "{} = {} {}",
+            self.get_result(ctx).disp(ctx),
+            Self::get_opid_static(),
+            source.disp(ctx)
+        )?;
 
         let offsets = self.slice_offsets(ctx);
         let sizes = self.slice_sizes(ctx);
@@ -1888,7 +1897,8 @@ impl Printable for InsertSliceOp {
         let destination = self.destination(ctx);
         write!(
             f,
-            "{} {} into {}",
+            "{} = {} {} into {}",
+            self.get_result(ctx).disp(ctx),
             Self::get_opid_static(),
             source.disp(ctx),
             destination.disp(ctx)
@@ -2338,7 +2348,13 @@ impl Printable for ReshapeOp {
     ) -> std::fmt::Result {
         let source = self.get_source(ctx);
         let dyn_dims = self.get_dynamic_dimensions(ctx);
-        write!(f, "{} {}(", Self::get_opid_static(), source.disp(ctx))?;
+        write!(
+            f,
+            "{} = {} {}(",
+            self.get_result(ctx).disp(ctx),
+            Self::get_opid_static(),
+            source.disp(ctx)
+        )?;
         write!(
             f,
             "{}",

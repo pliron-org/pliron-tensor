@@ -4,13 +4,13 @@
 //! Helpers that the tensor and the memref conversion tests share.
 
 use pliron::{
-    builtin::ops::ModuleOp,
+    builtin::{given_names::erase_given_names, ops::ModuleOp},
     combine::Parser,
     context::{Context, Ptr},
     init_env_logger_for_tests, input_error_noloc,
     irbuild::dialect_conversion::apply_dialect_conversion,
     irfmt::parsers::spaced,
-    location,
+    location::{self, erase_locations},
     op::verify_op,
     operation::Operation,
     parsable::{self, state_stream_from_iterator},
@@ -44,6 +44,25 @@ pub fn parse_module(ctx: &mut Context, input_ir: &str) -> (Ptr<Operation>, Modul
     log::debug!("pliron module parsed:\n{}", module_op.disp(ctx));
     verify_op(&module_op, ctx).expect_ok(ctx);
     (parsed_op, module_op)
+}
+
+/// Print the parsed module, parse the text again, and print it a second time.
+/// The two texts must be equal.
+pub fn assert_module_round_trips(input_ir: &str) {
+    let ctx = &mut Context::new();
+    let (parsed_op, _) = parse_module(ctx, input_ir);
+    let printed = print_without_names_or_locations(ctx, parsed_op);
+
+    let ctx = &mut Context::new();
+    let (reparsed_op, _) = parse_module(ctx, &printed);
+    assert_eq!(printed, print_without_names_or_locations(ctx, reparsed_op));
+}
+
+/// Print `op` with no given name and no location.
+fn print_without_names_or_locations(ctx: &Context, op: Ptr<Operation>) -> String {
+    erase_given_names(ctx, op);
+    erase_locations(ctx, op);
+    op.disp(ctx).to_string()
 }
 
 /// Lower the module Memref -> CF -> LLVM dialect and emit its LLVM-IR.

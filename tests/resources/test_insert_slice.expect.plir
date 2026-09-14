@@ -7,7 +7,7 @@ builtin.module @test_module
       ^entry_block2v1(src_p_v0: llvm.ptr (0), dst_p_v1: llvm.ptr (0), out_p_v2: llvm.ptr (0)) !0:
         src_v3 = llvm.load src_p_v0  : memref.ranked <5x10 : builtin.integer i64> !1;
         dst_v4 = llvm.load dst_p_v1  : memref.ranked <10x20 : builtin.integer i64> !2;
-        $v21 = memref.subview dst_v4 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
+        v21 = memref.subview dst_v4 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
         memref.copy v21 <- src_v3;
         llvm.store *out_p_v2 <- dst_v4 ;
         llvm.return 
@@ -20,7 +20,7 @@ builtin.module @test_module
         dst_v11 = llvm.load dst_p_v7  : memref.ranked <10x20 : builtin.integer i64> !5;
         updated_v22 = memref.alloc  : memref.ranked <10x20 : builtin.integer i64> !6;
         memref.copy updated_v22 <- dst_v11;
-        $v23 = memref.subview updated_v22 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
+        v23 = memref.subview updated_v22 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64>;
         memref.copy v23 <- src_v10;
         llvm.store *out_updated_p_v8 <- updated_v22 ;
         llvm.store *out_dst_p_v9 <- dst_v11 ;
@@ -32,10 +32,10 @@ builtin.module @test_module
       ^entry_block4v1(t_p_v13: llvm.ptr (0), small_p_v14: llvm.ptr (0), out_u_p_v15: llvm.ptr (0), out_t_p_v16: llvm.ptr (0)) !7:
         t_v17 = llvm.load t_p_v13  : memref.ranked <4x4 : builtin.integer i64> !8;
         small_v18 = llvm.load small_p_v14  : memref.ranked <2x2 : builtin.integer i64> !9;
-        $s_v24 = memref.subview t_v17 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64> !10;
+        s_v24 = memref.subview t_v17 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64> !10;
         u_v25 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !11;
         memref.copy u_v25 <- s_v24;
-        $v26 = memref.subview u_v25 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
+        v26 = memref.subview u_v25 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
         memref.copy v26 <- small_v18;
         llvm.store *out_u_p_v15 <- u_v25 ;
         llvm.store *out_t_p_v16 <- t_v17 ;

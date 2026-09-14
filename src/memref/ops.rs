@@ -1139,7 +1139,7 @@ impl Printable for SubviewOp {
         let source = self.source(ctx);
         write!(
             f,
-            "${} = {} {}",
+            "{} = {} {}",
             self.get_result(ctx).disp(ctx),
             Self::get_opid_static(),
             source.disp(ctx)

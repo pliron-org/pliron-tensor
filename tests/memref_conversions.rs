@@ -16,7 +16,7 @@ use pliron_llvm::llvm_sys::{
 use expect_test::expect_file;
 
 mod common;
-use common::{lookup_fn, lower_to_llvm_ir, parse_module};
+use common::{assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module};
 
 /// Run `input_ir` through Memref -> CF -> LLVM dialect. The converted values are returned.
 fn compile(ctx: &mut Context, input_ir: &str) -> (LLVMContext, LLVMModule, ModuleOp) {
@@ -32,6 +32,14 @@ fn compile_and_jit(ctx: &mut Context, input_ir: &str) -> (SimpleJIT, ModuleOp) {
     let (llvm_ctx, llvm_ir, module_op) = compile(ctx, input_ir);
     let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
     (jit, module_op)
+}
+
+/// Every memref operation must print in a form that parses back.
+#[test]
+fn test_memref_ops_round_trip() {
+    assert_module_round_trips(include_str!(
+        "resources/test_memref_ops_round_trip.input.plir"
+    ));
 }
 
 #[test]
