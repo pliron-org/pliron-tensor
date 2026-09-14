@@ -1,0 +1,46 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_tensor_add_tracked: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(arg1_p_v0: llvm.ptr (0), arg2_p_v1: llvm.ptr (0), res_p_v2: llvm.ptr (0)) !0:
+        arg1_v3 = llvm.load arg1_p_v0  : memref.ranked <4x4 : builtin.integer i64> !1;
+        arg2_v4 = llvm.load arg2_p_v1  : memref.ranked <4x4 : builtin.integer i64> !2;
+        res_v17 = memref.tracked_alloc [tmm : <tracked-tmm>] dyn_dims [] : memref.ranked <4x4 : builtin.integer i64> !3;
+        memref.add res_v17 <- arg1_v3 + arg2_v4;
+        llvm.store *res_p_v2 <- res_v17 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_complex_tracked: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(arg1_p_v6: llvm.ptr (0), arg2_p_v7: llvm.ptr (0), arg3_p_v8: llvm.ptr (0), res_p_v9: llvm.ptr (0)) !4:
+        arg1_v10 = llvm.load arg1_p_v6  : memref.ranked <4x4 : builtin.integer i64> !5;
+        arg2_v11 = llvm.load arg2_p_v7  : memref.ranked <4x4 : builtin.integer i64> !6;
+        arg3_v12 = llvm.load arg3_p_v8  : memref.ranked <4x4 : builtin.integer i64> !7;
+        mat_v18 = memref.matmul arg1_v10, arg2_v11, arg3_v12 : memref.ranked <4x4 : builtin.integer i64> !8;
+        sum_v19 = memref.tracked_alloc [tmm : <tracked-tmm>] dyn_dims [] : memref.ranked <4x4 : builtin.integer i64> !9;
+        memref.add sum_v19 <- mat_v18 + arg1_v10;
+        diff_v20 = memref.tracked_alloc [tmm : <tracked-tmm>] dyn_dims [] : memref.ranked <4x4 : builtin.integer i64> !10;
+        memref.sub diff_v20 <- sum_v19 - arg2_v11;
+        res_v21 = memref.tracked_alloc [tmm : <tracked-tmm>] dyn_dims [] : memref.ranked <4x4 : builtin.integer i64> !11;
+        memref.mul res_v21 <- diff_v20 * arg1_v10;
+        llvm.store *res_p_v9 <- res_v21 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [arg1_p, arg2_p, res_p]]
+!1 = [builtin_given_names = builtin.given_names [arg1]]
+!2 = [builtin_given_names = builtin.given_names [arg2]]
+!3 = [builtin_given_names = builtin.given_names [res]]
+!4 = [builtin_given_names = builtin.given_names [arg1_p, arg2_p, arg3_p, res_p]]
+!5 = [builtin_given_names = builtin.given_names [arg1]]
+!6 = [builtin_given_names = builtin.given_names [arg2]]
+!7 = [builtin_given_names = builtin.given_names [arg3]]
+!8 = [builtin_given_names = builtin.given_names [mat]]
+!9 = [builtin_given_names = builtin.given_names [sum]]
+!10 = [builtin_given_names = builtin.given_names [diff]]
+!11 = [builtin_given_names = builtin.given_names [res]]

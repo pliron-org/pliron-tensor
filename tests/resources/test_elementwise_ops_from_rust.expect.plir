@@ -1,0 +1,107 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_generate_add: llvm.func <builtin.integer i64(builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(i_res_v0: builtin.integer i64, j_res_v1: builtin.integer i64) !0:
+        input1_v40 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !1;
+        memref.generate input1_v40
+        {
+          ^entry_block8v1(i_1_v41: index.index , j_1_v42: index.index ) !2:
+            i_int_1_v4 = index.to_integer i_1_v41 to builtin.integer i64 !3;
+            j_int_1_v5 = index.to_integer j_1_v42 to builtin.integer i64 !4;
+            sum_1_v6 = llvm.add i_int_1_v4, j_int_1_v5 <{nsw=false,nuw=false}>: builtin.integer i64 !5;
+            memref.yield sum_1_v6
+        };
+        input2_v43 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !6;
+        memref.generate input2_v43
+        {
+          ^entry_block3v3(i_2_v44: index.index , j_2_v45: index.index ) !7:
+            i_int_2_v10 = index.to_integer i_2_v44 to builtin.integer i64 !8;
+            j_int_2_v11 = index.to_integer j_2_v45 to builtin.integer i64 !9;
+            sum_2_v12 = llvm.add i_int_2_v10, j_int_2_v11 <{nsw=false,nuw=false}>: builtin.integer i64 !10;
+            memref.yield sum_2_v12
+        };
+        res_tensor_v46 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !11;
+        memref.add res_tensor_v46 <- input1_v40 + input2_v43;
+        i_res_index_v15 = index.from_integer i_res_v0 : index.index  !12;
+        j_res_index_v16 = index.from_integer j_res_v1 : index.index  !13;
+        res_v47 = memref.load res_tensor_v46[i_res_index_v15, j_res_index_v16] : builtin.integer i64 !14;
+        llvm.return res_v47
+    };
+    llvm.func @test_tensor_add_int: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block5v1(arg1_p_v18: llvm.ptr (0), arg2_p_v19: llvm.ptr (0), res_p_v20: llvm.ptr (0)) !15:
+        arg1_v21 = llvm.load arg1_p_v18  : memref.ranked <4x4 : builtin.integer i64> !16;
+        arg2_v22 = llvm.load arg2_p_v19  : memref.ranked <4x4 : builtin.integer i64> !17;
+        res_v48 = memref.alloc  : memref.ranked <4x4 : builtin.integer i64> !18;
+        memref.add res_v48 <- arg1_v21 + arg2_v22;
+        llvm.store *res_p_v20 <- res_v48 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_add_float: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block6v1(arg1_p_v24: llvm.ptr (0), arg2_p_v25: llvm.ptr (0), res_p_v26: llvm.ptr (0)) !19:
+        arg1_v27 = llvm.load arg1_p_v24  : memref.ranked <4x4 : builtin.fp64 > !20;
+        arg2_v28 = llvm.load arg2_p_v25  : memref.ranked <4x4 : builtin.fp64 > !21;
+        res_v49 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !22;
+        memref.add res_v49 <- arg1_v27 + arg2_v28;
+        llvm.store *res_p_v26 <- res_v49 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_all_binops_float: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block7v1(arg1_p_v30: llvm.ptr (0), arg2_p_v31: llvm.ptr (0), res_p_v32: llvm.ptr (0)) !23:
+        arg1_v33 = llvm.load arg1_p_v30  : memref.ranked <4x4 : builtin.fp64 > !24;
+        arg2_v34 = llvm.load arg2_p_v31  : memref.ranked <4x4 : builtin.fp64 > !25;
+        zero_v50 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !26;
+        memref.sub zero_v50 <- arg2_v34 - arg2_v34;
+        sum_v51 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !27;
+        memref.add sum_v51 <- arg1_v33 + arg2_v34;
+        sum_norm_v52 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !28;
+        memref.add sum_norm_v52 <- sum_v51 + zero_v50;
+        prod_v53 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !29;
+        memref.mul prod_v53 <- sum_norm_v52 * arg2_v34;
+        res_v54 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !30;
+        memref.div res_v54 <- prod_v53 / arg1_v33;
+        llvm.store *res_p_v32 <- res_v54 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [i_res, j_res]]
+!1 = [builtin_given_names = builtin.given_names [input1]]
+!2 = [builtin_given_names = builtin.given_names [i_1, j_1]]
+!3 = [builtin_given_names = builtin.given_names [i_int_1]]
+!4 = [builtin_given_names = builtin.given_names [j_int_1]]
+!5 = [builtin_given_names = builtin.given_names [sum_1]]
+!6 = [builtin_given_names = builtin.given_names [input2]]
+!7 = [builtin_given_names = builtin.given_names [i_2, j_2]]
+!8 = [builtin_given_names = builtin.given_names [i_int_2]]
+!9 = [builtin_given_names = builtin.given_names [j_int_2]]
+!10 = [builtin_given_names = builtin.given_names [sum_2]]
+!11 = [builtin_given_names = builtin.given_names [res_tensor]]
+!12 = [builtin_given_names = builtin.given_names [i_res_index]]
+!13 = [builtin_given_names = builtin.given_names [j_res_index]]
+!14 = [builtin_given_names = builtin.given_names [res]]
+!15 = [builtin_given_names = builtin.given_names [arg1_p, arg2_p, res_p]]
+!16 = [builtin_given_names = builtin.given_names [arg1]]
+!17 = [builtin_given_names = builtin.given_names [arg2]]
+!18 = [builtin_given_names = builtin.given_names [res]]
+!19 = [builtin_given_names = builtin.given_names [arg1_p, arg2_p, res_p]]
+!20 = [builtin_given_names = builtin.given_names [arg1]]
+!21 = [builtin_given_names = builtin.given_names [arg2]]
+!22 = [builtin_given_names = builtin.given_names [res]]
+!23 = [builtin_given_names = builtin.given_names [arg1_p, arg2_p, res_p]]
+!24 = [builtin_given_names = builtin.given_names [arg1]]
+!25 = [builtin_given_names = builtin.given_names [arg2]]
+!26 = [builtin_given_names = builtin.given_names [zero]]
+!27 = [builtin_given_names = builtin.given_names [sum]]
+!28 = [builtin_given_names = builtin.given_names [sum_norm]]
+!29 = [builtin_given_names = builtin.given_names [prod]]
+!30 = [builtin_given_names = builtin.given_names [res]]

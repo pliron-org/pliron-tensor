@@ -1,0 +1,46 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_broadcast_splat_cast: llvm.func <llvm.void (llvm.ptr (0), builtin.fp32 , llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(input_p_v0: llvm.ptr (0), scalar_v1: builtin.fp32 , output_p_v2: llvm.ptr (0)) !0:
+        input_v3 = llvm.load input_p_v0  : memref.ranked <1x1x1x4 : builtin.fp64 > !1;
+        broadcast_v8 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp64 > !2;
+        memref.generate broadcast_v8
+        {
+          ^entry_block3v1(v9: index.index , v10: index.index , v11: index.index , v12: index.index ):
+            v13 = index.constant <index.constant 0> : index.index ;
+            v14 = index.constant <index.constant 0> : index.index ;
+            v15 = index.constant <index.constant 0> : index.index ;
+            v16 = memref.load input_v3[v13, v14, v15, v12] : builtin.fp64 ;
+            memref.yield v16
+        };
+        cast_v17 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !3;
+        memref.generate cast_v17
+        {
+          ^entry_block4v1(v18: index.index , v19: index.index , v20: index.index , v21: index.index ):
+            v22 = memref.load broadcast_v8[v18, v19, v20, v21] : builtin.fp64 ;
+            v23 = llvm.fptrunc <> v22 to builtin.fp32 ;
+            memref.yield v23
+        };
+        splat_v24 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !4;
+        memref.generate splat_v24
+        {
+          ^entry_block5v1(v25: index.index , v26: index.index , v27: index.index , v28: index.index ):
+            memref.yield scalar_v1
+        };
+        result_v29 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !5;
+        memref.add result_v29 <- cast_v17 + splat_v24;
+        llvm.store *output_p_v2 <- result_v29 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [input_p, scalar, output_p]]
+!1 = [builtin_given_names = builtin.given_names [input]]
+!2 = [builtin_given_names = builtin.given_names [broadcast]]
+!3 = [builtin_given_names = builtin.given_names [cast]]
+!4 = [builtin_given_names = builtin.given_names [splat]]
+!5 = [builtin_given_names = builtin.given_names [result]]

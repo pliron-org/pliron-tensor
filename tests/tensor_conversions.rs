@@ -71,14 +71,14 @@ fn compile_and_jit<TMM: TensorMemoryManager>(
 }
 
 /// The same as [compile_and_jit], but the runtime symbols of `tmm` are also
-/// registered with the JIT.
+/// registered with the JIT. The bufferized pliron IR is also returned as-is.
 fn compile_and_jit_with_runtime<TMM: TensorMemoryManager>(
     ctx: &mut Context,
     tmm: &mut TMM,
     input_ir: &str,
-) -> LLVMLLJIT {
+) -> (LLVMLLJIT, String) {
     let (parsed_op, module_op) = parse_module(ctx, input_ir);
-    bufferize_module(ctx, tmm, parsed_op);
+    let after_bufferization = bufferize_module(ctx, tmm, parsed_op);
     let llvm_ctx = LLVMContext::default();
     let llvm_ir = lower_to_llvm_ir(ctx, parsed_op, module_op, &llvm_ctx);
 
@@ -88,7 +88,7 @@ fn compile_and_jit_with_runtime<TMM: TensorMemoryManager>(
         .expect("Failed to register runtime symbols");
     jit.add_module(llvm_ctx, llvm_ir)
         .expect("Failed to add module to JIT");
-    jit
+    (jit, after_bufferization)
 }
 
 /// Look up `name` in `jit` and interpret it as a function of type `F`.
@@ -124,6 +124,37 @@ unsafe fn output_data<T: Copy>(out_ir_descr: &[u8], rank: usize) -> Vec<T> {
     data
 }
 
+/// Explicit broadcasting, scalar splatting, and element-wise casts compose
+/// with the existing element-wise arithmetic pipeline.
+#[test]
+fn test_broadcast_splat_and_elementwise_cast_from_rust() {
+    let ctx = &mut Context::new();
+    let input_ir = include_str!("resources/test_broadcast_splat_cast.input.plir");
+    let (jit, after_bufferization) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+
+    expect_file!["resources/test_broadcast_splat_cast.expect.plir"].assert_eq(&after_bufferization);
+
+    let input_data = [1.25f64, 2.5, 3.75, 4.0];
+    let input = input_tensor(&[1, 1, 1, 4], &input_data);
+    let mut output = output_tensor::<f32>(&[1, 2, 3, 4]).build_ir_descriptor();
+    let function = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, f32, *mut u8) -> ()>(&jit, "test_broadcast_splat_cast")
+    };
+    function(
+        input.build_ir_descriptor().as_ptr(),
+        2.0,
+        output.as_mut_ptr(),
+    );
+
+    assert_eq!(
+        unsafe { output_data::<f32>(&output, 4) },
+        [
+            3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0,
+            3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0
+        ]
+    );
+}
+
 /// `tensor.generate`, `tensor.extract` and the elementwise binary ops.
 #[test]
 fn test_elementwise_ops_from_rust() {
@@ -131,7 +162,10 @@ fn test_elementwise_ops_from_rust() {
 
     let input_ir = include_str!("resources/test_elementwise_ops_from_rust.input.plir");
 
-    let (jit, _) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+    let (jit, after_bufferization) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+
+    expect_file!["resources/test_elementwise_ops_from_rust.expect.plir"]
+        .assert_eq(&after_bufferization);
 
     let generate_add = unsafe { lookup_fn::<fn(i64, i64) -> i64>(&jit, "test_generate_add") };
     for i in 0..16 {
@@ -214,7 +248,9 @@ fn test_matmul_from_rust() {
 
     let input_ir = include_str!("resources/test_matmul_from_rust.input.plir");
 
-    let (jit, _) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+    let (jit, after_bufferization) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+
+    expect_file!["resources/test_matmul_from_rust.expect.plir"].assert_eq(&after_bufferization);
 
     let lhs_data = [1u64; 16];
     let rhs_data = [1u64, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
@@ -290,7 +326,12 @@ fn test_tracked_tmm_from_rust() {
     let input_ir = include_str!("resources/test_tracked_tmm_from_rust.input.plir");
 
     let mut tmm = TrackedTMM::new();
-    let jit = compile_and_jit_with_runtime(ctx, &mut tmm, input_ir);
+    let tmm_address = format!("{:p}", &tmm);
+    let (jit, after_bufferization) = compile_and_jit_with_runtime(ctx, &mut tmm, input_ir);
+
+    // Replace the actual address (to work around ASLR) with a deterministic string.
+    expect_file!["resources/test_tracked_tmm_from_rust.expect.plir"]
+        .assert_eq(&after_bufferization.replace(&tmm_address, "<tracked-tmm>"));
 
     // No tensor is allocated by the IR yet.
     assert_eq!(tmm.tracked_allocations().len(), 0);
@@ -370,7 +411,10 @@ fn test_successor_operand_aliasing_needs_copy() {
 
     let input_ir = include_str!("resources/test_successor_operand_aliasing_needs_copy.input.plir");
 
-    let (jit, _) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+    let (jit, after_bufferization) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+
+    expect_file!["resources/test_successor_operand_aliasing_needs_copy.expect.plir"]
+        .assert_eq(&after_bufferization);
 
     // Expected with correct bufferization:
     //   z is original x = [1, 2, 3, 4]

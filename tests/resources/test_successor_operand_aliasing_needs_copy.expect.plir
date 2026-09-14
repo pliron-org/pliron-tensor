@@ -1,0 +1,118 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_aliasing_br: llvm.func <builtin.integer i64(builtin.integer i1) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(flag_v0: builtin.integer i1) !0:
+        x_v33 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !1;
+        memref.generate x_v33
+        {
+          ^entry_block8v3(i_1_v34: index.index ) !2:
+            i_int_v2 = index.to_integer i_1_v34 to builtin.integer i64 !3;
+            one_v3 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
+            x_elem_v4 = llvm.add i_int_v2, one_v3 <{nsw=false,nuw=false}>: builtin.integer i64 !5;
+            memref.yield x_elem_v4
+        };
+        v35 = memref.alloc  : memref.ranked <4 : builtin.integer i64>;
+        memref.copy v35 <- x_v33;
+        llvm.br ^block_b_block5v1(v35)
+
+      ^block_b_block5v1(z_v6: memref.ranked <4 : builtin.integer i64>) !6:
+        src_v36 = memref.alloc  : memref.ranked <1 : builtin.integer i64> !7;
+        memref.generate src_v36
+        {
+          ^entry_block3v3(i_2_v37: index.index ) !8:
+            ten_v8 = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64 !9;
+            memref.yield ten_v8
+        };
+        y_v38 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !10;
+        memref.copy y_v38 <- z_v6;
+        $v39 = memref.subview y_v38 [0] [1] [1] : memref.ranked <1 : builtin.integer i64>;
+        memref.copy v39 <- src_v36;
+        sum_v40 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !11;
+        memref.add sum_v40 <- x_v33 + y_v38;
+        zero_idx_i64_v12 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !12;
+        zero_idx_v13 = index.from_integer zero_idx_i64_v12 : index.index  !13;
+        res_v41 = memref.load sum_v40[zero_idx_v13] : builtin.integer i64 !14;
+        llvm.return res_v41
+    };
+    llvm.func @test_aliasing_cond_br: llvm.func <builtin.integer i64(builtin.integer i1) variadic = false>
+      [] 
+    {
+      ^entry_block6v1(flag_v15: builtin.integer i1) !15:
+        x_v42 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !16;
+        memref.generate x_v42
+        {
+          ^entry_block4v5(i_1_v43: index.index ) !17:
+            i_int_v17 = index.to_integer i_1_v43 to builtin.integer i64 !18;
+            one_v18 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !19;
+            x_elem_v19 = llvm.add i_int_v17, one_v18 <{nsw=false,nuw=false}>: builtin.integer i64 !20;
+            memref.yield x_elem_v19
+        };
+        v44 = memref.alloc  : memref.ranked <4 : builtin.integer i64>;
+        memref.copy v44 <- x_v42;
+        v45 = memref.alloc  : memref.ranked <4 : builtin.integer i64>;
+        memref.copy v45 <- x_v42;
+        v46 = memref.alloc  : memref.ranked <4 : builtin.integer i64>;
+        memref.copy v46 <- x_v42;
+        v47 = memref.alloc  : memref.ranked <4 : builtin.integer i64>;
+        memref.copy v47 <- x_v42;
+        llvm.cond_br if flag_v15 ^block_b_block11v1(v46, v45) else ^block_c_block10v1(v47, v44)
+
+      ^block_c_block10v1(z_c_v21: memref.ranked <4 : builtin.integer i64>, x_c_v22: memref.ranked <4 : builtin.integer i64>) !21:
+        src_v48 = memref.alloc  : memref.ranked <1 : builtin.integer i64> !22;
+        memref.generate src_v48
+        {
+          ^entry_block7v3(i_2_v49: index.index ) !23:
+            ten_v24 = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64 !24;
+            memref.yield ten_v24
+        };
+        y_v50 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !25;
+        memref.copy y_v50 <- x_c_v22;
+        $v51 = memref.subview y_v50 [0] [1] [1] : memref.ranked <1 : builtin.integer i64>;
+        memref.copy v51 <- src_v48;
+        llvm.br ^block_b_block11v1(z_c_v21, y_v50)
+
+      ^block_b_block11v1(z_v27: memref.ranked <4 : builtin.integer i64>, y_b_v28: memref.ranked <4 : builtin.integer i64>) !26:
+        sum_v52 = memref.alloc  : memref.ranked <4 : builtin.integer i64> !27;
+        memref.add sum_v52 <- z_v27 + y_b_v28;
+        zero_idx_i64_v30 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !28;
+        zero_idx_v31 = index.from_integer zero_idx_i64_v30 : index.index  !29;
+        res_v53 = memref.load sum_v52[zero_idx_v31] : builtin.integer i64 !30;
+        llvm.return res_v53
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [flag]]
+!1 = [builtin_given_names = builtin.given_names [x]]
+!2 = [builtin_given_names = builtin.given_names [i_1]]
+!3 = [builtin_given_names = builtin.given_names [i_int]]
+!4 = [builtin_given_names = builtin.given_names [one]]
+!5 = [builtin_given_names = builtin.given_names [x_elem]]
+!6 = [builtin_given_names = builtin.given_names [z]]
+!7 = [builtin_given_names = builtin.given_names [src]]
+!8 = [builtin_given_names = builtin.given_names [i_2]]
+!9 = [builtin_given_names = builtin.given_names [ten]]
+!10 = [builtin_given_names = builtin.given_names [y]]
+!11 = [builtin_given_names = builtin.given_names [sum]]
+!12 = [builtin_given_names = builtin.given_names [zero_idx_i64]]
+!13 = [builtin_given_names = builtin.given_names [zero_idx]]
+!14 = [builtin_given_names = builtin.given_names [res]]
+!15 = [builtin_given_names = builtin.given_names [flag]]
+!16 = [builtin_given_names = builtin.given_names [x]]
+!17 = [builtin_given_names = builtin.given_names [i_1]]
+!18 = [builtin_given_names = builtin.given_names [i_int]]
+!19 = [builtin_given_names = builtin.given_names [one]]
+!20 = [builtin_given_names = builtin.given_names [x_elem]]
+!21 = [builtin_given_names = builtin.given_names [z_c, x_c]]
+!22 = [builtin_given_names = builtin.given_names [src]]
+!23 = [builtin_given_names = builtin.given_names [i_2]]
+!24 = [builtin_given_names = builtin.given_names [ten]]
+!25 = [builtin_given_names = builtin.given_names [y]]
+!26 = [builtin_given_names = builtin.given_names [z, y_b]]
+!27 = [builtin_given_names = builtin.given_names [sum]]
+!28 = [builtin_given_names = builtin.given_names [zero_idx_i64]]
+!29 = [builtin_given_names = builtin.given_names [zero_idx]]
+!30 = [builtin_given_names = builtin.given_names [res]]

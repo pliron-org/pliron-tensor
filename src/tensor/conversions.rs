@@ -11,7 +11,9 @@ use pliron::{
             OneOpdInterface, OneResultInterface, OperandSegmentInterface,
             SingleBlockRegionInterface,
         },
+        type_interfaces::FloatTypeInterface,
         type_interfaces::FunctionTypeInterface,
+        types::IntegerType,
     },
     context::{Context, Ptr},
     derive::{op_interface_impl, type_interface_impl},
@@ -26,9 +28,10 @@ use pliron::{
     location::Located,
     op::Op,
     operation::Operation,
+    printable::Printable,
     result::Result,
     symbol_table::nearest_symbol_table,
-    r#type::{TypeHandle, Typed, TypedHandle},
+    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
     value::{Use, Value},
 };
 use pliron_common_dialects::{
@@ -38,7 +41,13 @@ use pliron_common_dialects::{
     },
     index::ops::IndexConstantOp,
 };
-use pliron_llvm::ops::FuncOp;
+use pliron_llvm::ops::{
+    FPExtOp, FPToSIOp, FPToUIOp, FPTruncOp, FuncOp, SExtOp, SIToFPOp, TruncOp, UIToFPOp, ZExtOp,
+};
+use pliron_llvm::{
+    attributes::FastmathFlagsAttr,
+    op_interfaces::{CastOpInterface, CastOpWithNNegInterface, FastMathFlags},
+};
 
 use crate::{
     memref::{
@@ -58,10 +67,10 @@ use crate::{
         bufferize::{Alias, AliasKind, BufferRelation, BufferizableOpInterface, BufferizerState},
         op_interfaces::ElementWiseBinaryTensorOpInterface,
         ops::{
-            AddOp, BatchMatMulOp, ConstantOp, DivOp, ExtractOp,
+            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExtractOp,
             ExtractSliceOp as TensorExtractSliceOp, GenerateOp,
             InsertSliceOp as TensorInsertSliceOp, MatMulOp, MulOp, ReshapeOp as TensorReshapeOp,
-            SubOp,
+            SplatOp, SubOp,
         },
         types::RankedTensorType,
     },
@@ -73,6 +82,75 @@ impl ToMemrefType for RankedTensorType {
         let memref_ty = RankedMemrefType::get(ctx, self.element_type(), self.shape().clone());
         Ok(memref_ty.into())
     }
+}
+
+#[derive(Clone, Copy)]
+enum ScalarCastKind {
+    Identity,
+    FPTrunc,
+    FPExt,
+    Trunc,
+    SExt,
+    ZExt,
+    FPToSI,
+    FPToUI,
+    SIToFP,
+    UIToFP,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ElementwiseCastConversionErr {
+    #[error("unsupported element-wise cast from {from} to {to}")]
+    Unsupported { from: String, to: String },
+}
+
+fn scalar_cast_kind(
+    ctx: &Context,
+    from: TypeHandle,
+    to: TypeHandle,
+    input_is_signed: bool,
+    result_is_signed: bool,
+) -> Result<ScalarCastKind> {
+    if from == to {
+        return Ok(ScalarCastKind::Identity);
+    }
+    let from_ref = from.deref(ctx);
+    let to_ref = to.deref(ctx);
+    let from_int = from_ref.downcast_ref::<IntegerType>();
+    let to_int = to_ref.downcast_ref::<IntegerType>();
+    let from_float = type_cast::<dyn FloatTypeInterface>(&*from_ref);
+    let to_float = type_cast::<dyn FloatTypeInterface>(&*to_ref);
+    let kind = match (from_int, to_int, from_float, to_float) {
+        (Some(from), Some(to), _, _) if from.width() > to.width() => ScalarCastKind::Trunc,
+        (Some(from), Some(to), _, _) if from.width() < to.width() && input_is_signed => {
+            ScalarCastKind::SExt
+        }
+        (Some(from), Some(to), _, _) if from.width() < to.width() => ScalarCastKind::ZExt,
+        (None, None, Some(from_float), Some(to_float)) => {
+            let from_bits = from_float.get_semantics().bits;
+            let to_bits = to_float.get_semantics().bits;
+            if from_bits > to_bits {
+                ScalarCastKind::FPTrunc
+            } else if from_bits < to_bits {
+                ScalarCastKind::FPExt
+            } else {
+                ScalarCastKind::Identity
+            }
+        }
+        (None, Some(_), Some(_), _) if result_is_signed => ScalarCastKind::FPToSI,
+        (None, Some(_), Some(_), _) => ScalarCastKind::FPToUI,
+        (Some(_), None, _, Some(_)) if input_is_signed => ScalarCastKind::SIToFP,
+        (Some(_), None, _, Some(_)) => ScalarCastKind::UIToFP,
+        _ => {
+            return Err(pliron::input_error_noloc!(
+                ElementwiseCastConversionErr::Unsupported {
+                    from: from.disp(ctx).to_string(),
+                    to: to.disp(ctx).to_string()
+                }
+            ));
+        }
+    };
+    Ok(kind)
 }
 
 /// Convert a tensor type (which must implement [ToMemrefType]) to its
@@ -151,8 +229,21 @@ fn create_constant_global(
     Ok(name)
 }
 
-// A constant bufferizes to a [MemrefGlobalOp] at module scope,
-// and a [MemrefGetGlobalOp] to access it.
+/// A constant bufferizes to a [MemrefGlobalOp] at module scope and a
+/// [MemrefGetGlobalOp] at the original operation's position.
+///
+/// For example (the syntax is illustrative):
+///
+/// ```text
+/// %c = tensor.constant dense<[1, 2, 3, 4]> : tensor<2x2xi32>
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// memref.global private constant @__constant_2x2x... : memref<2x2xi32>
+/// %c = memref.get_global @__constant_2x2x... : memref<2x2xi32>
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for ConstantOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -208,6 +299,24 @@ pub enum GenerateOpConversionErr {
     UnsupportedIVType,
 }
 
+/// Lowers a tensor generator to an allocation followed by a memref generator.
+/// The body is moved over and its tensor indices become memref indices:
+///
+/// ```text
+/// %t = tensor.generate %n : tensor<?xi32> {
+///   ^bb0(%i): tensor.yield %i
+/// }
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %buffer = memref.alloc(%n) : memref<?xi32>
+/// memref.generate %buffer {
+///   ^bb0(%i): memref.yield %i
+/// }
+/// // %t is replaced by %buffer
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for GenerateOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -297,6 +406,292 @@ impl BufferizableOpInterface for GenerateOp {
     }
 }
 
+#[derive(thiserror::Error, Debug)]
+pub enum BroadcastOpConversionErr {
+    #[error("broadcasting a dynamic source dimension requires runtime shape selection")]
+    AmbiguousDynamicSourceDimension,
+}
+
+/// Lowers a broadcast to a new buffer filled by indexed loads from the source.
+/// Dimensions of size one are read at index zero; added leading dimensions are
+/// ignored when forming the source index.
+///
+/// ```text
+/// %result = tensor.broadcast %source : tensor<1x3xf32> to tensor<4x3xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %result = memref.alloc() : memref<4x3xf32>
+/// memref.generate %result {
+///   ^bb0(%i, %j):
+///     %value = memref.load %source[0, %j]
+///     memref.yield %value
+/// }
+/// ```
+#[op_interface_impl]
+impl BufferizableOpInterface for BroadcastOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        true
+    }
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        vec![]
+    }
+    fn get_dynamic_dimensions(&self, ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+        Some(self.dynamic_dimensions(ctx))
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let source = self.source(ctx);
+        let source_ty = TypedHandle::<RankedMemrefType>::from_handle(source.get_type(ctx), ctx)?;
+        let source_shape = source_ty.deref(ctx).shape().clone();
+        let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
+        let result_shape = result_ty.deref(ctx).shape().clone();
+        let rank_offset = result_shape.len() - source_shape.len();
+        if source_shape.iter().enumerate().any(|(i, dim)| {
+            matches!(dim, Dimension::Dynamic)
+                && !matches!(result_shape[i + rank_offset], Dimension::Static(1))
+        }) {
+            return Err(pliron::input_error!(
+                self.loc(ctx),
+                BroadcastOpConversionErr::AmbiguousDynamicSourceDimension
+            ));
+        }
+
+        let alloc = bufferizer_state.tmm.create_memref_alloc(
+            ctx,
+            result_ty,
+            self.dynamic_dimensions(ctx),
+        )?;
+        rewriter.append_operation(ctx, alloc.get_operation());
+        struct State {
+            source: Value,
+            source_shape: Vec<Dimension>,
+            rank_offset: usize,
+            element_type: TypeHandle,
+        }
+        let element_type = source_ty.deref(ctx).element_type();
+        let generate = memref::ops::GenerateOp::new(
+            ctx,
+            alloc.get_result(ctx),
+            |ctx, state, inserter, indices| {
+                let mut source_indices = Vec::with_capacity(state.source_shape.len());
+                for (i, dim) in state.source_shape.iter().enumerate() {
+                    if matches!(dim, Dimension::Static(1)) {
+                        let zero = IndexConstantOp::new(ctx, 0);
+                        source_indices.push(zero.get_result(ctx));
+                        inserter.append_op(ctx, &zero);
+                    } else {
+                        source_indices.push(indices[i + state.rank_offset]);
+                    }
+                }
+                let load =
+                    memref::ops::LoadOp::new(ctx, state.element_type, state.source, source_indices);
+                let value = load.get_result(ctx);
+                inserter.append_op(ctx, &load);
+                value
+            },
+            State {
+                source,
+                source_shape,
+                rank_offset,
+                element_type,
+            },
+        );
+        rewriter.append_op(ctx, &generate);
+        rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
+        Ok(())
+    }
+}
+
+/// Lowers a splat to a new buffer whose generator yields the same scalar at
+/// every index:
+///
+/// ```text
+/// %result = tensor.splat %value : tensor<4x8xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %result = memref.alloc() : memref<4x8xf32>
+/// memref.generate %result {
+///   ^bb0(%i, %j): memref.yield %value
+/// }
+/// ```
+#[op_interface_impl]
+impl BufferizableOpInterface for SplatOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        true
+    }
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        vec![]
+    }
+    fn get_dynamic_dimensions(&self, ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+        Some(self.dynamic_dimensions(ctx))
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
+        let alloc = bufferizer_state.tmm.create_memref_alloc(
+            ctx,
+            result_ty,
+            self.dynamic_dimensions(ctx),
+        )?;
+        rewriter.append_operation(ctx, alloc.get_operation());
+        let generate = memref::ops::GenerateOp::new(
+            ctx,
+            alloc.get_result(ctx),
+            |_ctx, value, _inserter, _indices| value,
+            self.value(ctx),
+        );
+        rewriter.append_op(ctx, &generate);
+        rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
+        Ok(())
+    }
+}
+
+/// Lowers an element-wise cast to an allocation and a generated loop of scalar
+/// loads and LLVM casts. For example, a signed integer widening:
+///
+/// ```text
+/// %result = tensor.elementwise_cast signed %input
+///     : tensor<4xi8> to tensor<4xi32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %result = memref.alloc() : memref<4xi32>
+/// memref.generate %result {
+///   ^bb0(%i):
+///     %value = memref.load %input[%i]
+///     %wide = llvm.sext %value : i8 to i32
+///     memref.yield %wide
+/// }
+/// ```
+#[op_interface_impl]
+impl BufferizableOpInterface for ElementwiseCastOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        true
+    }
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        vec![]
+    }
+    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+        None
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let input = self.get_operand(ctx);
+        let input_ty = TypedHandle::<RankedMemrefType>::from_handle(input.get_type(ctx), ctx)?;
+        let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
+        let from = input_ty.deref(ctx).element_type();
+        let to = result_ty.deref(ctx).element_type();
+        let signedness = self.signedness(ctx);
+        let kind = scalar_cast_kind(
+            ctx,
+            from,
+            to,
+            signedness.input_is_signed,
+            signedness.result_is_signed,
+        )?;
+        let input_shape = input_ty.deref(ctx).shape().clone();
+        let dynamic_dimensions = input_shape
+            .iter()
+            .enumerate()
+            .filter(|(_, dim)| matches!(dim, Dimension::Dynamic))
+            .map(|(i, _)| descriptor::unpack_size(ctx, rewriter, input, i))
+            .collect::<Vec<_>>();
+        let alloc = bufferizer_state
+            .tmm
+            .create_memref_alloc(ctx, result_ty, dynamic_dimensions)?;
+        rewriter.append_operation(ctx, alloc.get_operation());
+        struct State {
+            input: Value,
+            from: TypeHandle,
+            to: TypeHandle,
+            kind: ScalarCastKind,
+        }
+        let generate = memref::ops::GenerateOp::new(
+            ctx,
+            alloc.get_result(ctx),
+            |ctx, state, inserter, indices| {
+                let load = memref::ops::LoadOp::new(ctx, state.from, state.input, indices);
+                let loaded = load.get_result(ctx);
+                inserter.append_op(ctx, &load);
+                if matches!(state.kind, ScalarCastKind::Identity) {
+                    return loaded;
+                }
+                let cast = match state.kind {
+                    ScalarCastKind::FPTrunc => {
+                        let op = FPTruncOp::new(ctx, loaded, state.to);
+                        op.set_fast_math_flags(ctx, FastmathFlagsAttr::default());
+                        op.get_operation()
+                    }
+                    ScalarCastKind::FPExt => {
+                        let op = FPExtOp::new(ctx, loaded, state.to);
+                        op.set_fast_math_flags(ctx, FastmathFlagsAttr::default());
+                        op.get_operation()
+                    }
+                    ScalarCastKind::Trunc => TruncOp::new(ctx, loaded, state.to).get_operation(),
+                    ScalarCastKind::SExt => SExtOp::new(ctx, loaded, state.to).get_operation(),
+                    ScalarCastKind::ZExt => {
+                        ZExtOp::new_with_nneg(ctx, loaded, state.to, false).get_operation()
+                    }
+                    ScalarCastKind::FPToSI => FPToSIOp::new(ctx, loaded, state.to).get_operation(),
+                    ScalarCastKind::FPToUI => FPToUIOp::new(ctx, loaded, state.to).get_operation(),
+                    ScalarCastKind::SIToFP => SIToFPOp::new(ctx, loaded, state.to).get_operation(),
+                    ScalarCastKind::UIToFP => {
+                        UIToFPOp::new_with_nneg(ctx, loaded, state.to, false).get_operation()
+                    }
+                    ScalarCastKind::Identity => unreachable!(),
+                };
+                let value = cast.deref(ctx).get_result(0);
+                inserter.append_operation(ctx, cast);
+                value
+            },
+            State {
+                input,
+                from,
+                to,
+                kind,
+            },
+        );
+        rewriter.append_op(ctx, &generate);
+        rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
+        Ok(())
+    }
+}
+
 #[op_interface_impl]
 impl BufferizableOpInterface for ExtractOp {
     fn operand_bufferizes_to_memory_read(&self, ctx: &Context, opd: Use<Value>) -> bool {
@@ -334,6 +729,19 @@ impl BufferizableOpInterface for ExtractOp {
     }
 }
 
+/// Shared lowering for `tensor.add`, `tensor.sub`, `tensor.mul`, and
+/// `tensor.div`. Each operation receives a fresh result buffer:
+///
+/// ```text
+/// %sum = tensor.add %lhs, %rhs : tensor<4x?xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %sum = memref.alloc(%dynamic_size) : memref<4x?xf32>
+/// memref.add %sum, %lhs, %rhs
+/// ```
 trait ElementWiseBinaryTensorOpToMemref: ElementWiseBinaryTensorOpInterface {
     fn rewrite(
         &self,
@@ -514,6 +922,19 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
     }
 }
 
+/// Bufferizes tensor loop-carried values in place by changing the initial
+/// value, block argument, and result to the same memref type. The loop itself
+/// remains a `cf.for`:
+///
+/// ```text
+/// %result = cf.for ... iter_args(%arg = %tensor) -> tensor<4xf32> { ... }
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %result = cf.for ... iter_args(%arg = %buffer) -> memref<4xf32> { ... }
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for ForOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -569,7 +990,19 @@ impl BufferizableOpInterface for ForOp {
     }
 }
 
-// Lowering for tensor::MatMulOp -> memref::MatMulOp with accumulator aliasing.
+/// Lowers `tensor.matmul` to `memref.matmul`. The result aliases the accumulator,
+/// because the multiplication accumulates directly into that buffer:
+///
+/// ```text
+/// %result = tensor.matmul %lhs, %rhs, %accum
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// memref.matmul %lhs, %rhs, %accum
+/// // %result is replaced by %accum
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for MatMulOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -612,8 +1045,25 @@ impl BufferizableOpInterface for MatMulOp {
     }
 }
 
-// Lowering for tensor::BatchMatMulOp using accumulator aliasing.
-// For each batch index, it creates subviews of lhs/rhs/accum and performs 2D memref.matmul.
+/// Lowers `tensor.batch_matmul` using accumulator aliasing. For every batch
+/// index it takes 2-D views of the three operands and invokes `memref.matmul`.
+///
+/// ```text
+/// %result = tensor.batch_matmul %lhs, %rhs, %accum
+///     : tensor<2x3x4xf32>, tensor<2x4x5xf32>, tensor<2x3x5xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// cf.ndfor %b = 0 to 2 {
+///   %lhs2d   = memref.reshape (memref.subview %lhs[%b, 0, 0] [1, 3, 4])
+///   %rhs2d   = memref.reshape (memref.subview %rhs[%b, 0, 0] [1, 4, 5])
+///   %accum2d = memref.reshape (memref.subview %accum[%b, 0, 0] [1, 3, 5])
+///   memref.matmul %lhs2d, %rhs2d, %accum2d
+/// }
+/// // %result is replaced by %accum
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for BatchMatMulOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -932,6 +1382,16 @@ impl BufferizableOpInterface for BatchMatMulOp {
 
 /// Update a [FuncOp]'s type signature and entry block argument types,
 /// converting any tensor types to their memref equivalents.
+///
+/// ```text
+/// llvm.func @map(%arg: tensor<?xf32>) -> tensor<?xf32>
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// llvm.func @map(%arg: memref<?xf32>) -> memref<?xf32>
+/// ```
 pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     // update the function type to convert any tensor types in the signature to memref types.
     let func_ty = func_op.get_type(ctx);
@@ -999,6 +1459,18 @@ impl BufferizableOpInterface for FuncOp {
     }
 }
 
+/// A tensor slice is a view into its source buffer, so it lowers without a
+/// copy:
+///
+/// ```text
+/// %slice = tensor.extract_slice %source[0, 2] [5, 10] [1, 2]
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// %slice = memref.subview %source[0, 2] [5, 10] [1, 2]
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for TensorExtractSliceOp {
     fn operand_bufferizes_to_memory_read(&self, ctx: &Context, opd: Use<Value>) -> bool {
@@ -1043,6 +1515,20 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
     }
 }
 
+/// An insertion writes the source into a view of the destination and returns
+/// that destination buffer:
+///
+/// ```text
+/// %result = tensor.insert_slice %source into %destination[0, 2] [5, 10] [1, 2]
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %view = memref.subview %destination[0, 2] [5, 10] [1, 2]
+/// memref.copy %source, %view
+/// // %result is replaced by %destination
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for TensorInsertSliceOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -1092,6 +1578,17 @@ impl BufferizableOpInterface for TensorInsertSliceOp {
     }
 }
 
+/// A tensor reshape becomes a memref view with the converted result type:
+///
+/// ```text
+/// %matrix = tensor.reshape %vector : tensor<6xf32> to tensor<2x3xf32>
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// %matrix = memref.reshape %vector : memref<6xf32> to memref<2x3xf32>
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for TensorReshapeOp {
     fn operand_bufferizes_to_memory_read(&self, ctx: &Context, opd: Use<Value>) -> bool {

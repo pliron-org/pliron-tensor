@@ -1,0 +1,13 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_broadcast_splat_cast: llvm.func <llvm.void (llvm.ptr(0), builtin.fp32, llvm.ptr(0)) variadic = false> [] {
+      ^entry(input_p: llvm.ptr(0), scalar: builtin.fp32, output_p: llvm.ptr(0)):
+        input = llvm.load input_p : tensor.ranked<1x1x1x4:builtin.fp64>;
+        broadcast = tensor.broadcast input : tensor.ranked<1x2x3x4:builtin.fp64>;
+        cast = tensor.elementwise_cast broadcast : tensor.ranked<1x2x3x4:builtin.fp32> {input_is_signed=false,result_is_signed=false};
+        splat = tensor.splat scalar : tensor.ranked<1x2x3x4:builtin.fp32>;
+        result = tensor.add cast, splat : tensor.ranked<1x2x3x4:builtin.fp32>;
+        llvm.store *output_p <- result;
+        llvm.return
+    }
+}
