@@ -506,6 +506,7 @@ mod tests {
             types::FP32Type,
         },
         context::Context,
+        ident,
         irbuild::{
             inserter::{IRInserter, Inserter},
             listener::DummyListener,
@@ -535,9 +536,9 @@ mod tests {
             vec![Dimension::Static(4), Dimension::Static(8)],
         );
 
-        let module = ModuleOp::new(ctx, "test_module".try_into().unwrap());
+        let module = ModuleOp::new(ctx, ident!("test_module"));
         let func_ty = FuncType::get(ctx, VoidType::get(ctx).into(), vec![], false);
-        let test_fn = FuncOp::new(ctx, "test_fn".try_into().unwrap(), func_ty);
+        let test_fn = FuncOp::new(ctx, ident!("test_fn"), func_ty);
         test_fn
             .get_operation()
             .insert_at_front(module.get_body(ctx, 0), ctx);
@@ -594,9 +595,9 @@ mod tests {
             vec![Dimension::Dynamic, Dimension::Dynamic],
         );
 
-        let module = ModuleOp::new(ctx, "test_module".try_into().unwrap());
+        let module = ModuleOp::new(ctx, ident!("test_module"));
         let func_ty = FuncType::get(ctx, VoidType::get(ctx).into(), vec![], false);
-        let test_fn = FuncOp::new(ctx, "test_fn".try_into().unwrap(), func_ty);
+        let test_fn = FuncOp::new(ctx, ident!("test_fn"), func_ty);
         test_fn
             .get_operation()
             .insert_at_front(module.get_body(ctx, 0), ctx);

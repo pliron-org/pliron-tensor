@@ -638,7 +638,7 @@ pub fn bufferize(
 
             // Another operand backed by the same buffer would be accessed through the
             // storage this operand is about to be written through, during the op itself.
-            // No liveness query can catch that, since the hazard is within the op.
+            // A liveness query cannot catch that since the hazard is within the op.
             let mut conflicts_with_other_operand = false;
             for other in op.deref(ctx).operands_as_uses() {
                 if other != opd && state.buffer_classes.find(other.get_def(ctx)) == opd_class {
@@ -663,13 +663,10 @@ pub fn bufferize(
                 continue;
             }
 
-            // Writing in place is safe only if nothing else that shares the buffer can
-            // observe the write. Values this op defines are excluded: they are the results
-            // of the write, not readers of the pre-write contents.
+            // Writing in place is safe only if no other value sharing the buffer is live
+            // after this op. Exclude this op's results: they contain the updated data.
             //
-            // This asks only whether a member is live just after the op; no program order
-            // between the op and the member's definition is assumed. A member defined by a
-            // textually later op still counts if it reaches this point via a back edge.
+            // Values defined later can still be live here through a loop back edge.
             let class_live = class_members
                 .iter()
                 .filter(|member| {

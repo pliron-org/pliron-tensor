@@ -23,6 +23,7 @@ use pliron::{
     common_traits::Verify,
     context::Context,
     derive::{op_interface_impl, pliron_op},
+    ident,
     identifier::Identifier,
     irbuild::{
         inserter::{BlockInsertionPoint, IRInserter, Inserter, OpInsertionPoint},
@@ -257,7 +258,7 @@ impl GenerateOp {
         let entry_block = op_inserter.create_block(
             ctx,
             BlockInsertionPoint::AtRegionStart(region),
-            Some("entry".try_into().unwrap()),
+            Some(ident!("entry")),
             vec![index_ty.into(); rank],
         );
         // Build the body.
@@ -1715,7 +1716,7 @@ impl GlobalOp {
             .deref_mut(ctx)
             .attributes
             .0
-            .remove(&*global_op_attr_names::ATTR_KEY_MEMREF_GLOBAL_INITIALIZER)
+            .remove(&global_op_attr_names::ATTR_KEY_MEMREF_GLOBAL_INITIALIZER)
             .map(|initializer| {
                 *initializer
                     .downcast::<DenseElementsAttr>()

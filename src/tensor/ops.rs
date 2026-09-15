@@ -19,6 +19,7 @@ use pliron::{
     common_traits::Verify,
     context::Context,
     derive::pliron_op,
+    ident,
     identifier::Identifier,
     irbuild::{
         inserter::{BlockInsertionPoint, IRInserter, Inserter, OpInsertionPoint},
@@ -118,7 +119,7 @@ impl ConstantOp {
             .deref_mut(ctx)
             .attributes
             .0
-            .remove(&*constant_op_attr_names::ATTR_KEY_TENSOR_CONSTANT_VALUE)
+            .remove(&constant_op_attr_names::ATTR_KEY_TENSOR_CONSTANT_VALUE)
             .expect("tensor.constant must have a value attribute")
             .downcast::<DenseElementsAttr>()
             .expect("the value of tensor.constant must be a DenseElementsAttr")
@@ -619,7 +620,7 @@ impl GenerateOp {
         let entry_block = op_inserter.create_block(
             ctx,
             BlockInsertionPoint::AtRegionStart(region),
-            Some("entry".try_into().unwrap()),
+            Some(ident!("entry")),
             vec![index_ty.into(); rank],
         );
         // Build the body.
