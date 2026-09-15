@@ -43,10 +43,10 @@ builtin.module @test_module
         llvm.store *res_p_v18 <- ones_v27 ;
         llvm.return 
     };
-    memref.global @__constant_2x3xfp64_8B_0 : memref.ranked <2x3 : builtin.fp64 > [constant : true] !16;
-    memref.global @__constant_2x3xfp64_8B_1 : memref.ranked <2x3 : builtin.fp64 > [constant : true] !17;
-    memref.global @__constant_2x2xinteger_8B_2 : memref.ranked <2x2 : builtin.integer i64> [constant : true] !18;
-    memref.global @__constant_4x4xfp64_8B_3 : memref.ranked <4x4 : builtin.fp64 > [constant : true] !19
+    memref.global @__constant_2x3xfp64_8B_0 : memref.ranked <2x3 : builtin.fp64 > [constant : true] [init : !outlined] !16;
+    memref.global @__constant_2x3xfp64_8B_1 : memref.ranked <2x3 : builtin.fp64 > [constant : true] [init : !outlined] !17;
+    memref.global @__constant_2x2xinteger_8B_2 : memref.ranked <2x2 : builtin.integer i64> [constant : true] [init : <memref.ranked <2x2 : builtin.integer i64> = [10, 20, 30, 40]>];
+    memref.global @__constant_4x4xfp64_8B_3 : memref.ranked <4x4 : builtin.fp64 > [constant : true] [init : <memref.ranked <4x4 : builtin.fp64 > = splat 1>]
 }
 
 outlined_attributes:
@@ -66,10 +66,6 @@ outlined_attributes:
 !13 = [builtin_given_names = builtin.given_names [res]]
 !14 = [builtin_given_names = builtin.given_names [res_p]]
 !15 = [builtin_given_names = builtin.given_names [ones]]
-!16 = [memref_global_initializer = !20]
-!17 = [memref_global_initializer = !20]
-!18 = [memref_global_initializer = !21]
-!19 = [memref_global_initializer = !22]
-!20 = memref.dense_elements <memref.ranked <2x3 : builtin.fp64 > = [1, 2, 3, 4, 5, 6]>
-!21 = memref.dense_elements <memref.ranked <2x2 : builtin.integer i64> = [10, 20, 30, 40]>
-!22 = memref.dense_elements <memref.ranked <4x4 : builtin.fp64 > = splat 1>
+!16 = [memref_global_initializer = !18]
+!17 = [memref_global_initializer = !18]
+!18 = memref.dense_elements <memref.ranked <2x3 : builtin.fp64 > = [1, 2, 3, 4, 5, 6]>

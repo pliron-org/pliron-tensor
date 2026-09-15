@@ -65,7 +65,7 @@ use super::{
 /// | `result` | The constant tensor. |
 #[pliron_op(
     name = "tensor.constant",
-    format = "`: ` type($0)",
+    format = "attr($tensor_constant_value, $DenseElementsAttr) ` : ` type($0)",
     interfaces = [
         NOpdsInterface<0>,
         OneResultInterface,

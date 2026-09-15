@@ -79,6 +79,9 @@ unsafe impl Sync for ConstPointerAttr {}
 /// string of the raw bytes. All elements are written in either case.
 const MAX_ELEMENTS_AS_LITERALS: usize = 100;
 
+/// The number above which a [DenseElementsAttr] is printed outlined.
+const MAX_INLINE_DATA_BYTES: usize = 32;
+
 #[derive(Debug, thiserror::Error)]
 pub enum DenseElementsErr {
     #[error("{0} is not a supported element type for memref.dense_elements")]
@@ -315,9 +318,12 @@ impl TypedAttrInterface for DenseElementsAttr {
     }
 }
 
-/// The raw buffer can be large, so print it outside, after the top-level operation.
 #[attr_interface_impl]
-impl OutlinedAttr for DenseElementsAttr {}
+impl OutlinedAttr for DenseElementsAttr {
+    fn outline(&self) -> bool {
+        self.data.len() > MAX_INLINE_DATA_BYTES
+    }
+}
 
 /// Two operations that hold the same constant share one outlined entry.
 #[attr_interface_impl]

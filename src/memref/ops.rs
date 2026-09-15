@@ -1650,7 +1650,8 @@ impl ReshapeOp {
 #[pliron_op(
     name = "memref.global",
     format = "`@` attr($builtin_sym_name, $IdentifierAttr) ` : ` attr($memref_global_type, $TypeAttr) \
-        ` ` attr($memref_global_constant, $BoolAttr, label($constant), delimiters(`[`, `]`))",
+        ` ` attr($memref_global_constant, $BoolAttr, label($constant), delimiters(`[`, `]`)) \
+        ` ` opt_attr($memref_global_initializer, $DenseElementsAttr, label($init), delimiters(`[`, `]`))",
     interfaces = [
         NOpdsInterface<0>,
         NResultsInterface<0>,

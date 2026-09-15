@@ -26,12 +26,12 @@ builtin.module @test_module {
             val = llvm.add i_int, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
             memref.yield val
         };
-        rhs = tensor.constant : tensor.ranked<3x2:builtin.integer i64> !100;
-        accum = tensor.constant : tensor.ranked<2x2:builtin.integer i64> !101;
+        rhs = tensor.constant !outlined : tensor.ranked<3x2:builtin.integer i64> !100;
+        accum = tensor.constant !outlined : tensor.ranked<2x2:builtin.integer i64> !101;
         product = tensor.matmul generated, rhs, accum : tensor.ranked<2x2:builtin.integer i64>;
-        batch_lhs = tensor.constant : tensor.ranked<2x2x3:builtin.integer i64> !102;
-        batch_rhs = tensor.constant : tensor.ranked<2x3x2:builtin.integer i64> !103;
-        batch_accum = tensor.constant : tensor.ranked<2x2x2:builtin.integer i64> !104;
+        batch_lhs = tensor.constant !outlined : tensor.ranked<2x2x3:builtin.integer i64> !102;
+        batch_rhs = tensor.constant !outlined : tensor.ranked<2x3x2:builtin.integer i64> !103;
+        batch_accum = tensor.constant !outlined : tensor.ranked<2x2x2:builtin.integer i64> !104;
         batch = tensor.batch_matmul batch_lhs, batch_rhs, batch_accum : tensor.ranked<2x2x2:builtin.integer i64>;
         llvm.store *res_p <- batch;
         llvm.return
