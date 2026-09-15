@@ -79,8 +79,8 @@ unsafe impl Sync for ConstPointerAttr {}
 /// string of the raw bytes. All elements are written in either case.
 const MAX_ELEMENTS_AS_LITERALS: usize = 100;
 
-/// The number above which a [DenseElementsAttr] is printed outlined.
-const MAX_INLINE_DATA_BYTES: usize = 32;
+/// The number of elements above which a [DenseElementsAttr] is printed outlined.
+const MAX_INLINE_ELEMENTS: usize = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DenseElementsErr {
@@ -320,8 +320,14 @@ impl TypedAttrInterface for DenseElementsAttr {
 
 #[attr_interface_impl]
 impl OutlinedAttr for DenseElementsAttr {
-    fn outline(&self) -> bool {
-        self.data.len() > MAX_INLINE_DATA_BYTES
+    fn outline(&self, ctx: &Context) -> bool {
+        // A splat prints as one element, whatever the shape of its type.
+        if self.is_splat(ctx) {
+            return false;
+        }
+        // A type with no element count has no known printed length either.
+        self.num_elements(ctx)
+            .is_none_or(|elements| elements > MAX_INLINE_ELEMENTS)
     }
 }
 
