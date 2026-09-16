@@ -9,11 +9,11 @@ use pliron::{
     builtin::op_interfaces::{
         AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, NOpdsInterface,
         NRegionsInterface, NResultsInterface, OneOpdInterface, OneRegionInterface,
-        OneResultInterface, OperandNOfType, OperandSegmentInterface, ResultNOfType, SegmentNOfType,
+        OneResultInterface, OperandNOfType, OperandsMNOfType, ResultNImplsTy, ResultNOfType,
         SingleBlockRegionInterface,
     },
     combine::{
-        Parser, many,
+        Parser,
         parser::char::{self, spaces},
     },
     common_traits::Verify,
@@ -46,7 +46,9 @@ use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::I
 
 use crate::memref::{
     attributes::ShapedTypeHandle,
-    op_interfaces::{CompatibleShapesOp, GenerateOpInterface},
+    op_interfaces::{
+        CompatibleShapesOp, DynamicDimensionOperandsOp, GenerateOpInterface, ReshapeOpInterface,
+    },
     ops::{SliceParam, YieldOp},
     type_interfaces::{MultiDimensionalType, ShapedType},
 };
@@ -165,70 +167,17 @@ impl Verify for ConstantOp {
 /// | `result` | A ranked tensor containing the broadcasted source values. |
 #[pliron_op(
     name = "tensor.broadcast",
+    format = "operands(CharSpace(`,`)) ` : ` type($0)",
     interfaces = [
         OneResultInterface,
         ResultNOfType<0, RankedTensorType>,
-        OperandSegmentInterface,
-        AtLeastNOpdsInterface<1>,
-        SegmentNOfType<0, RankedTensorType>,
-        SegmentNOfType<1, IndexType>,
+        OperandNOfType<0, RankedTensorType>,
+        ResultNImplsTy<0, dyn ShapedType>,
+        OperandsMNOfType<1, {-1}, IndexType>,
+        DynamicDimensionOperandsOp<1>,
     ],
 )]
 pub struct BroadcastOp;
-
-impl Printable for BroadcastOp {
-    fn fmt(
-        &self,
-        ctx: &Context,
-        _state: &printable::State,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        write!(
-            f,
-            "{} = {} {} : {}",
-            self.get_result(ctx).disp(ctx),
-            Self::get_opid_static(),
-            iter_with_sep(
-                self.get_operation().deref(ctx).operands(),
-                ListSeparator::CharSpace(',')
-            )
-            .disp(ctx),
-            self.result_type(ctx).disp(ctx)
-        )
-    }
-}
-
-impl Parsable for BroadcastOp {
-    type Arg = Vec<(Identifier, Location)>;
-    type Parsed = OpObj;
-
-    fn parse<'a>(
-        state_stream: &mut parsable::StateStream<'a>,
-        results: Self::Arg,
-    ) -> parsable::ParseResult<'a, Self::Parsed> {
-        let source = ssa_opd_parser().skip(spaces());
-        let dynamic_dimensions = many(
-            char::char(',')
-                .skip(spaces())
-                .with(ssa_opd_parser().skip(spaces())),
-        );
-        let result_type =
-            spaced(char::string(":")).with(TypedHandle::<RankedTensorType>::parser(()));
-        let ((source, dynamic_dimensions, result_type), _) =
-            (source, dynamic_dimensions, result_type)
-                .parse_stream(state_stream)
-                .into_result()?;
-
-        let op = Self::new(
-            state_stream.state.ctx,
-            source,
-            dynamic_dimensions,
-            result_type,
-        );
-        process_parsed_ssa_defs(state_stream, &results, op.get_operation())?;
-        Ok(OpObj::new(op)).into_parse_result()
-    }
-}
 
 #[derive(thiserror::Error, Debug)]
 pub enum BroadcastOpVerifyErr {
@@ -236,8 +185,6 @@ pub enum BroadcastOpVerifyErr {
     ElementTypeMismatch,
     #[error("source shape cannot be broadcast to the result shape")]
     IncompatibleShape,
-    #[error("expected {expected} dynamic dimension operands, got {got}")]
-    DynamicDimensionCount { expected: usize, got: usize },
 }
 
 impl BroadcastOp {
@@ -250,8 +197,8 @@ impl BroadcastOp {
         dynamic_dimensions: Vec<Value>,
         result_type: TypedHandle<RankedTensorType>,
     ) -> Self {
-        let (operands, operand_segments) =
-            Self::compute_segment_sizes(vec![vec![source], dynamic_dimensions]);
+        let mut operands = vec![source];
+        operands.extend(dynamic_dimensions);
         let op = Operation::new(
             ctx,
             Self::get_concrete_op_info(),
@@ -260,18 +207,12 @@ impl BroadcastOp {
             vec![],
             0,
         );
-        let op = Self { op };
-        op.set_operand_segment_sizes(ctx, operand_segments);
-        op
+        Self { op }
     }
 
     /// Get the source tensor.
     pub fn source(&self, ctx: &Context) -> Value {
-        self.get_segment(ctx, 0)[0]
-    }
-    /// Get the runtime extents of the dynamic result dimensions.
-    pub fn dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
-        self.get_segment(ctx, 1)
+        self.get_operation().deref(ctx).get_operand(0)
     }
 }
 
@@ -280,23 +221,19 @@ impl Verify for BroadcastOp {
         let loc = self.loc(ctx);
         let source_handle = self.source(ctx).get_type(ctx);
         let source_ref = source_handle.deref(ctx);
-        let source = source_ref.downcast_ref::<RankedTensorType>().unwrap();
+        let source = source_ref
+            .downcast_ref::<RankedTensorType>()
+            .expect("OperandNOfType<0, RankedTensorType> ensures the source is a ranked tensor");
         let result_handle = self.result_type(ctx);
         let result_ref = result_handle.deref(ctx);
-        let result = result_ref.downcast_ref::<RankedTensorType>().unwrap();
+        let result = result_ref
+            .downcast_ref::<RankedTensorType>()
+            .expect("ResultNOfType<0, RankedTensorType> ensures the result is a ranked tensor");
         if source.element_type() != result.element_type() {
             return verify_err!(loc, BroadcastOpVerifyErr::ElementTypeMismatch);
         }
         if !can_broadcast_to(source.shape(), result.shape()) {
             return verify_err!(loc, BroadcastOpVerifyErr::IncompatibleShape);
-        }
-        let got = self.dynamic_dimensions(ctx).len();
-        let expected = result.num_dynamic_dimensions();
-        if got != expected {
-            return verify_err!(
-                loc,
-                BroadcastOpVerifyErr::DynamicDimensionCount { expected, got }
-            );
         }
         Ok(())
     }
@@ -316,69 +253,17 @@ impl Verify for BroadcastOp {
 /// | `result` | A ranked tensor whose elements are all equal to `value`. |
 #[pliron_op(
     name = "tensor.splat",
+    format = "operands(CharSpace(`,`)) ` : ` type($0)",
     interfaces = [
         OneResultInterface,
         ResultNOfType<0, RankedTensorType>,
         AtLeastNOpdsInterface<1>,
-        OperandSegmentInterface,
-        SegmentNOfType<1, IndexType>,
+        ResultNImplsTy<0, dyn ShapedType>,
+        OperandsMNOfType<1, {-1}, IndexType>,
+        DynamicDimensionOperandsOp<1>,
     ],
 )]
 pub struct SplatOp;
-
-impl Printable for SplatOp {
-    fn fmt(
-        &self,
-        ctx: &Context,
-        _state: &printable::State,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        write!(
-            f,
-            "{} = {} {} : {}",
-            self.get_result(ctx).disp(ctx),
-            Self::get_opid_static(),
-            iter_with_sep(
-                self.get_operation().deref(ctx).operands(),
-                ListSeparator::CharSpace(',')
-            )
-            .disp(ctx),
-            self.result_type(ctx).disp(ctx)
-        )
-    }
-}
-
-impl Parsable for SplatOp {
-    type Arg = Vec<(Identifier, Location)>;
-    type Parsed = OpObj;
-
-    fn parse<'a>(
-        state_stream: &mut parsable::StateStream<'a>,
-        results: Self::Arg,
-    ) -> parsable::ParseResult<'a, Self::Parsed> {
-        let value = ssa_opd_parser().skip(spaces());
-        let dynamic_dimensions = many(
-            char::char(',')
-                .skip(spaces())
-                .with(ssa_opd_parser().skip(spaces())),
-        );
-        let result_type =
-            spaced(char::string(":")).with(TypedHandle::<RankedTensorType>::parser(()));
-        let ((value, dynamic_dimensions, result_type), _) =
-            (value, dynamic_dimensions, result_type)
-                .parse_stream(state_stream)
-                .into_result()?;
-
-        let op = Self::new(
-            state_stream.state.ctx,
-            value,
-            dynamic_dimensions,
-            result_type,
-        );
-        process_parsed_ssa_defs(state_stream, &results, op.get_operation())?;
-        Ok(OpObj::new(op)).into_parse_result()
-    }
-}
 
 impl SplatOp {
     /// Create a splat tensor of `result_type` filled with `value`.
@@ -390,8 +275,8 @@ impl SplatOp {
         dynamic_dimensions: Vec<Value>,
         result_type: TypedHandle<RankedTensorType>,
     ) -> Self {
-        let (operands, operand_segments) =
-            Self::compute_segment_sizes(vec![vec![value], dynamic_dimensions]);
+        let mut operands = vec![value];
+        operands.extend(dynamic_dimensions);
         let op = Operation::new(
             ctx,
             Self::get_concrete_op_info(),
@@ -400,36 +285,30 @@ impl SplatOp {
             vec![],
             0,
         );
-        let op = Self { op };
-        op.set_operand_segment_sizes(ctx, operand_segments);
-        op
+        Self { op }
     }
     /// Get the scalar value that is replicated.
     pub fn value(&self, ctx: &Context) -> Value {
-        self.get_segment(ctx, 0)[0]
+        self.get_operation().deref(ctx).get_operand(0)
     }
-    /// Get the runtime extents of the dynamic result dimensions.
-    pub fn dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
-        self.get_segment(ctx, 1)
-    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum SplatOpVerifyErr {
+    #[error("tensor.splat value type must match its result element type")]
+    ValueTypeMismatch,
 }
 
 impl Verify for SplatOp {
     fn verify(&self, ctx: &Context) -> Result<()> {
+        let loc = self.loc(ctx);
         let result_handle = self.result_type(ctx);
         let result_ref = result_handle.deref(ctx);
-        let result = result_ref.downcast_ref::<RankedTensorType>().unwrap();
+        let result = result_ref
+            .downcast_ref::<RankedTensorType>()
+            .expect("ResultNOfType<0, RankedTensorType> ensures the result is a ranked tensor");
         if self.value(ctx).get_type(ctx) != result.element_type() {
-            return verify_err!(
-                self.loc(ctx),
-                "tensor.splat value type must match its result element type"
-            );
-        }
-        if self.dynamic_dimensions(ctx).len() != result.num_dynamic_dimensions() {
-            return verify_err!(
-                self.loc(ctx),
-                "tensor.splat dynamic dimension operand count mismatch"
-            );
+            return verify_err!(loc, SplatOpVerifyErr::ValueTypeMismatch);
         }
         Ok(())
     }
@@ -656,9 +535,8 @@ impl GenerateOp {
     interfaces = [
         OneResultInterface,
         NResultsInterface<1>,
-        OperandSegmentInterface,
-        SegmentNOfType<0, RankedTensorType>,
-        SegmentNOfType<1, IndexType>,
+        OperandNOfType<0, RankedTensorType>,
+        OperandsMNOfType<1, {-1}, IndexType>,
     ],
 )]
 pub struct ExtractOp;
@@ -716,7 +594,8 @@ impl Parsable for ExtractOp {
 impl ExtractOp {
     /// Create a new ExtractOp with the given operand and result type.
     pub fn new(ctx: &mut Context, res_ty: TypeHandle, tensor: Value, indices: Vec<Value>) -> Self {
-        let (operands, operand_segments) = Self::compute_segment_sizes(vec![vec![tensor], indices]);
+        let mut operands = vec![tensor];
+        operands.extend(indices);
         let op = Operation::new(
             ctx,
             Self::get_concrete_op_info(),
@@ -725,24 +604,22 @@ impl ExtractOp {
             vec![],
             0,
         );
-        let op = Self { op };
-        op.set_operand_segment_sizes(ctx, operand_segments);
-        op
+        Self { op }
     }
 
     /// Get the operand representing the tensor to extract from.
     pub fn get_tensor_operand(&self, ctx: &Context) -> Value {
-        self.get_segment(ctx, 0)[0]
+        self.get_operation().deref(ctx).get_operand(0)
     }
 
     /// Get the operands representing the indices to extract at.
     pub fn get_index_operands(&self, ctx: &Context) -> Vec<Value> {
-        self.get_segment(ctx, 1)
+        self.get_operation().deref(ctx).operands().skip(1).collect()
     }
 
     /// Get the number of index operands.
     pub fn get_num_index_operands(&self, ctx: &Context) -> u32 {
-        self.segment_size(ctx, 1)
+        (self.get_operation().deref(ctx).get_num_operands() - 1) as u32
     }
 }
 
@@ -768,13 +645,13 @@ impl Verify for ExtractOp {
             return verify_err!(loc, ExtractOpVerifyErr::ResultTypeMismatch);
         }
         let expected_num_indices = ranked_tensor_ty.rank();
-        let num_indices = self.get_num_index_operands(ctx);
-        if num_indices as usize != expected_num_indices {
+        let indices = self.get_index_operands(ctx);
+        if indices.len() != expected_num_indices {
             return verify_err!(
                 loc,
                 ExtractOpVerifyErr::NumOperandsMismatch {
                     expected: expected_num_indices,
-                    got: num_indices as usize
+                    got: indices.len()
                 }
             );
         }
@@ -1453,6 +1330,7 @@ impl BatchMatMulOp {
         NResultsInterface<1>,
         AllResultsOfType<RankedTensorType>,
         OperandNOfType<0, RankedTensorType>,
+        OperandsMNOfType<1, {-1}, IndexType>,
     ],
     attributes = (tensor_slice_params: SliceParamsAttr)
 )]
@@ -1541,10 +1419,6 @@ pub enum ExtractSliceOpVerifyErr {
         "The result type of ExtractSliceOp must be a RankedTensorType with same rank as source"
     )]
     ResultTypeMismatch,
-    #[error(
-        "ExtractSliceOp: All dynamic operands must be of IndexType, but operand {index} is {ty}"
-    )]
-    NonIndexOperand { index: usize, ty: String },
     #[error(
         "ExtractSliceOp: Number of dynamic operands ({got}) does not match number of dynamic parameters ({expected})"
     )]
@@ -1655,22 +1529,6 @@ impl Verify for ExtractSliceOp {
 
         let total_dynamic = num_dynamic_offsets + num_dynamic_sizes + num_dynamic_steps;
         let remaining_operands: Vec<_> = operands.collect();
-
-        // Verify that all remaining operands are Index type
-        for (i, opd) in remaining_operands.iter().enumerate() {
-            let opd_ty = opd.get_type(ctx);
-            let opd_ty_ref = opd_ty.deref(ctx);
-            if !opd_ty_ref.is::<IndexType>() {
-                let ty_name = format!("{:?}", opd_ty_ref);
-                return verify_err!(
-                    loc,
-                    ExtractSliceOpVerifyErr::NonIndexOperand {
-                        index: i + 1,
-                        ty: ty_name
-                    }
-                );
-            }
-        }
 
         // Verify the count of dynamic operands matches
         if remaining_operands.len() != total_dynamic {
@@ -1878,10 +1736,10 @@ impl ExtractSliceOp {
         OneResultInterface,
         NResultsInterface<1>,
         AllResultsOfType<RankedTensorType>,
-        AtLeastNOpdsInterface<2>,
         ResultNOfType<0, RankedTensorType>,
         OperandNOfType<0, RankedTensorType>,
         OperandNOfType<1, RankedTensorType>,
+        OperandsMNOfType<2, {-1}, IndexType>,
     ],
     attributes = (insert_slice_params: SliceParamsAttr)
 )]
@@ -1976,10 +1834,6 @@ pub enum InsertSliceOpVerifyErr {
     ElementTypeMismatch,
     #[error("InsertSliceOp result type must match the destination tensor type")]
     ResultTypeMismatch,
-    #[error(
-        "InsertSliceOp: All dynamic operands must be of IndexType, but operand {index} is {ty}"
-    )]
-    NonIndexOperand { index: usize, ty: String },
     #[error(
         "InsertSliceOp: Number of dynamic operands ({got}) does not match number of dynamic parameters ({expected})"
     )]
@@ -2138,21 +1992,6 @@ impl Verify for InsertSliceOp {
 
         let total_dynamic = num_dynamic_offsets + num_dynamic_sizes + num_dynamic_steps;
         let remaining_operands: Vec<_> = operands.collect();
-
-        for (i, opd) in remaining_operands.iter().enumerate() {
-            let opd_ty = opd.get_type(ctx);
-            let opd_ty_ref = opd_ty.deref(ctx);
-            if !opd_ty_ref.is::<IndexType>() {
-                let ty_name = format!("{:?}", opd_ty_ref);
-                return verify_err!(
-                    loc,
-                    InsertSliceOpVerifyErr::NonIndexOperand {
-                        index: i + 2,
-                        ty: ty_name
-                    }
-                );
-            }
-        }
 
         if remaining_operands.len() != total_dynamic {
             return verify_err!(
@@ -2328,164 +2167,20 @@ impl InsertSliceOp {
 /// | `result` | The reshaped tensor with the new shape. |
 #[pliron_op(
     name = "tensor.reshape",
+    format = "operands(CharSpace(`,`)) ` : ` type($0)",
+    verifier = "succ",
     interfaces = [
         OneResultInterface,
         NResultsInterface<1>,
-        AtLeastNOpdsInterface<1>,
-        OperandSegmentInterface,
-        SegmentNOfType<0, RankedTensorType>,
-        SegmentNOfType<1, IndexType>,
-        AllResultsOfType<RankedTensorType>,
+        OperandNOfType<0, RankedTensorType>,
+        ResultNOfType<0, RankedTensorType>,
+        ResultNImplsTy<0, dyn ShapedType>,
+        OperandsMNOfType<1, {-1}, IndexType>,
+        DynamicDimensionOperandsOp<1>,
+        ReshapeOpInterface<RankedTensorType>,
     ],
 )]
 pub struct ReshapeOp;
-
-impl Printable for ReshapeOp {
-    fn fmt(
-        &self,
-        ctx: &Context,
-        _state: &printable::State,
-        f: &mut std::fmt::Formatter,
-    ) -> std::fmt::Result {
-        let source = self.get_source(ctx);
-        let dyn_dims = self.get_dynamic_dimensions(ctx);
-        write!(
-            f,
-            "{} = {} {}(",
-            self.get_result(ctx).disp(ctx),
-            Self::get_opid_static(),
-            source.disp(ctx)
-        )?;
-        write!(
-            f,
-            "{}",
-            iter_with_sep(dyn_dims.iter(), ListSeparator::CharSpace(',')).disp(ctx)
-        )?;
-        write!(f, ") : {}", self.result_type(ctx).disp(ctx))
-    }
-}
-
-impl Parsable for ReshapeOp {
-    type Arg = Vec<(Identifier, Location)>;
-    type Parsed = OpObj;
-
-    fn parse<'a>(
-        state_stream: &mut parsable::StateStream<'a>,
-        results: Self::Arg,
-    ) -> parsable::ParseResult<'a, Self::Parsed> {
-        let (source, dyn_dims, result_ty) = (
-            ssa_opd_parser().skip(spaces()),
-            delimited_list_parser('(', ')', ',', ssa_opd_parser()),
-            spaced(char::string(":")).with(TypedHandle::<RankedTensorType>::parser(())),
-        );
-
-        let ((source, dyn_dims, result_ty), _) = (source, dyn_dims, result_ty)
-            .parse_stream(state_stream)
-            .into_result()?;
-
-        let op = ReshapeOp::new(state_stream.state.ctx, source, dyn_dims, result_ty);
-        process_parsed_ssa_defs(state_stream, &results, op.get_operation())?;
-        Ok(OpObj::new(op)).into_parse_result()
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ReshapeOpVerifyErr {
-    #[error("ReshapeOp source must be a RankedTensorType")]
-    SourceNotRankedTensor,
-    #[error("ReshapeOp source and result element types must match")]
-    ElementTypeMismatch,
-    #[error(
-        "ReshapeOp: number of dynamic dimension operands ({got}) must match \
-        number of dynamic dimensions in result type ({expected})"
-    )]
-    DynDimCountMismatch { expected: usize, got: usize },
-    #[error("ReshapeOp: all dynamic dimension operands must be of IndexType")]
-    DynDimNotIndex,
-    #[error(
-        "ReshapeOp: total element count of source ({src_count}) must match result ({result_count})"
-    )]
-    ElementCountMismatch {
-        src_count: usize,
-        result_count: usize,
-    },
-}
-
-impl Verify for ReshapeOp {
-    fn verify(&self, ctx: &Context) -> Result<()> {
-        use crate::memref::type_interfaces::Dimension;
-        let loc = self.loc(ctx);
-        let source_ty_ptr = self.get_source(ctx).get_type(ctx);
-        let source_ty_ref = source_ty_ptr.deref(ctx);
-        let source_ty = source_ty_ref
-            .downcast_ref::<RankedTensorType>()
-            .ok_or_else(|| verify_error!(loc.clone(), ReshapeOpVerifyErr::SourceNotRankedTensor))?;
-
-        let result_ty_ptr = self.result_type(ctx);
-        let result_ty_ref = result_ty_ptr.deref(ctx);
-        let result_ty = result_ty_ref
-            .downcast_ref::<RankedTensorType>()
-            .expect("AllResultsOfType<RankedTensorType> ensures result is RankedTensorType");
-
-        if source_ty.element_type() != result_ty.element_type() {
-            return verify_err!(loc, ReshapeOpVerifyErr::ElementTypeMismatch);
-        }
-
-        let dyn_dims = self.get_dynamic_dimensions(ctx);
-        let num_dynamic_in_result = result_ty
-            .shape()
-            .iter()
-            .filter(|d| matches!(d, Dimension::Dynamic))
-            .count();
-
-        if dyn_dims.len() != num_dynamic_in_result {
-            return verify_err!(
-                loc,
-                ReshapeOpVerifyErr::DynDimCountMismatch {
-                    expected: num_dynamic_in_result,
-                    got: dyn_dims.len()
-                }
-            );
-        }
-
-        // If both shapes are fully static, verify element count equality.
-        let source_shape = source_ty.shape();
-        let result_shape = result_ty.shape();
-        if source_shape
-            .iter()
-            .all(|d| matches!(d, Dimension::Static(_)))
-            && result_shape
-                .iter()
-                .all(|d| matches!(d, Dimension::Static(_)))
-        {
-            let source_count: usize = source_shape
-                .iter()
-                .map(|d| match d {
-                    Dimension::Static(s) => *s,
-                    _ => unreachable!(),
-                })
-                .product();
-            let result_count: usize = result_shape
-                .iter()
-                .map(|d| match d {
-                    Dimension::Static(s) => *s,
-                    _ => unreachable!(),
-                })
-                .product();
-            if source_count != result_count {
-                return verify_err!(
-                    loc,
-                    ReshapeOpVerifyErr::ElementCountMismatch {
-                        src_count: source_count,
-                        result_count
-                    }
-                );
-            }
-        }
-
-        Ok(())
-    }
-}
 
 impl ReshapeOp {
     /// Create a new `ReshapeOp`.
@@ -2495,8 +2190,8 @@ impl ReshapeOp {
         dynamic_dimensions: Vec<Value>,
         result_type: TypedHandle<RankedTensorType>,
     ) -> Self {
-        let (operands, operand_segments) =
-            Self::compute_segment_sizes(vec![vec![source], dynamic_dimensions]);
+        let mut operands = vec![source];
+        operands.extend(dynamic_dimensions);
         let op = Operation::new(
             ctx,
             Self::get_concrete_op_info(),
@@ -2505,18 +2200,6 @@ impl ReshapeOp {
             vec![],
             0,
         );
-        let op = Self { op };
-        op.set_operand_segment_sizes(ctx, operand_segments);
-        op
-    }
-
-    /// Get the source tensor operand.
-    pub fn get_source(&self, ctx: &Context) -> Value {
-        self.get_segment(ctx, 0)[0]
-    }
-
-    /// Get the dynamic dimension operands.
-    pub fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
-        self.get_segment(ctx, 1)
+        Self { op }
     }
 }

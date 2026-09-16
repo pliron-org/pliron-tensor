@@ -10,7 +10,7 @@ builtin.module @test_module {
         product = tensor.mul difference, splat : tensor.ranked<2x3x4:builtin.fp32>;
         quotient = tensor.div product, splat : tensor.ranked<2x3x4:builtin.fp32>;
         cast = tensor.elementwise_cast quotient : tensor.ranked<2x3x4:builtin.fp64> {input_is_signed=false,result_is_signed=false};
-        reshaped = tensor.reshape cast() : tensor.ranked<6x4:builtin.fp64>;
+        reshaped = tensor.reshape cast : tensor.ranked<6x4:builtin.fp64>;
         slice = tensor.extract_slice reshaped [0, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.fp64>;
         inserted = tensor.insert_slice slice into reshaped [0, 0] [2, 4] [1, 1] : tensor.ranked<6x4:builtin.fp64>;
         i = index.constant <index.constant 0> : index.index;

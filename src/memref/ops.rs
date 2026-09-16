@@ -9,11 +9,11 @@ use pliron::{
     builtin::{
         attributes::{BoolAttr, IdentifierAttr, TypeAttr},
         op_interfaces::{
-            AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, AtLeastNResultsInterface,
-            IsTerminatorInterface, NOpdsInterface, NRegionsInterface, NResultsInterface,
-            OneOpdInterface, OneRegionInterface, OneResultInterface, OperandNOfType,
-            OperandSegmentInterface, ResultNOfType, SameOperandsType, SameResultsType,
-            SingleBlockRegionInterface, SymbolOpInterface, SymbolUserOpInterface,
+            AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, IsTerminatorInterface,
+            NOpdsInterface, NRegionsInterface, NResultsInterface, OneOpdInterface,
+            OneRegionInterface, OneResultInterface, OperandNOfType, OperandsMNOfType,
+            ResultNImplsTy, ResultNOfType, SameOperandsType, SingleBlockRegionInterface,
+            SymbolOpInterface, SymbolUserOpInterface,
         },
     },
     combine::{
@@ -54,7 +54,10 @@ use pliron_common_dialects::{
 
 use crate::memref::{
     attributes::{DenseElementsAttr, ShapedTypeHandle, SliceParamAttr, SliceParamsAttr},
-    op_interfaces::{CompatibleShapesOp, ElementWiseBinaryMemrefOpInterface, GenerateOpInterface},
+    op_interfaces::{
+        CompatibleShapesOp, DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface,
+        GenerateOpInterface, ReshapeOpInterface,
+    },
     type_interfaces::{MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
 };
@@ -74,24 +77,16 @@ use crate::memref::{
 #[pliron_op(
     name = "memref.alloc",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
+    verifier = "succ",
     interfaces = [
-        NResultsInterface<1>,
         ResultNOfType<0, RankedMemrefType>,
-        AtLeastNResultsInterface<1>,
         OneResultInterface,
-        SameResultsType,
-        AllResultsOfType<RankedMemrefType>,
+        ResultNImplsTy<0, dyn ShapedType>,
+        OperandsMNOfType<0, {-1}, IndexType>,
+        DynamicDimensionOperandsOp<0>,
     ],
 )]
 pub struct AllocOp;
-
-#[derive(Debug, thiserror::Error)]
-pub enum AllocOpVerifyError {
-    #[error(
-        "The number of dynamic dimension operands must match the number of dynamic dimensions in the result type (expected {expected}, got {got})"
-    )]
-    NumDynamicDimOperandsDoesNotMatchNumDynamicDims { expected: usize, got: usize },
-}
 
 impl AllocOp {
     /// Create a new `AllocOp` with the specified result type and dynamic dimension operands.
@@ -109,34 +104,6 @@ impl AllocOp {
             0,
         );
         Self { op }
-    }
-
-    /// Get the dynamic dimension operands.
-    pub fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
-        self.get_operation().deref(ctx).operands().collect()
-    }
-}
-
-impl Verify for AllocOp {
-    fn verify(&self, ctx: &Context) -> Result<()> {
-        let result_ty = self.get_result(ctx).get_type(ctx).deref(ctx);
-        let result_ty = result_ty
-            .downcast_ref::<RankedMemrefType>()
-            .expect("The result type of AllocOp must be a ranked memref type");
-
-        let num_dynamic_dims = result_ty.num_dynamic_dimensions();
-        let num_dynamic_dim_operands = self.get_operation().deref(ctx).get_num_operands();
-        if num_dynamic_dim_operands != num_dynamic_dims {
-            return verify_err!(
-                self.loc(ctx),
-                AllocOpVerifyError::NumDynamicDimOperandsDoesNotMatchNumDynamicDims {
-                    expected: num_dynamic_dims,
-                    got: num_dynamic_dim_operands
-                }
-            );
-        }
-
-        Ok(())
     }
 }
 
@@ -206,7 +173,6 @@ impl DeallocOp {
         OneRegionInterface,
         NRegionsInterface<1>,
         NResultsInterface<0>,
-        AtLeastNOpdsInterface<1>,
         NOpdsInterface<1>,
         AllOperandsOfType<RankedMemrefType>,
         YieldingRegions<YieldOp>,
@@ -339,7 +305,7 @@ impl YieldOp {
         NResultsInterface<0>,
         AtLeastNOpdsInterface<3>,
         OperandNOfType<1, RankedMemrefType>,
-        OperandSegmentInterface,
+        OperandsMNOfType<2, {-1}, IndexType>,
     ]
 )]
 pub struct StoreOp;
@@ -391,8 +357,8 @@ impl Parsable for StoreOp {
 impl StoreOp {
     /// Creates a new `StoreOp` with the specified operands.
     pub fn new(ctx: &mut Context, value: Value, memref: Value, indices: Vec<Value>) -> Self {
-        let (operands, sizes) =
-            Self::compute_segment_sizes(vec![vec![value], vec![memref], indices]);
+        let mut operands = vec![value, memref];
+        operands.extend(indices);
         let op = Operation::new(
             ctx,
             Self::get_concrete_op_info(),
@@ -401,24 +367,22 @@ impl StoreOp {
             vec![],
             0,
         );
-        let op = Self { op };
-        op.set_operand_segment_sizes(ctx, sizes);
-        op
+        Self { op }
     }
 
     /// Get the value operand to be stored.
     pub fn get_value(&self, ctx: &Context) -> Value {
-        self.get_segment(ctx, 0)[0]
+        self.get_operation().deref(ctx).get_operand(0)
     }
 
     /// Get the memref operand to which the value will be stored.
     pub fn get_destination_memref(&self, ctx: &Context) -> Value {
-        self.get_segment(ctx, 1)[0]
+        self.get_operation().deref(ctx).get_operand(1)
     }
 
     /// Get the index operands indicating where the value will be stored.
     pub fn get_indices(&self, ctx: &Context) -> Vec<Value> {
-        self.get_segment(ctx, 2)
+        self.get_operation().deref(ctx).operands().skip(2).collect()
     }
 }
 
@@ -430,8 +394,6 @@ pub enum StoreOpVerifyError {
         "The number of index operands must match the rank of the memref (expected {expected}, got {got})"
     )]
     NumIndicesDoesNotMatchMemrefRank { expected: usize, got: usize },
-    #[error("All index operands of StoreOp must be of IndexType")]
-    IndexOperandNotOfIndexType,
 }
 
 impl Verify for StoreOp {
@@ -464,13 +426,6 @@ impl Verify for StoreOp {
             );
         }
 
-        if !indices
-            .iter()
-            .all(|index| index.get_type(ctx).deref(ctx).is::<IndexType>())
-        {
-            return verify_err!(loc, StoreOpVerifyError::IndexOperandNotOfIndexType);
-        }
-
         Ok(())
     }
 }
@@ -492,7 +447,7 @@ impl Verify for StoreOp {
         OneResultInterface,
         AtLeastNOpdsInterface<2>,
         OperandNOfType<0, RankedMemrefType>,
-        OperandSegmentInterface,
+        OperandsMNOfType<1, {-1}, IndexType>,
     ],
 )]
 pub struct LoadOp;
@@ -549,8 +504,6 @@ pub enum LoadOpVerifyErr {
         "The number of index operands must match the rank of the memref (expected {expected}, got {got})"
     )]
     NumIndicesDoesNotMatchMemrefRank { expected: usize, got: usize },
-    #[error("All index operands of LoadOp must be of IndexType")]
-    IndexOperandNotOfIndexType,
     #[error("The result type must be the same as the memref's element type")]
     ResultTypeNotSameAsMemrefElementType,
 }
@@ -582,13 +535,6 @@ impl Verify for LoadOp {
             );
         }
 
-        if !indices
-            .iter()
-            .all(|index| index.get_type(ctx).deref(ctx).is::<IndexType>())
-        {
-            return verify_err!(loc, LoadOpVerifyErr::IndexOperandNotOfIndexType);
-        }
-
         Ok(())
     }
 }
@@ -601,7 +547,8 @@ impl LoadOp {
         memref: Value,
         indices: Vec<Value>,
     ) -> Self {
-        let (operands, sizes) = Self::compute_segment_sizes(vec![vec![memref], indices]);
+        let mut operands = vec![memref];
+        operands.extend(indices);
         let op = Operation::new(
             ctx,
             Self::get_concrete_op_info(),
@@ -610,19 +557,17 @@ impl LoadOp {
             vec![],
             0,
         );
-        let op = Self { op };
-        op.set_operand_segment_sizes(ctx, sizes);
-        op
+        Self { op }
     }
 
     /// Get the memref operand to load from.
     pub fn get_source_memref(&self, ctx: &Context) -> Value {
-        self.get_segment(ctx, 0)[0]
+        self.get_operation().deref(ctx).get_operand(0)
     }
 
     /// Get the index operands indicating where to load from.
     pub fn get_indices(&self, ctx: &Context) -> Vec<Value> {
-        self.get_segment(ctx, 1)
+        self.get_operation().deref(ctx).operands().skip(1).collect()
     }
 }
 
@@ -691,7 +636,6 @@ impl DimOp {
         NResultsInterface<0>,
         NOpdsInterface<3>,
         SameOperandsType,
-        AtLeastNOpdsInterface<1>,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -716,7 +660,6 @@ pub struct AddOp;
         NResultsInterface<0>,
         NOpdsInterface<3>,
         SameOperandsType,
-        AtLeastNOpdsInterface<1>,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -741,7 +684,6 @@ pub struct SubOp;
         NResultsInterface<0>,
         NOpdsInterface<3>,
         SameOperandsType,
-        AtLeastNOpdsInterface<1>,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -766,7 +708,6 @@ pub struct MulOp;
         NResultsInterface<0>,
         NOpdsInterface<3>,
         SameOperandsType,
-        AtLeastNOpdsInterface<1>,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -1125,6 +1066,7 @@ impl CopyOp {
         OneResultInterface,
         ResultNOfType<0, RankedMemrefType>,
         OperandNOfType<0, RankedMemrefType>,
+        OperandsMNOfType<1, {-1}, IndexType>,
     ],
     attributes = (memref_subview_slice_params: SliceParamsAttr)
 )]
@@ -1209,8 +1151,6 @@ impl Parsable for SubviewOp {
 pub enum SubviewOpVerifyErr {
     #[error("SubviewOp result and source ranks must match")]
     ResultSourceRankMismatch,
-    #[error("SubviewOp: All dynamic operands must be of IndexType, but operand {index} is {ty}")]
-    NonIndexOperand { index: usize, ty: String },
     #[error(
         "SubviewOp: Number of dynamic operands ({got}) does not match number of dynamic parameters ({expected})"
     )]
@@ -1313,21 +1253,6 @@ impl Verify for SubviewOp {
 
         let total_dynamic = num_dynamic_offsets + num_dynamic_sizes + num_dynamic_steps;
         let remaining_operands: Vec<_> = operands.collect();
-
-        for (i, opd) in remaining_operands.iter().enumerate() {
-            let opd_ty = opd.get_type(ctx);
-            let opd_ty_ref = opd_ty.deref(ctx);
-            if !opd_ty_ref.is::<IndexType>() {
-                let ty_name = format!("{:?}", opd_ty_ref);
-                return verify_err!(
-                    loc,
-                    SubviewOpVerifyErr::NonIndexOperand {
-                        index: i + 1,
-                        ty: ty_name
-                    }
-                );
-            }
-        }
 
         if remaining_operands.len() != total_dynamic {
             return verify_err!(
@@ -1503,116 +1428,19 @@ impl SubviewOp {
 #[pliron_op(
     name = "memref.reshape",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
+    verifier = "succ",
     interfaces = [
         OneResultInterface,
         NResultsInterface<1>,
-        AtLeastNOpdsInterface<1>,
         OperandNOfType<0, RankedMemrefType>,
-        AllResultsOfType<RankedMemrefType>,
+        ResultNOfType<0, RankedMemrefType>,
+        ResultNImplsTy<0, dyn ShapedType>,
+        OperandsMNOfType<1, {-1}, IndexType>,
+        DynamicDimensionOperandsOp<1>,
+        ReshapeOpInterface<RankedMemrefType>,
     ],
 )]
 pub struct ReshapeOp;
-
-#[derive(Debug, thiserror::Error)]
-pub enum ReshapeOpVerifyErr {
-    #[error("ReshapeOp source must be a RankedMemrefType")]
-    SourceNotRankedMemref,
-    #[error("ReshapeOp source and result element types must match")]
-    ElementTypeMismatch,
-    #[error(
-        "ReshapeOp: number of dynamic dimension operands ({got}) must match \
-        number of dynamic dimensions in result type ({expected})"
-    )]
-    DynDimCountMismatch { expected: usize, got: usize },
-    #[error("ReshapeOp: all dynamic dimension operands must be of IndexType")]
-    DynDimNotIndex,
-    #[error(
-        "ReshapeOp: total element count of source ({src_count}) must match destination ({result_count})"
-    )]
-    ElementCountMismatch {
-        src_count: usize,
-        result_count: usize,
-    },
-}
-
-impl Verify for ReshapeOp {
-    fn verify(&self, ctx: &Context) -> Result<()> {
-        use crate::memref::type_interfaces::Dimension;
-        let loc = self.loc(ctx);
-
-        let src_ty_ptr = self.get_source(ctx).get_type(ctx);
-        let src_ty_ref = src_ty_ptr.deref(ctx);
-        let src_ty = src_ty_ref
-            .downcast_ref::<RankedMemrefType>()
-            .ok_or_else(|| verify_error!(loc.clone(), ReshapeOpVerifyErr::SourceNotRankedMemref))?;
-
-        let result_ty_ptr = self.result_type(ctx);
-        let result_ty_ref = result_ty_ptr.deref(ctx);
-        let result_ty = result_ty_ref
-            .downcast_ref::<RankedMemrefType>()
-            .expect("AllResultsOfType<RankedMemrefType> ensures result is RankedMemrefType");
-
-        if src_ty.element_type() != result_ty.element_type() {
-            return verify_err!(loc, ReshapeOpVerifyErr::ElementTypeMismatch);
-        }
-
-        let dyn_dims = self.get_dynamic_dimensions(ctx);
-        let num_dynamic_in_result = result_ty
-            .shape()
-            .iter()
-            .filter(|d| matches!(d, Dimension::Dynamic))
-            .count();
-
-        if dyn_dims.len() != num_dynamic_in_result {
-            return verify_err!(
-                loc.clone(),
-                ReshapeOpVerifyErr::DynDimCountMismatch {
-                    expected: num_dynamic_in_result,
-                    got: dyn_dims.len()
-                }
-            );
-        }
-
-        for dyn_dim in &dyn_dims {
-            if !dyn_dim.get_type(ctx).deref(ctx).is::<IndexType>() {
-                return verify_err!(loc.clone(), ReshapeOpVerifyErr::DynDimNotIndex);
-            }
-        }
-
-        // If both shapes are fully static, verify element count equality.
-        let src_shape = src_ty.shape();
-        let dst_shape = result_ty.shape();
-        if src_shape.iter().all(|d| matches!(d, Dimension::Static(_)))
-            && dst_shape.iter().all(|d| matches!(d, Dimension::Static(_)))
-        {
-            let src_count: usize = src_shape
-                .iter()
-                .map(|d| match d {
-                    Dimension::Static(s) => *s,
-                    _ => unreachable!(),
-                })
-                .product();
-            let dst_count: usize = dst_shape
-                .iter()
-                .map(|d| match d {
-                    Dimension::Static(s) => *s,
-                    _ => unreachable!(),
-                })
-                .product();
-            if src_count != dst_count {
-                return verify_err!(
-                    loc,
-                    ReshapeOpVerifyErr::ElementCountMismatch {
-                        src_count,
-                        result_count: dst_count
-                    }
-                );
-            }
-        }
-
-        Ok(())
-    }
-}
 
 impl ReshapeOp {
     /// Create a new `ReshapeOp`.
@@ -1633,16 +1461,6 @@ impl ReshapeOp {
             0,
         );
         Self { op }
-    }
-
-    /// Get the source memref operand.
-    pub fn get_source(&self, ctx: &Context) -> Value {
-        self.get_operation().deref(ctx).get_operand(0)
-    }
-
-    /// Get the dynamic dimension operands.
-    pub fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
-        self.get_operation().deref(ctx).operands().skip(1).collect()
     }
 }
 
@@ -1785,7 +1603,6 @@ impl Verify for GlobalOp {
         NResultsInterface<1>,
         OneResultInterface,
         ResultNOfType<0, RankedMemrefType>,
-        AllResultsOfType<RankedMemrefType>,
     ],
     attributes = (memref_global_name: IdentifierAttr),
 )]

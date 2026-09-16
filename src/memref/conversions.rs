@@ -61,7 +61,9 @@ use pliron_llvm::{
 
 use crate::memref::{
     descriptor,
-    op_interfaces::ElementWiseBinaryMemrefOpInterface,
+    op_interfaces::{
+        DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface, ReshapeOpInterface,
+    },
     ops::{
         AddOp, AllocOp, CopyOp, DeallocOp, DimOp, DivOp, GenerateOp, GetGlobalOp, GlobalOp, LoadOp,
         MatMulOp as MemrefMatMulOp, MulOp as MemrefMulOp, ReshapeOp, SliceParam, StoreOp, SubOp,

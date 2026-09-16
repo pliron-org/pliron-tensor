@@ -203,7 +203,7 @@ pub trait BufferizableOpInterface {
     /// Get the dynamic dimensions for the given operand.
     /// On `None`, `memref.dim` will be used (less efficient).
     /// It will only be called on aliasing operands that have a tensor type.
-    fn get_dynamic_dimensions(&self, ctx: &Context, opd: Use<Value>) -> Option<Vec<Value>>;
+    fn get_operand_dynamic_dimensions(&self, ctx: &Context, opd: Use<Value>) -> Option<Vec<Value>>;
 
     /// Return true if `value` can be written to in place.
     ///
@@ -257,7 +257,7 @@ pub trait BufferizableOpInterface {
             let Some(shaped_ty) = type_cast::<dyn ShapedType>(&*opd_ty) else {
                 return verify_err_noloc!(AliasErr::InvalidOperandType);
             };
-            let dynamic_dims_opt = op.get_dynamic_dimensions(ctx, alias.operand);
+            let dynamic_dims_opt = op.get_operand_dynamic_dimensions(ctx, alias.operand);
             let num_dynamic_dims = shaped_ty.num_dynamic_dimensions();
             if let Some(dynamic_dims) = dynamic_dims_opt {
                 if dynamic_dims.len() != num_dynamic_dims {
@@ -359,7 +359,7 @@ impl<'a> DialectConversion for Bufferizer<'a> {
             let ranked_memref_ty: TypedHandle<RankedMemrefType> =
                 TypedHandle::from_handle(opd_ty, ctx)?;
             let dynamic_sizes = if let Some(dynamic_sizes) =
-                op_iface_opt.and_then(|iface| iface.get_dynamic_dimensions(ctx, opd))
+                op_iface_opt.and_then(|iface| iface.get_operand_dynamic_dimensions(ctx, opd))
             {
                 dynamic_sizes
             } else {

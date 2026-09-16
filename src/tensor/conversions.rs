@@ -54,7 +54,9 @@ use crate::{
         self, ToMemrefType,
         attributes::DenseElementsAttr,
         descriptor,
-        op_interfaces::ElementWiseBinaryMemrefOpInterface,
+        op_interfaces::{
+            DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface, ReshapeOpInterface,
+        },
         ops::{
             CopyOp as MemrefCopyOp, GetGlobalOp as MemrefGetGlobalOp, GlobalOp as MemrefGlobalOp,
             MatMulOp as MemrefMatMulOp, ReshapeOp as MemrefReshapeOp, SliceParam,
@@ -258,7 +260,11 @@ impl BufferizableOpInterface for ConstantOp {
         vec![]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -331,7 +337,11 @@ impl BufferizableOpInterface for GenerateOp {
         vec![]
     }
 
-    fn get_dynamic_dimensions(&self, ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         Some(self.dynamic_dimensions(ctx))
     }
 
@@ -441,8 +451,12 @@ impl BufferizableOpInterface for BroadcastOp {
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
     }
-    fn get_dynamic_dimensions(&self, ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
-        Some(self.dynamic_dimensions(ctx))
+    fn get_operand_dynamic_dimensions(
+        &self,
+        ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
+        Some(self.get_dynamic_dimensions(ctx))
     }
 
     fn rewrite(
@@ -471,7 +485,7 @@ impl BufferizableOpInterface for BroadcastOp {
         let alloc = bufferizer_state.tmm.create_memref_alloc(
             ctx,
             result_ty,
-            self.dynamic_dimensions(ctx),
+            self.get_dynamic_dimensions(ctx),
         )?;
         rewriter.append_operation(ctx, alloc.get_operation());
         struct State {
@@ -540,8 +554,12 @@ impl BufferizableOpInterface for SplatOp {
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
     }
-    fn get_dynamic_dimensions(&self, ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
-        Some(self.dynamic_dimensions(ctx))
+    fn get_operand_dynamic_dimensions(
+        &self,
+        ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
+        Some(self.get_dynamic_dimensions(ctx))
     }
 
     fn rewrite(
@@ -555,7 +573,7 @@ impl BufferizableOpInterface for SplatOp {
         let alloc = bufferizer_state.tmm.create_memref_alloc(
             ctx,
             result_ty,
-            self.dynamic_dimensions(ctx),
+            self.get_dynamic_dimensions(ctx),
         )?;
         rewriter.append_operation(ctx, alloc.get_operation());
         let generate = memref::ops::GenerateOp::new(
@@ -600,7 +618,11 @@ impl BufferizableOpInterface for ElementwiseCastOp {
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
     }
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -706,7 +728,11 @@ impl BufferizableOpInterface for ExtractOp {
         vec![]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -856,7 +882,7 @@ macro_rules! impl_non_aliasing_bufferizable {
                 vec![]
             }
 
-            fn get_dynamic_dimensions(
+            fn get_operand_dynamic_dimensions(
                 &self,
                 _ctx: &Context,
                 _opd: Use<Value>,
@@ -904,7 +930,11 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
         vec![]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -961,7 +991,11 @@ impl BufferizableOpInterface for ForOp {
             .collect()
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -1022,7 +1056,11 @@ impl BufferizableOpInterface for MatMulOp {
         }]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -1083,7 +1121,11 @@ impl BufferizableOpInterface for BatchMatMulOp {
         }]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -1440,7 +1482,11 @@ impl BufferizableOpInterface for FuncOp {
         vec![]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -1491,7 +1537,11 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
         }]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -1549,7 +1599,11 @@ impl BufferizableOpInterface for TensorInsertSliceOp {
         }]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -1609,7 +1663,11 @@ impl BufferizableOpInterface for TensorReshapeOp {
         }]
     }
 
-    fn get_dynamic_dimensions(&self, _ctx: &Context, _opd: Use<Value>) -> Option<Vec<Value>> {
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
         None
     }
 
@@ -1624,7 +1682,7 @@ impl BufferizableOpInterface for TensorReshapeOp {
         let memref_reshape = MemrefReshapeOp::new(
             ctx,
             self.get_source(ctx),
-            TensorReshapeOp::get_dynamic_dimensions(self, ctx),
+            self.get_dynamic_dimensions(ctx),
             result_ty,
         );
         rewriter.append_op(ctx, &memref_reshape);

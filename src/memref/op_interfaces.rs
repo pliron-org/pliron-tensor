@@ -6,6 +6,7 @@
 use pliron::{
     builtin::op_interfaces::{
         AllOperandsOfType, AllResultsOfType, NOpdsInterface, NResultsInterface, OneOpdInterface,
+        OperandNOfType, OperandsMNOfType, ResultNImplsTy, ResultNOfType,
         SingleBlockRegionInterface,
     },
     context::Context,
@@ -175,6 +176,138 @@ pub trait CompatibleShapesOp<T: ShapedType>: AllResultsOfType<T> + AllOperandsOf
             }
         }
         compatible_shape.expect("Op has 0 results and 0 operands to determine compatible shape")
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+#[error(
+    "The number of dynamic dimension operands ({got}) must match \
+    the number of dynamic dimensions in the result type ({expected})"
+)]
+pub struct DynamicDimensionOperandsOpCountErr {
+    pub expected: usize,
+    pub got: usize,
+}
+
+/// Ops with a shaped result whose dynamic dimensions are provided by [Index](IndexType)
+/// operands, one each for every dynamic dimension of the result type.
+///
+/// `FIRST` is the index of the first dynamic dimension operand.
+#[op_interface]
+pub trait DynamicDimensionOperandsOp<const FIRST: u32>:
+    ResultNImplsTy<0, dyn ShapedType> + OperandsMNOfType<FIRST, { -1 }, IndexType>
+{
+    /// Get the dynamic dimension operands, in result-dimension order.
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation()
+            .deref(ctx)
+            .operands()
+            .skip(FIRST as usize)
+            .collect()
+    }
+
+    fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let (got, result) = {
+            let op_ref = op.get_operation().deref(ctx);
+            (
+                op_ref.get_num_operands().saturating_sub(FIRST as usize),
+                op_ref.get_result(0),
+            )
+        };
+
+        let result_ty_handle = result.get_type(ctx);
+        let result_ty_ref = result_ty_handle.deref(ctx);
+        let result_ty = type_cast::<dyn ShapedType>(&*result_ty_ref)
+            .expect("ResultNImplsTy<0, dyn ShapedType> ensures the result is a ShapedType");
+
+        let expected = result_ty.num_dynamic_dimensions();
+        if got != expected {
+            return verify_err!(
+                op.loc(ctx),
+                DynamicDimensionOperandsOpCountErr { expected, got }
+            );
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ReshapeOpInterfaceVerifyErr {
+    #[error("Reshape source and result element types must match")]
+    ElementTypeMismatch,
+    #[error(
+        "Reshape: total element count of the source ({src_count}) must match the result ({result_count})"
+    )]
+    ElementCountMismatch {
+        src_count: usize,
+        result_count: usize,
+    },
+}
+
+/// Tensor and memref ops that view a source value under a new shape.
+///
+/// - Operand 0: The source operand
+/// - Operand(s) 1+: [Index](IndexType) operands, one each for every dynamic dimension of the result type.
+/// - The source and the result must have
+///   - The same element type
+///   - Equal number of elements when both their shapes are static
+#[op_interface]
+pub trait ReshapeOpInterface<T: ShapedType>:
+    OperandNOfType<0, T> + ResultNOfType<0, T> + DynamicDimensionOperandsOp<1>
+{
+    /// Get the source operand that is reshaped.
+    fn get_source(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(0)
+    }
+
+    fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let loc = op.loc(ctx);
+        let (source, result) = {
+            let op_ref = op.get_operation().deref(ctx);
+            (op_ref.get_operand(0), op_ref.get_result(0))
+        };
+
+        let src_ty_handle = source.get_type(ctx);
+        let src_ty_ref = src_ty_handle.deref(ctx);
+        let src_ty = src_ty_ref
+            .downcast_ref::<T>()
+            .expect("OperandNOfType<0, T> ensures the source is of type T");
+
+        let result_ty_handle = result.get_type(ctx);
+        let result_ty_ref = result_ty_handle.deref(ctx);
+        let result_ty = result_ty_ref
+            .downcast_ref::<T>()
+            .expect("ResultNOfType<0, T> ensures the result is of type T");
+
+        if src_ty.element_type() != result_ty.element_type() {
+            return verify_err!(
+                loc.clone(),
+                ReshapeOpInterfaceVerifyErr::ElementTypeMismatch
+            );
+        }
+
+        // The element counts are comparable only when neither shape is dynamic.
+        if let (Some(src_count), Some(result_count)) =
+            (src_ty.num_elements(), result_ty.num_elements())
+            && src_count != result_count
+        {
+            return verify_err!(
+                loc,
+                ReshapeOpInterfaceVerifyErr::ElementCountMismatch {
+                    src_count,
+                    result_count
+                }
+            );
+        }
+
+        Ok(())
     }
 }
 
