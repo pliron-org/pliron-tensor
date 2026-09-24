@@ -375,9 +375,9 @@ impl<'a> DialectConversion for Bufferizer<'a> {
                     }
                     let dim_const = IndexConstantOp::new(ctx, dim_idx);
                     rewriter.append_op(ctx, &dim_const);
-                    let dim_size = DimOp::new(ctx, opd.get_def(ctx), dim_const.get_result(ctx))
-                        .get_result(ctx);
-                    dynamic_sizes.push(dim_size);
+                    let dim_op = DimOp::new(ctx, opd.get_def(ctx), dim_const.get_result(ctx));
+                    rewriter.append_op(ctx, &dim_op);
+                    dynamic_sizes.push(dim_op.get_result(ctx));
                 }
                 dynamic_sizes
             };
