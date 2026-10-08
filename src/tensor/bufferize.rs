@@ -755,11 +755,13 @@ pub fn bufferize(
     let ops = collect_ops(ctx, op);
 
     // Decide the in-place bufferization of every aliasing operand, in program order.
-    //
-    // Classes start maximal (nothing decided out-of-place yet), which is the conservative
-    // end: every alias edge is present, so the checks are at their strictest. Each
-    // out-of-place decision severs an edge and shrinks the classes, and is applied right
-    // away so that the ops after it see the effect.
+    // - Classes start maximal:
+    //   - All operands are considered "in-place".
+    //   - Every alias edge is present.
+    //   - Checks are at their strictest.
+    // - Each out-of-place decision severs an edge:
+    //   - After an op gets out-of-place decisions, the classes are rebuilt once.
+    //   - The rebuilt classes are smaller, so the checks are relaxed for later ops.
     rebuild_buffer_classes(ctx, &mut analysis, &ops);
     for &op in &ops {
         let decisions_before_op = analysis.out_of_place_operands.len();
@@ -792,8 +794,8 @@ pub fn bufferize(
         successor_operands_needing_copy: analysis.successor_operands_needing_copy,
     };
     let status = apply_dialect_conversion(ctx, &mut bufferizer, op)?;
-    cast_to_block_argument_types(ctx, op)?;
-    cast_to_function_result_types(ctx, op)?;
+    cast_to_block_argument_types(ctx, op);
+    cast_to_function_result_types(ctx, op);
     Ok(status)
 }
 
@@ -830,12 +832,6 @@ pub(crate) fn copy_to_identity_buffer(
     let copy = CopyOp::new(ctx, buffer, source);
     rewriter.append_op(ctx, &copy);
     Ok(buffer)
-}
-
-#[derive(Debug, Error)]
-pub enum BufferizeErr {
-    #[error("An incoming buffer cannot be cast to the inferred layout")]
-    IncompatibleIncomingLayout,
 }
 
 /// Collect the operations nested in `root` in program order.
@@ -1080,12 +1076,13 @@ fn cast_to_type(
     before: Ptr<Operation>,
     value: Value,
     target: TypeHandle,
-) -> Result<Value> {
+) -> Value {
     let source = value.get_type(ctx);
     if source == target || !source.deref(ctx).is::<RankedMemrefType>() {
-        return Ok(value);
+        return value;
     }
-    let target = TypedHandle::<RankedMemrefType>::from_handle(target, ctx)?;
+    let target = TypedHandle::<RankedMemrefType>::from_handle(target, ctx)
+        .expect("Target of a ranked memref must be a ranked memref");
     let compatible = {
         let source = source.deref(ctx);
         let source = source
@@ -1096,38 +1093,38 @@ fn cast_to_type(
             && source.shape() == target.shape()
             && is_cast_compatible(source.layout(), target.layout(), source.shape())
     };
-    if !compatible {
-        return verify_err_noloc!(BufferizeErr::IncompatibleIncomingLayout);
-    }
+    // Layout inference must give each target a layout that its incoming values can be cast to.
+    assert!(
+        compatible,
+        "A value's layout is less static than its inferred target layout"
+    );
     let cast = MemrefCastOp::new(ctx, value, target);
     let mut inserter =
         IRInserter::<pliron::irbuild::listener::DummyListener>::new_before_operation(before);
     inserter.append_op(ctx, &cast);
-    Ok(cast.get_result(ctx))
+    cast.get_result(ctx)
 }
 
 /// Cast each value passed to a block argument to the type of that argument.
-fn cast_to_block_argument_types(ctx: &mut Context, root: Ptr<Operation>) -> Result<()> {
+fn cast_to_block_argument_types(ctx: &mut Context, root: Ptr<Operation>) {
     for op in collect_ops(ctx, root) {
         for (arg, operand) in block_arg_operands(ctx, op) {
             let user = operand.user_op();
             let value = operand.get_def(ctx);
-            let casted = cast_to_type(ctx, user, value, arg.get_type(ctx))?;
+            let casted = cast_to_type(ctx, user, value, arg.get_type(ctx));
             if casted != value {
                 Operation::replace_operand(user, ctx, operand.find_index(ctx), casted);
             }
         }
     }
-    Ok(())
 }
 
 /// Cast each value returned from a function to the result type of that function.
-fn cast_to_function_result_types(ctx: &mut Context, root: Ptr<Operation>) -> Result<()> {
+fn cast_to_function_result_types(ctx: &mut Context, root: Ptr<Operation>) {
     for op in collect_ops(ctx, root) {
-        let Some(return_op) = Operation::get_op::<ReturnOp>(op, ctx) else {
-            continue;
-        };
-        let Some(value) = return_op.retval(ctx) else {
+        let Some(value) =
+            Operation::get_op::<ReturnOp>(op, ctx).and_then(|ret_op| ret_op.retval(ctx))
+        else {
             continue;
         };
         let Some(func) = op
@@ -1138,10 +1135,9 @@ fn cast_to_function_result_types(ctx: &mut Context, root: Ptr<Operation>) -> Res
             continue;
         };
         let result_type = func.get_type(ctx).deref(ctx).result_type();
-        let casted = cast_to_type(ctx, op, value, result_type)?;
+        let casted = cast_to_type(ctx, op, value, result_type);
         if casted != value {
             Operation::replace_operand(op, ctx, 0, casted);
         }
     }
-    Ok(())
 }
