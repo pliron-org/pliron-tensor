@@ -12,12 +12,12 @@ use pliron::{
             AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, IsTerminatorInterface,
             NOpdsInterface, NRegionsInterface, NResultsInterface, OneOpdInterface,
             OneRegionInterface, OneResultInterface, OperandNOfType, OperandsMNOfType,
-            ResultNImplsTy, ResultNOfType, SameOperandsType, SingleBlockRegionInterface,
-            SymbolOpInterface, SymbolUserOpInterface,
+            ResultNImplsTy, ResultNOfType, SingleBlockRegionInterface, SymbolOpInterface,
+            SymbolUserOpInterface,
         },
     },
     combine::{
-        Parser, attempt,
+        Parser, attempt, optional,
         parser::char::{self, spaces},
     },
     common_traits::Verify,
@@ -53,7 +53,10 @@ use pliron_common_dialects::{
 };
 
 use crate::memref::{
-    attributes::{DenseElementsAttr, ShapedTypeHandle, SliceParamAttr, SliceParamsAttr},
+    attributes::{
+        DenseElementsAttr, DroppedDimsAttr, ShapedTypeHandle, SliceParamAttr, SliceParamsAttr,
+    },
+    layout::{is_cast_compatible, subview_layout},
     op_interfaces::{
         CompatibleShapesOp, DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface,
         GenerateOpInterface, ReshapeOpInterface,
@@ -77,7 +80,6 @@ use crate::memref::{
 #[pliron_op(
     name = "memref.alloc",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
-    verifier = "succ",
     interfaces = [
         ResultNOfType<0, RankedMemrefType>,
         OneResultInterface,
@@ -87,6 +89,28 @@ use crate::memref::{
     ],
 )]
 pub struct AllocOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum AllocOpVerifyErr {
+    #[error("Allocation requires identity layout")]
+    NonIdentityLayout,
+}
+
+impl Verify for AllocOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        if self
+            .result_type(ctx)
+            .deref(ctx)
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Allocation result must be ranked")
+            .layout()
+            .is_some()
+        {
+            return verify_err!(self.loc(ctx), AllocOpVerifyErr::NonIdentityLayout);
+        }
+        Ok(())
+    }
+}
 
 impl AllocOp {
     /// Create a new `AllocOp` with the specified result type and dynamic dimension operands.
@@ -635,7 +659,6 @@ impl DimOp {
     interfaces = [
         NResultsInterface<0>,
         NOpdsInterface<3>,
-        SameOperandsType,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -659,7 +682,6 @@ pub struct AddOp;
     interfaces = [
         NResultsInterface<0>,
         NOpdsInterface<3>,
-        SameOperandsType,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -683,7 +705,6 @@ pub struct SubOp;
     interfaces = [
         NResultsInterface<0>,
         NOpdsInterface<3>,
-        SameOperandsType,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -707,7 +728,6 @@ pub struct MulOp;
     interfaces = [
         NResultsInterface<0>,
         NOpdsInterface<3>,
-        SameOperandsType,
         AllOperandsOfType<RankedMemrefType>,
         CompatibleShapesOp<RankedMemrefType>,
         AllResultsOfType<RankedMemrefType>,
@@ -926,6 +946,16 @@ pub enum SliceParam {
     Dynamic(Value),
 }
 
+impl SliceParam {
+    /// Convert to a [Dimension](crate::memref::type_interfaces::Dimension).
+    pub fn dimension(&self) -> crate::memref::type_interfaces::Dimension {
+        match self {
+            Self::Static(v) => crate::memref::type_interfaces::Dimension::Static(*v),
+            Self::Dynamic(_) => crate::memref::type_interfaces::Dimension::Dynamic,
+        }
+    }
+}
+
 impl Printable for SliceParam {
     fn fmt(
         &self,
@@ -1045,7 +1075,8 @@ impl CopyOp {
     }
 }
 
-/// Create a view into an existing memref by adjusting offset, sizes, and strides.
+/// Create a view into an existing memref by adjusting offset, sizes, strides
+/// and possibly dropping static unit-sized slice dimensions.
 ///
 /// ### Operand(s)
 /// | operand | description |
@@ -1068,7 +1099,10 @@ impl CopyOp {
         OperandNOfType<0, RankedMemrefType>,
         OperandsMNOfType<1, {-1}, IndexType>,
     ],
-    attributes = (memref_subview_slice_params: SliceParamsAttr)
+    attributes = (
+        memref_subview_slice_params: SliceParamsAttr,
+        memref_subview_dropped_dims: DroppedDimsAttr
+    )
 )]
 pub struct SubviewOp;
 
@@ -1108,6 +1142,15 @@ impl Printable for SubviewOp {
             list_with_sep(&steps, ListSeparator::CharSpace(',')).disp(ctx)
         )?;
 
+        let dropped_dims = self.dropped_dims(ctx);
+        if !dropped_dims.is_empty() {
+            write!(
+                f,
+                " drop [{}]",
+                list_with_sep(&dropped_dims, ListSeparator::CharSpace(',')).disp(ctx)
+            )?;
+        }
+
         write!(f, " : {}", self.result_type(ctx).disp(ctx))
     }
 }
@@ -1120,16 +1163,24 @@ impl Parsable for SubviewOp {
         state_stream: &mut parsable::StateStream<'a>,
         results: Self::Arg,
     ) -> parsable::ParseResult<'a, Self::Parsed> {
-        let (source, offsets, sizes, steps, result_ty) = (
+        let (source, offsets, sizes, steps, dropped_dims, result_ty) = (
             ssa_opd_parser().skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())).skip(spaces()),
             delimited_list_parser('[', ']', ',', SliceParam::parser(())),
+            optional(attempt(
+                spaced(char::string("drop")).with(delimited_list_parser(
+                    '[',
+                    ']',
+                    ',',
+                    usize::parser(()),
+                )),
+            )),
             spaced(char::string(":")).with(TypedHandle::<RankedMemrefType>::parser(())),
         );
 
-        let ((source, offsets, sizes, steps, result_ty), _) =
-            (source, offsets, sizes, steps, result_ty)
+        let ((source, offsets, sizes, steps, dropped_dims, result_ty), _) =
+            (source, offsets, sizes, steps, dropped_dims, result_ty)
                 .parse_stream(state_stream)
                 .into_result()?;
 
@@ -1139,6 +1190,7 @@ impl Parsable for SubviewOp {
             offsets,
             sizes,
             steps,
+            dropped_dims.unwrap_or_default(),
             result_ty,
         );
 
@@ -1147,10 +1199,14 @@ impl Parsable for SubviewOp {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SubviewOpVerifyErr {
-    #[error("SubviewOp result and source ranks must match")]
+    #[error("SubviewOp result rank must be the source rank minus the number of dropped dimensions")]
     ResultSourceRankMismatch,
+    #[error("SubviewOp: Dropped dimensions must be in increasing order and less than the rank")]
+    InvalidDroppedDims,
+    #[error("SubviewOp: Dropped dimension {dim} must have a static size of one")]
+    DroppedDimNotUnit { dim: usize },
     #[error(
         "SubviewOp: Number of dynamic operands ({got}) does not match number of dynamic parameters ({expected})"
     )]
@@ -1167,6 +1223,8 @@ pub enum SubviewOpVerifyErr {
     MissingSliceParamsAttr,
     #[error("SubviewOp: Static step values must be non-zero (got 0 at dimension {dim})")]
     InvalidStaticStep { dim: usize },
+    #[error("Subview result type must match the inferred element type, shape, and layout")]
+    ResultTypeMismatch,
 }
 
 impl Verify for SubviewOp {
@@ -1191,9 +1249,6 @@ impl Verify for SubviewOp {
             .expect("SubviewOp result must be ranked memref type");
 
         let rank = source_ty.rank();
-        if result_ty.rank() != rank {
-            return verify_err!(loc, SubviewOpVerifyErr::ResultSourceRankMismatch);
-        }
 
         let slice_params = self
             .get_attr_memref_subview_slice_params(ctx)
@@ -1264,47 +1319,121 @@ impl Verify for SubviewOp {
             );
         }
 
+        let dropped_dims = self.dropped_dims(ctx);
+        if !dropped_dims.is_sorted_by(|a, b| a < b) || dropped_dims.iter().any(|dim| *dim >= rank) {
+            return verify_err!(loc, SubviewOpVerifyErr::InvalidDroppedDims);
+        }
+        if let Some(dim) = dropped_dims
+            .iter()
+            .find(|dim| slice_params.sizes[**dim] != SliceParamAttr::Static(1))
+        {
+            return verify_err!(loc, SubviewOpVerifyErr::DroppedDimNotUnit { dim: *dim });
+        }
+        if result_ty.rank() != rank - dropped_dims.len() {
+            return verify_err!(loc, SubviewOpVerifyErr::ResultSourceRankMismatch);
+        }
+        let dimensions = |params: &[SliceParamAttr]| {
+            params
+                .iter()
+                .map(|p| match p {
+                    SliceParamAttr::Static(v) => {
+                        crate::memref::type_interfaces::Dimension::Static(*v)
+                    }
+                    SliceParamAttr::OperandIdx(_) => {
+                        crate::memref::type_interfaces::Dimension::Dynamic
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let sizes = dimensions(&slice_params.sizes);
+        let layout = subview_layout(
+            source_ty.shape(),
+            source_ty.layout(),
+            &dimensions(&slice_params.offsets),
+            &sizes,
+            &dimensions(&slice_params.steps),
+            &dropped_dims,
+        );
+        if result_ty.element_type() != source_ty.element_type()
+            || result_ty.shape() != &drop_dims(&sizes, &dropped_dims)
+            || result_ty.layout() != &layout
+        {
+            return verify_err!(loc, SubviewOpVerifyErr::ResultTypeMismatch);
+        }
+
         Ok(())
     }
 }
 
+/// Remove the entries at `dropped_dims` from `values`.
+fn drop_dims<T: Clone>(values: &[T], dropped_dims: &[usize]) -> Vec<T> {
+    values
+        .iter()
+        .enumerate()
+        .filter(|(dim, _)| !dropped_dims.contains(dim))
+        .map(|(_, value)| value.clone())
+        .collect()
+}
+
 impl SubviewOp {
-    /// Create a new `SubviewOp` with the specified source memref, slice parameters.
-    /// The result type is inferred from the source memref element type and the static sizes.
+    /// Create a new `SubviewOp` with the result type inferred.
     pub fn new(
         ctx: &mut Context,
         source: Value,
         offsets: Vec<SliceParam>,
         sizes: Vec<SliceParam>,
         steps: Vec<SliceParam>,
+        dropped_dims: Vec<usize>,
     ) -> Self {
-        let source_element_type = source
-            .get_type(ctx)
-            .deref(ctx)
-            .downcast_ref::<RankedMemrefType>()
-            .expect("SubviewOp source must be ranked memref type")
-            .element_type();
-        let result_shape = sizes
-            .iter()
-            .map(|size| match size {
-                SliceParam::Static(size) => {
-                    crate::memref::type_interfaces::Dimension::Static(*size)
-                }
-                SliceParam::Dynamic(_) => crate::memref::type_interfaces::Dimension::Dynamic,
-            })
-            .collect();
-        let result_type = RankedMemrefType::get(ctx, source_element_type, result_shape);
+        let (element_type, source_shape, source_layout) = {
+            let source_ty = source.get_type(ctx);
+            let source_ty = source_ty.deref(ctx);
+            let source_ty = source_ty
+                .downcast_ref::<RankedMemrefType>()
+                .expect("Subview source must be ranked");
+            (
+                source_ty.element_type(),
+                source_ty.shape().clone(),
+                source_ty.layout().clone(),
+            )
+        };
+        let dimensions =
+            |params: &[SliceParam]| params.iter().map(SliceParam::dimension).collect::<Vec<_>>();
+        let slice_shape = dimensions(&sizes);
+        let layout = subview_layout(
+            &source_shape,
+            &source_layout,
+            &dimensions(&offsets),
+            &slice_shape,
+            &dimensions(&steps),
+            &dropped_dims,
+        );
+        let result_type = RankedMemrefType::get(
+            ctx,
+            element_type,
+            drop_dims(&slice_shape, &dropped_dims),
+            layout,
+        );
 
-        Self::new_with_result_type(ctx, source, offsets, sizes, steps, result_type)
+        Self::new_with_result_type(
+            ctx,
+            source,
+            offsets,
+            sizes,
+            steps,
+            dropped_dims,
+            result_type,
+        )
     }
 
-    /// Create a new `SubviewOp` with the specified source memref, slice parameters, and explicit result type.
+    /// Create a new `SubviewOp` with an explicit result type.
     pub fn new_with_result_type(
         ctx: &mut Context,
         source: Value,
         offsets: Vec<SliceParam>,
         sizes: Vec<SliceParam>,
         steps: Vec<SliceParam>,
+        dropped_dims: Vec<usize>,
         result_type: TypedHandle<RankedMemrefType>,
     ) -> Self {
         let mut operands = vec![source];
@@ -1359,6 +1488,7 @@ impl SubviewOp {
                 steps: step_attrs,
             },
         );
+        op.set_attr_memref_subview_dropped_dims(ctx, DroppedDimsAttr(dropped_dims));
         op
     }
 
@@ -1403,6 +1533,13 @@ impl SubviewOp {
         self.slice_attr_to_params(ctx, &attrs.steps)
     }
 
+    /// Get dimensions that were dropped from the source dimensions.
+    pub fn dropped_dims(&self, ctx: &Context) -> Vec<usize> {
+        self.get_attr_memref_subview_dropped_dims(ctx)
+            .map(|attr| attr.0.clone())
+            .unwrap_or_default()
+    }
+
     /// Get the dynamic operand values for the slice parameters, in the order they appear as operands.
     pub fn dynamic_operands(&self, ctx: &Context) -> Vec<Value> {
         self.get_operation().deref(ctx).operands().skip(1).collect()
@@ -1412,8 +1549,8 @@ impl SubviewOp {
 /// Reshape a memref to a new shape by creating a new descriptor view over
 /// the same underlying storage.
 ///
-/// This operation does not copy elements. The source and result must have the
-/// same element type and total element count.
+/// This operation does not copy elements. The source and result must both have
+/// identity layouts and the same element type and total element count.
 ///
 /// ### Operand(s)
 /// | operand | description |
@@ -1428,7 +1565,6 @@ impl SubviewOp {
 #[pliron_op(
     name = "memref.reshape",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
-    verifier = "succ",
     interfaces = [
         OneResultInterface,
         NResultsInterface<1>,
@@ -1441,6 +1577,41 @@ impl SubviewOp {
     ],
 )]
 pub struct ReshapeOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReshapeOpVerifyErr {
+    #[error("Reshape source must have identity layout")]
+    NonIdentitySource,
+    #[error("Reshape result must have identity layout")]
+    NonIdentityResult,
+}
+
+impl Verify for ReshapeOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        if self
+            .get_source(ctx)
+            .get_type(ctx)
+            .deref(ctx)
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Reshape source must be ranked")
+            .layout()
+            .is_some()
+        {
+            return verify_err!(self.loc(ctx), ReshapeOpVerifyErr::NonIdentitySource);
+        }
+        if self
+            .result_type(ctx)
+            .deref(ctx)
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Reshape result must be ranked")
+            .layout()
+            .is_some()
+        {
+            return verify_err!(self.loc(ctx), ReshapeOpVerifyErr::NonIdentityResult);
+        }
+        Ok(())
+    }
+}
 
 impl ReshapeOp {
     /// Create a new `ReshapeOp`.
@@ -1485,6 +1656,8 @@ pub struct GlobalOp;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GlobalOpVerifyErr {
+    #[error("A global requires identity layout")]
+    NonIdentityLayout,
     #[error("memref.global does not have a type attribute")]
     MissingType,
     #[error("memref.global of type {ty} has a value attribute of type {value}")]
@@ -1575,6 +1748,13 @@ impl Verify for GlobalOp {
                 );
             }
         }
+        if ty
+            .deref(ctx)
+            .downcast_ref::<RankedMemrefType>()
+            .is_some_and(|ty| ty.layout().is_some())
+        {
+            return verify_err!(loc, GlobalOpVerifyErr::NonIdentityLayout);
+        }
         let is_static_memref = ty
             .deref(ctx)
             .downcast_ref::<RankedMemrefType>()
@@ -1610,6 +1790,8 @@ pub struct GetGlobalOp;
 
 #[derive(Debug, thiserror::Error)]
 pub enum GetGlobalOpVerifyErr {
+    #[error("A global reference requires identity layout")]
+    NonIdentityLayout,
     #[error("memref.get_global does not have a global name attribute")]
     MissingGlobalName,
     #[error("memref.get_global refers to @{0}, which is not a memref.global of the symbol table")]
@@ -1656,6 +1838,16 @@ impl Verify for GetGlobalOp {
         if self.get_attr_memref_global_name(ctx).is_none() {
             return verify_err!(self.loc(ctx), GetGlobalOpVerifyErr::MissingGlobalName);
         }
+        if self
+            .result_type(ctx)
+            .deref(ctx)
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Global reference result must be ranked")
+            .layout()
+            .is_some()
+        {
+            return verify_err!(self.loc(ctx), GetGlobalOpVerifyErr::NonIdentityLayout);
+        }
         Ok(())
     }
 }
@@ -1691,6 +1883,78 @@ impl SymbolUserOpInterface for GetGlobalOp {
                     global: global.memref_type(ctx).disp(ctx).to_string(),
                 }
             );
+        }
+        Ok(())
+    }
+}
+
+/// Remove static layout information without a copy or a descriptor change.
+///
+/// ### Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `source` | The ranked memref to cast. |
+///
+/// ### Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | The same descriptor with less static layout information. |
+#[pliron_op(
+    name = "memref.cast",
+    format = "$0 ` : ` type($0)",
+    interfaces = [OneOpdInterface, NOpdsInterface<1>, OneResultInterface, NResultsInterface<1>, OperandNOfType<0, RankedMemrefType>, ResultNOfType<0, RankedMemrefType>],
+)]
+pub struct MemrefCastOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum MemrefCastOpVerifyErr {
+    #[error("Cast element types must match")]
+    ElementTypeMismatch,
+    #[error("Cast shapes must match")]
+    ShapeMismatch,
+    #[error("A cast cannot add static layout information")]
+    IncompatibleLayout,
+}
+
+impl MemrefCastOp {
+    /// Make a cast to the given result type.
+    pub fn new(
+        ctx: &mut Context,
+        source: Value,
+        result_type: TypedHandle<RankedMemrefType>,
+    ) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            vec![result_type.into()],
+            vec![source],
+            vec![],
+            0,
+        );
+        Self { op }
+    }
+}
+
+impl Verify for MemrefCastOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let source = self.get_operand(ctx).get_type(ctx);
+        let source = source.deref(ctx);
+        let source = source
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Cast source must be a ranked memref");
+        let result = self.result_type(ctx);
+        let result = result.deref(ctx);
+        let result = result
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Cast result must be a ranked memref");
+        if source.element_type() != result.element_type() {
+            return verify_err!(self.loc(ctx), MemrefCastOpVerifyErr::ElementTypeMismatch);
+        }
+        if source.shape() != result.shape() {
+            return verify_err!(self.loc(ctx), MemrefCastOpVerifyErr::ShapeMismatch);
+        }
+        if !is_cast_compatible(source.layout(), result.layout(), source.shape()) {
+            return verify_err!(self.loc(ctx), MemrefCastOpVerifyErr::IncompatibleLayout);
         }
         Ok(())
     }

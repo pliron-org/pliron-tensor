@@ -9,5 +9,12 @@ builtin.module @test_module {
         result = tensor.add cast, splat : tensor.ranked<1x2x3x4:builtin.fp32>;
         llvm.store *output_p <- result;
         llvm.return
+    };
+    llvm.func @test_dynamic_cast: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(input_p: llvm.ptr(0), output_p: llvm.ptr(0)):
+        input = llvm.load input_p : tensor.ranked<?x2:builtin.fp64>;
+        cast = tensor.elementwise_cast input : tensor.ranked<?x2:builtin.fp32> {input_is_signed=false,result_is_signed=false};
+        llvm.store *output_p <- cast;
+        llvm.return
     }
 }

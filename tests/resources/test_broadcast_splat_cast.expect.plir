@@ -6,33 +6,51 @@ builtin.module @test_module
     {
       ^entry_block2v1(input_p_v0: llvm.ptr (0), scalar_v1: builtin.fp32 , output_p_v2: llvm.ptr (0)) !0:
         input_v3 = llvm.load input_p_v0  : memref.ranked <1x1x1x4 : builtin.fp64 > !1;
-        broadcast_v8 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp64 > !2;
-        memref.generate broadcast_v8
+        broadcast_v12 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp64 > !2;
+        memref.generate broadcast_v12
         {
-          ^entry_block3v1(v9: index.index , v10: index.index , v11: index.index , v12: index.index ):
-            v13 = index.constant <index.constant 0> : index.index ;
-            v14 = index.constant <index.constant 0> : index.index ;
-            v15 = index.constant <index.constant 0> : index.index ;
-            v16 = memref.load input_v3[v13, v14, v15, v12] : builtin.fp64 ;
-            memref.yield v16
+          ^entry_block4v1(v13: index.index , v14: index.index , v15: index.index , v16: index.index ):
+            v17 = index.constant <index.constant 0> : index.index ;
+            v18 = index.constant <index.constant 0> : index.index ;
+            v19 = index.constant <index.constant 0> : index.index ;
+            v20 = memref.load input_v3[v17, v18, v19, v16] : builtin.fp64 ;
+            memref.yield v20
         };
-        cast_v17 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !3;
-        memref.generate cast_v17
+        cast_v21 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !3;
+        memref.generate cast_v21
         {
-          ^entry_block4v1(v18: index.index , v19: index.index , v20: index.index , v21: index.index ):
-            v22 = memref.load broadcast_v8[v18, v19, v20, v21] : builtin.fp64 ;
-            v23 = llvm.fptrunc <> v22 to builtin.fp32 ;
-            memref.yield v23
+          ^entry_block5v1(v22: index.index , v23: index.index , v24: index.index , v25: index.index ):
+            v26 = memref.load broadcast_v12[v22, v23, v24, v25] : builtin.fp64 ;
+            v27 = llvm.fptrunc <> v26 to builtin.fp32 ;
+            memref.yield v27
         };
-        splat_v24 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !4;
-        memref.generate splat_v24
+        splat_v28 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !4;
+        memref.generate splat_v28
         {
-          ^entry_block5v1(v25: index.index , v26: index.index , v27: index.index , v28: index.index ):
+          ^entry_block6v1(v29: index.index , v30: index.index , v31: index.index , v32: index.index ):
             memref.yield scalar_v1
         };
-        result_v29 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !5;
-        memref.add result_v29 <- cast_v17 + splat_v24;
-        llvm.store *output_p_v2 <- result_v29 ;
+        result_v33 = memref.alloc  : memref.ranked <1x2x3x4 : builtin.fp32 > !5;
+        memref.add result_v33 <- cast_v21 + splat_v28;
+        llvm.store *output_p_v2 <- result_v33 ;
+        llvm.return 
+    };
+    llvm.func @test_dynamic_cast: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(input_p_v8: llvm.ptr (0), output_p_v9: llvm.ptr (0)) !6:
+        input_v10 = llvm.load input_p_v8  : memref.ranked <?x2 : builtin.fp64 > !7;
+        v34 = index.constant <index.constant 0> : index.index ;
+        v35 = memref.dim input_v10, v34 : index.index ;
+        cast_v36 = memref.alloc v35 : memref.ranked <?x2 : builtin.fp32 > !8;
+        memref.generate cast_v36
+        {
+          ^entry_block7v1(v37: index.index , v38: index.index ):
+            v39 = memref.load input_v10[v37, v38] : builtin.fp64 ;
+            v40 = llvm.fptrunc <> v39 to builtin.fp32 ;
+            memref.yield v40
+        };
+        llvm.store *output_p_v9 <- cast_v36 ;
         llvm.return 
     }
 }
@@ -44,3 +62,6 @@ outlined_attributes:
 !3 = [builtin_given_names = builtin.given_names [cast]]
 !4 = [builtin_given_names = builtin.given_names [splat]]
 !5 = [builtin_given_names = builtin.given_names [result]]
+!6 = [builtin_given_names = builtin.given_names [input_p, output_p]]
+!7 = [builtin_given_names = builtin.given_names [input]]
+!8 = [builtin_given_names = builtin.given_names [cast]]

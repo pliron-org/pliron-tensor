@@ -68,6 +68,15 @@ pub struct SliceParamsAttr {
     pub steps: Vec<SliceParamAttr>,
 }
 
+/// The source dimensions that a rank-reducing subview removes from its result.
+#[pliron_attr(
+    name = "memref.dropped_dims",
+    format = "`[` vec($0, CharSpace(`,`)) `]`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct DroppedDimsAttr(pub Vec<usize>);
+
 #[pliron_attr(name = "memref.const_pointer", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct ConstPointerAttr(pub *const ());
@@ -694,6 +703,7 @@ mod tests {
             ctx,
             FP32Type::get(ctx).into(),
             vec![Dimension::Static(2), Dimension::Static(2)],
+            None,
         )
         .into();
         let data = [1.0f32, -2.5, 3.25, 0.0]
@@ -764,7 +774,7 @@ mod tests {
         assert_eq!(round_trip(ctx, &attr), text);
     }
 
-    /// A splat keeps the bytes of only one element
+    /// A splat must keep the bytes of only one element.
     #[test]
     fn splat_round_trip() {
         let ctx = &mut Context::new();
@@ -798,7 +808,7 @@ mod tests {
             .assert_eq(&round_trip(ctx, &attr));
     }
 
-    /// Above [MAX_ELEMENTS_AS_LITERALS], the printer writes hexadecimal.
+    /// Above [MAX_ELEMENTS_AS_LITERALS], the printer must write hexadecimal.
     #[test]
     fn large_data_prints_as_hex() {
         let ctx = &mut Context::new();
@@ -812,7 +822,7 @@ mod tests {
         assert!(printed.contains("= \"0x"), "{printed}");
     }
 
-    /// Data that does not agree with the type is rejected.
+    /// Data that does not agree with the type must be rejected.
     #[test]
     fn invalid_constants_fail() {
         let ctx = &mut Context::new();
@@ -885,7 +895,7 @@ mod tests {
         ));
     }
 
-    /// Text that does not describe a constant is rejected, and nothing is
+    /// Text that does not describe a constant must be rejected, and must not be
     /// quietly cut down to fit.
     #[test]
     fn invalid_text_fails_to_parse() {

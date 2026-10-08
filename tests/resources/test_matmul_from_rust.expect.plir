@@ -42,23 +42,21 @@ builtin.module @test_module
         arg2_v29 = llvm.load arg2_p_v25  : memref.ranked <2x3x2 : builtin.integer i64> !17;
         arg3_v30 = llvm.load arg3_p_v26  : memref.ranked <2x2x2 : builtin.integer i64> !18;
         v35 = index.constant <index.constant 2> : index.index ;
-        v36 = index.constant <index.constant 2> : index.index ;
+        v36 = index.constant <index.constant 3> : index.index ;
         v37 = index.constant <index.constant 3> : index.index ;
         v38 = index.constant <index.constant 2> : index.index ;
-        v39 = index.constant <index.constant 3> : index.index ;
+        v39 = index.constant <index.constant 2> : index.index ;
         v40 = index.constant <index.constant 2> : index.index ;
-        v41 = index.constant <index.constant 0> : index.index ;
-        v42 = index.constant <index.constant 1> : index.index ;
-        cf.nd_for [v41] to [v35] step [v42] 
+        v41 = index.constant <index.constant 2> : index.index ;
+        v42 = index.constant <index.constant 0> : index.index ;
+        v43 = index.constant <index.constant 1> : index.index ;
+        cf.nd_for [v42] to [v41] step [v43] 
         {
-          ^entry_block6v1(v43: index.index ):
-            v44 = memref.subview arg1_v28 [v43, 0, 0] [1, 2, 3] [1, 1, 1] : memref.ranked <1x2x3 : builtin.integer i64>;
-            v45 = memref.subview arg2_v29 [v43, 0, 0] [1, 3, 2] [1, 1, 1] : memref.ranked <1x3x2 : builtin.integer i64>;
-            v46 = memref.subview arg3_v30 [v43, 0, 0] [1, 2, 2] [1, 1, 1] : memref.ranked <1x2x2 : builtin.integer i64>;
-            v47 = memref.reshape v44 : memref.ranked <2x3 : builtin.integer i64>;
-            v48 = memref.reshape v45 : memref.ranked <3x2 : builtin.integer i64>;
-            v49 = memref.reshape v46 : memref.ranked <2x2 : builtin.integer i64>;
-            v50 = memref.matmul v47, v48, v49 : memref.ranked <2x2 : builtin.integer i64>;
+          ^entry_block6v1(v44: index.index ):
+            v45 = memref.subview arg1_v28 [v44, 0, 0] [1, 2, 3] [1, 1, 1] drop [0] : memref.ranked <2x3 : builtin.integer i64, strided<[3, 1], offset: ?>>;
+            v46 = memref.subview arg2_v29 [v44, 0, 0] [1, 3, 2] [1, 1, 1] drop [0] : memref.ranked <3x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
+            v47 = memref.subview arg3_v30 [v44, 0, 0] [1, 2, 2] [1, 1, 1] drop [0] : memref.ranked <2x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
+            v48 = memref.matmul v45, v46, v47 : memref.ranked <2x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
             cf.yield 
         }
 ;

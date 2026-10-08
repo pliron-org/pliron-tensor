@@ -35,9 +35,13 @@ use pliron::{
     value::{DefiningEntity, Value},
 };
 use pliron_common_dialects::{
-    cf::{ToCFDialect, op_interfaces::YieldingRegions, ops::NDForOp},
+    cf::{
+        ToCFDialect,
+        op_interfaces::YieldingRegions,
+        ops::{ForOp, NDForOp},
+    },
     index::{
-        ops::{IndexConstantOp, IndexToIntegerOp, IntegerToIndexOp},
+        ops::{IndexAddOp, IndexConstantOp, IndexMulOp},
         types::IndexType,
     },
 };
@@ -52,7 +56,7 @@ use pliron_llvm::{
         compute_type_size_in_bytes, lookup_or_create_free_fn, lookup_or_create_malloc_fn,
     },
     op_interfaces::{
-        AlignableOpInterface, BinArithOp, CastOpInterface, FloatBinArithOpWithFastMathFlags,
+        AlignableOpInterface, BinArithOp, FloatBinArithOpWithFastMathFlags,
         IntBinArithOpWithOverflowFlag,
     },
     ops::{AddressOfOp, CallOp, FuncOp, GlobalOp as LlvmGlobalOp, MulOp},
@@ -66,8 +70,8 @@ use crate::memref::{
     },
     ops::{
         AddOp, AllocOp, CopyOp, DeallocOp, DimOp, DivOp, GenerateOp, GetGlobalOp, GlobalOp, LoadOp,
-        MatMulOp as MemrefMatMulOp, MulOp as MemrefMulOp, ReshapeOp, SliceParam, StoreOp, SubOp,
-        SubviewOp, YieldOp,
+        MatMulOp as MemrefMatMulOp, MemrefCastOp, MulOp as MemrefMulOp, ReshapeOp, SliceParam,
+        StoreOp, SubOp, SubviewOp, YieldOp,
     },
     type_interfaces::{DenseElementTypeHandle, MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
@@ -103,6 +107,7 @@ impl ToCFDialect for AllocOp {
 
         let element_ty = memref_ty.deref(ctx).element_type();
         let elem_size = compute_type_size_in_bytes(ctx, rewriter, element_ty);
+        let num_elems = descriptor::index_to_i64(ctx, rewriter, num_elems);
         let alloc_size = MulOp::new_with_overflow_flag(
             ctx,
             elem_size,
@@ -804,33 +809,6 @@ fn materialize_slice_params(
         .collect()
 }
 
-/// Cast the given value to the target type if necessary,
-/// handling index<->integer casts as needed.
-fn cast_value_to_type(
-    ctx: &mut Context,
-    rewriter: &mut dyn Rewriter,
-    value: Value,
-    target_ty: TypeHandle,
-) -> Value {
-    if value.get_type(ctx) == target_ty {
-        return value;
-    }
-
-    if value.get_type(ctx).deref(ctx).is::<IndexType>() {
-        let cast = IndexToIntegerOp::new(ctx, value, target_ty);
-        rewriter.append_op(ctx, &cast);
-        return cast.get_result(ctx);
-    }
-
-    if target_ty.deref(ctx).is::<IndexType>() {
-        let cast = IntegerToIndexOp::new(ctx, value, target_ty);
-        rewriter.append_op(ctx, &cast);
-        return cast.get_result(ctx);
-    }
-
-    value
-}
-
 #[op_interface_impl]
 impl ToCFDialect for CopyOp {
     fn rewrite(
@@ -912,63 +890,42 @@ impl ToCFDialect for SubviewOp {
             .expect("SubviewOp result must be a RankedMemrefType");
 
         let source_descriptor = descriptor::unpack_descriptor(ctx, rewriter, source);
-        let offset_ty = source_descriptor.offset.get_type(ctx);
-        let size_ty = source_descriptor
-            .sizes
-            .first()
-            .map(|size| size.get_type(ctx))
-            .unwrap_or(offset_ty);
-
-        let offsets = materialize_slice_params(ctx, rewriter, &self.slice_offsets(ctx))
-            .into_iter()
-            .map(|offset| cast_value_to_type(ctx, rewriter, offset, offset_ty))
-            .collect::<Vec<_>>();
-        let sizes = materialize_slice_params(ctx, rewriter, &self.slice_sizes(ctx))
-            .into_iter()
-            .map(|size| cast_value_to_type(ctx, rewriter, size, size_ty))
-            .collect::<Vec<_>>();
-        let steps = materialize_slice_params(ctx, rewriter, &self.slice_steps(ctx))
-            .into_iter()
-            .zip(source_descriptor.strides.iter())
-            .map(|(step, stride)| cast_value_to_type(ctx, rewriter, step, stride.get_type(ctx)))
-            .collect::<Vec<_>>();
+        let offsets = materialize_slice_params(ctx, rewriter, &self.slice_offsets(ctx));
+        let sizes = materialize_slice_params(ctx, rewriter, &self.slice_sizes(ctx));
+        let steps = materialize_slice_params(ctx, rewriter, &self.slice_steps(ctx));
 
         let new_offset = offsets.iter().zip(source_descriptor.strides.iter()).fold(
             source_descriptor.offset,
             |current_offset, (offset, stride)| {
-                let scaled_offset = MulOp::new_with_overflow_flag(
-                    ctx,
-                    *offset,
-                    *stride,
-                    IntegerOverflowFlagsAttr::default(),
-                );
+                let scaled_offset = IndexMulOp::new(ctx, *offset, *stride);
                 rewriter.append_op(ctx, &scaled_offset);
-                let sum = pliron_llvm::ops::AddOp::new_with_overflow_flag(
-                    ctx,
-                    current_offset,
-                    scaled_offset.get_result(ctx),
-                    IntegerOverflowFlagsAttr::default(),
-                );
+                let sum = IndexAddOp::new(ctx, current_offset, scaled_offset.get_result(ctx));
                 rewriter.append_op(ctx, &sum);
                 sum.get_result(ctx)
             },
         );
 
-        let new_strides = source_descriptor
-            .strides
-            .iter()
-            .zip(steps.iter())
-            .map(|(stride, step)| {
-                let new_stride = MulOp::new_with_overflow_flag(
-                    ctx,
-                    *stride,
-                    *step,
-                    IntegerOverflowFlagsAttr::default(),
-                );
-                rewriter.append_op(ctx, &new_stride);
-                new_stride.get_result(ctx)
-            })
-            .collect();
+        let dropped_dims = self.dropped_dims(ctx);
+
+        let new_strides =
+            source_descriptor
+                .strides
+                .iter()
+                .zip(steps.iter())
+                .map(|(stride, step)| {
+                    let new_stride = IndexMulOp::new(ctx, *stride, *step);
+                    rewriter.append_op(ctx, &new_stride);
+                    new_stride.get_result(ctx)
+                });
+
+        // Remove the size and stride of each dropped dimension. See `layout::subview_layout`.
+        let (kept_sizes, kept_strides) = sizes
+            .into_iter()
+            .zip(new_strides)
+            .enumerate()
+            .filter(|(dim, _)| !dropped_dims.contains(dim))
+            .map(|(_, size_and_stride)| size_and_stride)
+            .unzip();
 
         let result_descriptor = descriptor::pack_descriptor(
             ctx,
@@ -978,8 +935,8 @@ impl ToCFDialect for SubviewOp {
                 allocated_ptr: source_descriptor.allocated_ptr,
                 aligned_ptr: source_descriptor.aligned_ptr,
                 offset: new_offset,
-                sizes,
-                strides: new_strides,
+                sizes: kept_sizes,
+                strides: kept_strides,
             },
         )?;
 
@@ -1274,19 +1231,24 @@ pub struct MemrefToCF;
 impl DialectConversion for MemrefToCF {
     fn can_convert_op(&self, ctx: &Context, op: Ptr<Operation>) -> bool {
         op_impls::<dyn ToCFDialect>(&*Operation::get_op_dyn(op, ctx))
+            || Operation::get_op::<ForOp>(op, ctx).is_some()
             || Operation::get_op::<FuncOp>(op, ctx).is_some()
             || Operation::get_op::<pliron_llvm::ops::LoadOp>(op, ctx).is_some()
     }
 
     fn can_convert_type(&self, ctx: &Context, ty: TypeHandle) -> bool {
-        type_impls::<dyn ToLLVMType>(&*ty.deref(ctx))
+        let ty = &*ty.deref(ctx);
+        // Index types are converted in CFToLLVM
+        type_impls::<dyn ToLLVMType>(ty) && !ty.is::<IndexType>()
     }
 
     fn convert_type(&mut self, ctx: &mut Context, ty: TypeHandle) -> Result<TypeHandle> {
-        let ty_ref = &*ty.deref(ctx);
-        let Some(ty_converter) = type_cast::<dyn ToLLVMType>(ty_ref) else {
+        if !self.can_convert_type(ctx, ty) {
             return Ok(ty);
-        };
+        }
+        let ty_ref = &*ty.deref(ctx);
+        let ty_converter = type_cast::<dyn ToLLVMType>(ty_ref)
+            .expect("Convertible type must implement ToLLVMType");
         ty_converter.convert(ctx)
     }
 
@@ -1297,6 +1259,15 @@ impl DialectConversion for MemrefToCF {
         op: Ptr<Operation>,
         operands_info: &OperandsInfo,
     ) -> Result<()> {
+        if Operation::get_op::<ForOp>(op, ctx).is_some() {
+            // Loop results must use the same descriptor type as loop arguments.
+            let results: Vec<_> = op.deref(ctx).results().collect();
+            for result in results {
+                let converted = self.convert_type(ctx, result.get_type(ctx))?;
+                rewriter.set_value_type(ctx, result, converted);
+            }
+            return Ok(());
+        }
         if let Some(func_op) = Operation::get_op::<FuncOp>(op, ctx) {
             return lower_func_op_to_llvm(&func_op, ctx);
         }
@@ -1307,5 +1278,22 @@ impl DialectConversion for MemrefToCF {
         let to_cf_op =
             op_cast::<dyn ToCFDialect>(&*op_dyn).expect("Matched Op must implement ToCFDialect");
         to_cf_op.rewrite(ctx, rewriter, operands_info)
+    }
+}
+
+#[op_interface_impl]
+impl ToCFDialect for MemrefCastOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        rewriter.replace_operation_with_values(
+            ctx,
+            self.get_operation(),
+            vec![self.get_operand(ctx)],
+        );
+        Ok(())
     }
 }

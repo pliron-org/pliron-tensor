@@ -1,0 +1,45 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_batch_strided: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(a_p_v0: llvm.ptr (0), b_p_v1: llvm.ptr (0), c_p_v2: llvm.ptr (0), out_p_v3: llvm.ptr (0)) !0:
+        a_v4 = llvm.load a_p_v0  : memref.ranked <2x4x4 : builtin.integer i64> !1;
+        b_v5 = llvm.load b_p_v1  : memref.ranked <2x4x4 : builtin.integer i64> !2;
+        c_v6 = llvm.load c_p_v2  : memref.ranked <2x4x4 : builtin.integer i64> !3;
+        av_v11 = memref.subview a_v4 [0, 1, 1] [2, 2, 3] [1, 1, 1] : memref.ranked <2x2x3 : builtin.integer i64, strided<[16, 4, 1], offset: 5>> !4;
+        bv_v12 = memref.subview b_v5 [0, 0, 1] [2, 3, 2] [1, 1, 1] : memref.ranked <2x3x2 : builtin.integer i64, strided<[16, 4, 1], offset: 1>> !5;
+        cv_v13 = memref.subview c_v6 [0, 1, 1] [2, 2, 2] [1, 1, 1] : memref.ranked <2x2x2 : builtin.integer i64, strided<[16, 4, 1], offset: 5>> !6;
+        v14 = index.constant <index.constant 2> : index.index ;
+        v15 = index.constant <index.constant 3> : index.index ;
+        v16 = index.constant <index.constant 3> : index.index ;
+        v17 = index.constant <index.constant 2> : index.index ;
+        v18 = index.constant <index.constant 2> : index.index ;
+        v19 = index.constant <index.constant 2> : index.index ;
+        v20 = index.constant <index.constant 2> : index.index ;
+        v21 = index.constant <index.constant 0> : index.index ;
+        v22 = index.constant <index.constant 1> : index.index ;
+        cf.nd_for [v21] to [v20] step [v22] 
+        {
+          ^entry_block3v1(v23: index.index ):
+            v24 = memref.subview av_v11 [v23, 0, 0] [1, 2, 3] [1, 1, 1] drop [0] : memref.ranked <2x3 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+            v25 = memref.subview bv_v12 [v23, 0, 0] [1, 3, 2] [1, 1, 1] drop [0] : memref.ranked <3x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+            v26 = memref.subview cv_v13 [v23, 0, 0] [1, 2, 2] [1, 1, 1] drop [0] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+            v27 = memref.matmul v24, v25, v26 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+            cf.yield 
+        }
+;
+        llvm.store *out_p_v3 <- cv_v13 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [a_p, b_p, c_p, out_p]]
+!1 = [builtin_given_names = builtin.given_names [a]]
+!2 = [builtin_given_names = builtin.given_names [b]]
+!3 = [builtin_given_names = builtin.given_names [c]]
+!4 = [builtin_given_names = builtin.given_names [av]]
+!5 = [builtin_given_names = builtin.given_names [bv]]
+!6 = [builtin_given_names = builtin.given_names [cv]]

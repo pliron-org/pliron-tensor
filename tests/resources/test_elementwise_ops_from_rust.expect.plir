@@ -34,11 +34,13 @@ builtin.module @test_module
       [] 
     {
       ^entry_block5v1(arg1_p_v18: llvm.ptr (0), arg2_p_v19: llvm.ptr (0), res_p_v20: llvm.ptr (0)) !15:
-        arg1_v21 = llvm.load arg1_p_v18  : memref.ranked <4x4 : builtin.integer i64> !16;
-        arg2_v22 = llvm.load arg2_p_v19  : memref.ranked <4x4 : builtin.integer i64> !17;
-        res_v48 = memref.alloc  : memref.ranked <4x4 : builtin.integer i64> !18;
-        memref.add res_v48 <- arg1_v21 + arg2_v22;
-        llvm.store *res_p_v20 <- res_v48 ;
+        arg1_v21 = llvm.load arg1_p_v18  : memref.ranked <?x4 : builtin.integer i64> !16;
+        arg2_v22 = llvm.load arg2_p_v19  : memref.ranked <?x4 : builtin.integer i64> !17;
+        v48 = index.constant <index.constant 0> : index.index ;
+        v49 = memref.dim arg1_v21, v48 : index.index ;
+        res_v50 = memref.alloc v49 : memref.ranked <?x4 : builtin.integer i64> !18;
+        memref.add res_v50 <- arg1_v21 + arg2_v22;
+        llvm.store *res_p_v20 <- res_v50 ;
         llvm.return 
     };
     llvm.func @test_tensor_add_float: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
@@ -47,9 +49,9 @@ builtin.module @test_module
       ^entry_block6v1(arg1_p_v24: llvm.ptr (0), arg2_p_v25: llvm.ptr (0), res_p_v26: llvm.ptr (0)) !19:
         arg1_v27 = llvm.load arg1_p_v24  : memref.ranked <4x4 : builtin.fp64 > !20;
         arg2_v28 = llvm.load arg2_p_v25  : memref.ranked <4x4 : builtin.fp64 > !21;
-        res_v49 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !22;
-        memref.add res_v49 <- arg1_v27 + arg2_v28;
-        llvm.store *res_p_v26 <- res_v49 ;
+        res_v51 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !22;
+        memref.add res_v51 <- arg1_v27 + arg2_v28;
+        llvm.store *res_p_v26 <- res_v51 ;
         llvm.return 
     };
     llvm.func @test_tensor_all_binops_float: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
@@ -58,17 +60,17 @@ builtin.module @test_module
       ^entry_block7v1(arg1_p_v30: llvm.ptr (0), arg2_p_v31: llvm.ptr (0), res_p_v32: llvm.ptr (0)) !23:
         arg1_v33 = llvm.load arg1_p_v30  : memref.ranked <4x4 : builtin.fp64 > !24;
         arg2_v34 = llvm.load arg2_p_v31  : memref.ranked <4x4 : builtin.fp64 > !25;
-        zero_v50 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !26;
-        memref.sub zero_v50 <- arg2_v34 - arg2_v34;
-        sum_v51 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !27;
-        memref.add sum_v51 <- arg1_v33 + arg2_v34;
-        sum_norm_v52 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !28;
-        memref.add sum_norm_v52 <- sum_v51 + zero_v50;
-        prod_v53 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !29;
-        memref.mul prod_v53 <- sum_norm_v52 * arg2_v34;
-        res_v54 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !30;
-        memref.div res_v54 <- prod_v53 / arg1_v33;
-        llvm.store *res_p_v32 <- res_v54 ;
+        zero_v52 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !26;
+        memref.sub zero_v52 <- arg2_v34 - arg2_v34;
+        sum_v53 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !27;
+        memref.add sum_v53 <- arg1_v33 + arg2_v34;
+        sum_norm_v54 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !28;
+        memref.add sum_norm_v54 <- sum_v53 + zero_v52;
+        prod_v55 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !29;
+        memref.mul prod_v55 <- sum_norm_v54 * arg2_v34;
+        res_v56 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !30;
+        memref.div res_v56 <- prod_v55 / arg1_v33;
+        llvm.store *res_p_v32 <- res_v56 ;
         llvm.return 
     }
 }

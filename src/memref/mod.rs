@@ -6,6 +6,9 @@
 pub mod attributes;
 pub mod conversions;
 pub mod descriptor;
+pub mod layout;
+
+pub use layout::{MemrefLayout, StridedLayout};
 pub mod op_interfaces;
 pub mod ops;
 pub mod type_interfaces;

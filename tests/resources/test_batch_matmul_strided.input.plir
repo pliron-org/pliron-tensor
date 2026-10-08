@@ -1,0 +1,15 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_batch_strided: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(a_p: llvm.ptr(0), b_p: llvm.ptr(0), c_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        a = llvm.load a_p : tensor.ranked<2x4x4:builtin.integer i64>;
+        b = llvm.load b_p : tensor.ranked<2x4x4:builtin.integer i64>;
+        c = llvm.load c_p : tensor.ranked<2x4x4:builtin.integer i64>;
+        av = tensor.extract_slice a [0, 1, 1] [2, 2, 3] [1, 1, 1] : tensor.ranked<2x2x3:builtin.integer i64>;
+        bv = tensor.extract_slice b [0, 0, 1] [2, 3, 2] [1, 1, 1] : tensor.ranked<2x3x2:builtin.integer i64>;
+        cv = tensor.extract_slice c [0, 1, 1] [2, 2, 2] [1, 1, 1] : tensor.ranked<2x2x2:builtin.integer i64>;
+        result = tensor.batch_matmul av, bv, cv : tensor.ranked<2x2x2:builtin.integer i64>;
+        llvm.store *out_p <- result;
+        llvm.return
+    }
+}

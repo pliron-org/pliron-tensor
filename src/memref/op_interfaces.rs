@@ -16,7 +16,7 @@ use pliron::{
     result::Result,
     r#type::{Typed, type_cast},
     value::Value,
-    verify_err, verify_error,
+    verify_err,
 };
 use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::IndexType};
 
@@ -89,8 +89,8 @@ pub enum CompatibleShapesOpErr {
         "Expected all operands and results to have the same shape (for non-dynamic dimensions) and rank"
     )]
     IncompatibleShapes,
-    #[error("Expected operand or result type to be of the specified ShapedType")]
-    NonInstantiatedType,
+    #[error("Expected all operands and results to have the same element type")]
+    ElementTypeMismatch,
 }
 
 /// Tensor and Memref ops that have operands and results of the same
@@ -102,18 +102,20 @@ pub trait CompatibleShapesOp<T: ShapedType>: AllResultsOfType<T> + AllOperandsOf
         Self: Sized,
     {
         let op_ref = op.get_operation().deref(ctx);
-        let shapes = op_ref
-            .results()
-            .chain(op_ref.operands())
-            .map(|v| {
-                let ty = v.get_type(ctx);
-                let ty_ref = ty.deref(ctx);
-                let t = ty_ref.downcast_ref::<T>().ok_or_else(|| {
-                    verify_error!(op.loc(ctx), CompatibleShapesOpErr::NonInstantiatedType)
-                })?;
-                Ok(t.shape().clone())
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut element_type = None;
+        let mut shapes = Vec::new();
+        for value in op_ref.results().chain(op_ref.operands()) {
+            let ty = value.get_type(ctx);
+            let ty = ty.deref(ctx);
+            let shaped = ty
+                .downcast_ref::<T>()
+                .expect("AllResultsOfType<T> and AllOperandsOfType<T> ensure the type is T");
+            if element_type.is_some_and(|el| el != shaped.element_type()) {
+                return verify_err!(op.loc(ctx), CompatibleShapesOpErr::ElementTypeMismatch);
+            }
+            element_type = Some(shaped.element_type());
+            shapes.push(shaped.shape().clone());
+        }
 
         let mut cur_shape: Option<Vec<Dimension>> = None;
         for shape in shapes {
@@ -136,7 +138,7 @@ pub trait CompatibleShapesOp<T: ShapedType>: AllResultsOfType<T> + AllOperandsOf
                     }
                 }
             } else {
-                cur_shape = Some(shape.clone());
+                cur_shape = Some(shape);
             }
         }
         Ok(())

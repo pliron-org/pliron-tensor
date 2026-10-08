@@ -45,7 +45,7 @@ pub trait TensorMemoryManager {
 }
 
 /// An [Op] to Allocate a buffer (memref) for the given tensor type and dynamic sizes (if any).
-/// For a simple malloc-like allocation, use [AllocOp](crate::memref::ops::AllocOp).
+/// For a simple malloc-like allocation, use [AllocOp].
 #[op_interface]
 pub trait MemrefAllocOpInterface:
     OneResultInterface + ResultNOfType<0, RankedMemrefType> + ToCFDialect
@@ -69,8 +69,8 @@ pub trait MemrefAllocOpInterface:
     }
 }
 
-/// An [Op] to Deallocate a buffer (memref). For a simple free-like deallocation,
-/// use [DeallocOp](crate::memref::ops::DeallocOp).
+/// An [Op] to Deallocate a buffer (memref).
+/// For a simple free-like deallocation, use [DeallocOp].
 #[op_interface]
 pub trait MemrefDeallocOpInterface: AtLeastNOpdsInterface<1> + ToCFDialect {
     /// Create a new [Self] to deallocate the buffer in `memref`.

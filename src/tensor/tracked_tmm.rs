@@ -6,6 +6,7 @@
 //! to allocations / deallocation and tracking operations.
 
 use std::collections::HashSet;
+use std::ffi::c_void;
 use std::num::NonZero;
 
 use pliron::{
@@ -62,8 +63,8 @@ use crate::{
 };
 
 unsafe extern "C" {
-    fn malloc(size: usize) -> *mut ();
-    fn free(ptr: *mut ());
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
 }
 
 #[derive(Default)]
@@ -97,7 +98,7 @@ impl TrackedTMM {
     /// Frees all currently tracked allocations and clears the tracked set.
     pub fn free_all(&mut self) {
         for &ptr in &self.tracked {
-            unsafe { free(ptr as *mut ()) };
+            unsafe { free(ptr as *mut c_void) };
         }
         self.tracked.clear();
     }
@@ -116,7 +117,7 @@ impl Drop for TrackedTMM {
 /// `state` must be a valid pointer to a [TrackedTMM] for the lifetime of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tracked_malloc(state: *mut TrackedTMM, size: u64) -> *mut () {
-    let ptr = unsafe { malloc(size as usize) };
+    let ptr = unsafe { malloc(size as usize) }.cast::<()>();
     if let Some(state) = unsafe { state.as_mut() } {
         state.tracked.insert(ptr as *const ());
     }
@@ -134,7 +135,7 @@ pub unsafe extern "C" fn tracked_dealloc(state: *mut TrackedTMM, ptr: *mut ()) {
     if let Some(state) = unsafe { state.as_mut() } {
         state.tracked.remove(&(ptr as *const ()));
     }
-    unsafe { free(ptr) };
+    unsafe { free(ptr.cast::<c_void>()) };
 }
 
 /// Get or create a declaration for the [tracked_malloc] function in the nearest symbol table.
@@ -310,6 +311,7 @@ impl ToCFDialect for TrackedAllocOp {
 
         let element_ty = MultiDimensionalType::element_type(&*memref_ty.deref(ctx));
         let elem_size = compute_type_size_in_bytes(ctx, rewriter, element_ty);
+        let num_elems = descriptor::index_to_i64(ctx, rewriter, num_elems);
         let alloc_size = MulOp::new_with_overflow_flag(
             ctx,
             elem_size,

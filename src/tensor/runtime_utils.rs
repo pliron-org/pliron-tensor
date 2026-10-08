@@ -3,9 +3,12 @@
 
 //! Types and utilities to interact with the tensor dialect from Rust
 
-/// Represents a tensor descriptor in Rust.
-/// Provides conversion to/from the IR tensor descriptor.
-/// and retrieve their types and descriptors for use in IR generation.
+/// A tensor descriptor in Rust.
+///   - Input descriptors must have [identity layout](crate::memref::layout::MemrefLayout).
+///   - Descriptors returned by bufferized IR can have a strided layout.
+///
+/// [Self::build_ir_descriptor] and [Self::from_ir_descriptor] convert to and from
+/// the IR descriptor.
 #[derive(Debug)]
 pub struct TensorDesciptor {
     allocated_ptr: *const u8,

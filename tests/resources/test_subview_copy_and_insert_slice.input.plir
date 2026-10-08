@@ -12,7 +12,7 @@ builtin.module @test_module {
       val = llvm.add row, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
       memref.yield val
     };
-    view = memref.subview src [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64>;
+    view = memref.subview src [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64, strided<[3, 1], offset: 1>>;
     i_idx = index.from_integer i_arg : index.index;
     j_idx = index.from_integer j_arg : index.index;
     result = memref.load view[i_idx, j_idx]: builtin.integer i64;
@@ -64,11 +64,30 @@ builtin.module @test_module {
     res = memref.alloc : memref.ranked<3 x 4 : builtin.integer i64>;
     one = index.constant <index.constant 1> : index.index;
     memref.copy res <- dst;
-    sub = memref.subview res [one, one] [2, 2] [one, one] : memref.ranked<2 x 2 : builtin.integer i64>;
+    sub = memref.subview res [one, one] [2, 2] [one, one] : memref.ranked<2 x 2 : builtin.integer i64, strided<[?, ?], offset: ?>>;
     memref.copy sub <- src;
     i_idx = index.from_integer i_arg : index.index;
     j_idx = index.from_integer j_arg : index.index;
     result = memref.load res[i_idx, j_idx]: builtin.integer i64;
+    llvm.return result
+  };
+  llvm.func @test_cast: llvm.func <builtin.integer i64 (builtin.integer i64, builtin.integer i64) variadic = false> [] {
+    ^entry(i_arg: builtin.integer i64, j_arg: builtin.integer i64):
+    src = memref.alloc : memref.ranked<2 x 3 : builtin.integer i64>;
+    memref.generate src {
+      ^entry(i : index.index, j : index.index):
+      i_int = index.to_integer i to builtin.integer i64;
+      j_int = index.to_integer j to builtin.integer i64;
+      three = builtin.constant <builtin.integer <3: i64>> : builtin.integer i64;
+      row = llvm.mul i_int, three <{nsw = false, nuw = false}> : builtin.integer i64;
+      val = llvm.add row, j_int <{nsw = false, nuw = false}> : builtin.integer i64;
+      memref.yield val
+    };
+    view = memref.subview src [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64, strided<[3, 1], offset: 1>>;
+    dynamic_view = memref.cast view : memref.ranked<2 x 2 : builtin.integer i64, strided<[?, ?], offset: ?>>;
+    i_idx = index.from_integer i_arg : index.index;
+    j_idx = index.from_integer j_arg : index.index;
+    result = memref.load dynamic_view[i_idx, j_idx]: builtin.integer i64;
     llvm.return result
   }
 }

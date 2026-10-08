@@ -1,0 +1,341 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @reshape_slice: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(source_p_v0: llvm.ptr (0), control_v1: builtin.integer i64, position_v2: builtin.integer i64) !0:
+        source_v3 = llvm.load source_p_v0  : memref.ranked <3x4 : builtin.integer i64> !1;
+        selected_v113 = memref.subview source_v3 [0, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !2;
+        v114 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v114 <- selected_v113;
+        flat_v115 = memref.reshape v114 : memref.ranked <4 : builtin.integer i64> !3;
+        index_v6 = index.from_integer position_v2 : index.index  !4;
+        value_v116 = memref.load flat_v115[index_v6] : builtin.integer i64 !5;
+        llvm.return value_v116
+    };
+    llvm.func @reshape_dynamic_slice: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(source_p_v8: llvm.ptr (0), control_v9: builtin.integer i64, position_v10: builtin.integer i64) !6:
+        source_v11 = llvm.load source_p_v8  : memref.ranked <3x4 : builtin.integer i64> !7;
+        rows_v12 = index.from_integer control_v9 : index.index  !8;
+        selected_v117 = memref.subview source_v11 [0, 1] [rows_v12, 2] [1, 1] : memref.ranked <?x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !9;
+        v118 = index.constant <index.constant 0> : index.index ;
+        v119 = memref.dim selected_v117, v118 : index.index ;
+        v120 = memref.alloc v119 : memref.ranked <?x2 : builtin.integer i64>;
+        memref.copy v120 <- selected_v117;
+        flat_v121 = memref.reshape v120 : memref.ranked <4 : builtin.integer i64> !10;
+        index_v15 = index.from_integer position_v10 : index.index  !11;
+        value_v122 = memref.load flat_v121[index_v15] : builtin.integer i64 !12;
+        llvm.return value_v122
+    };
+    llvm.func @reshape_branch: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block4v1(source_p_v17: llvm.ptr (0), control_v18: builtin.integer i64, position_v19: builtin.integer i64) !13:
+        source_v20 = llvm.load source_p_v17  : memref.ranked <3x4 : builtin.integer i64> !14;
+        zero_v21 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !15;
+        condition_v22 = llvm.icmp control_v18 <NE> zero_v21 : builtin.integer i1 !16;
+        llvm.cond_br if condition_v22 ^slice_block7v1() else ^fresh_block8v1()
+
+      ^slice_block7v1():
+        view_v123 = memref.subview source_v20 [0, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !17;
+        v166 = memref.cast view_v123 : memref.ranked <2x2 : builtin.integer i64, strided<[?, 1], offset: ?>>;
+        llvm.br ^merge_block6v3(v166)
+
+      ^fresh_block8v1():
+        scalar_v24 = builtin.constant <builtin.integer <99: i64>> : builtin.integer i64 !18;
+        new_tensor_v124 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !19;
+        memref.generate new_tensor_v124
+        {
+          ^entry_block28v3(v125: index.index , v126: index.index ):
+            memref.yield scalar_v24
+        };
+        v167 = memref.cast new_tensor_v124 : memref.ranked <2x2 : builtin.integer i64, strided<[?, 1], offset: ?>>;
+        llvm.br ^merge_block6v3(v167)
+
+      ^merge_block6v3(selected_v26: memref.ranked <2x2 : builtin.integer i64, strided<[?, 1], offset: ?>>) !20:
+        v127 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v127 <- selected_v26;
+        flat_v128 = memref.reshape v127 : memref.ranked <4 : builtin.integer i64> !21;
+        index_v28 = index.from_integer position_v19 : index.index  !22;
+        value_v129 = memref.load flat_v128[index_v28] : builtin.integer i64 !23;
+        llvm.return value_v129
+    };
+    llvm.func @reshape_identity_branch: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block5v5(source_p_v30: llvm.ptr (0), control_v31: builtin.integer i64, position_v32: builtin.integer i64) !24:
+        source_v33 = llvm.load source_p_v30  : memref.ranked <3x4 : builtin.integer i64> !25;
+        zero_v34 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !26;
+        condition_v35 = llvm.icmp control_v31 <NE> zero_v34 : builtin.integer i1 !27;
+        llvm.cond_br if condition_v35 ^slice_block11v1() else ^fresh_block12v1()
+
+      ^slice_block11v1():
+        scalar_a_v36 = builtin.constant <builtin.integer <7: i64>> : builtin.integer i64 !28;
+        view_v130 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !29;
+        memref.generate view_v130
+        {
+          ^entry_block30v1(v131: index.index , v132: index.index ):
+            memref.yield scalar_a_v36
+        };
+        llvm.br ^merge_block10v3(view_v130)
+
+      ^fresh_block12v1():
+        scalar_v38 = builtin.constant <builtin.integer <99: i64>> : builtin.integer i64 !30;
+        new_tensor_v133 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !31;
+        memref.generate new_tensor_v133
+        {
+          ^entry_block31v1(v134: index.index , v135: index.index ):
+            memref.yield scalar_v38
+        };
+        llvm.br ^merge_block10v3(new_tensor_v133)
+
+      ^merge_block10v3(selected_v40: memref.ranked <2x2 : builtin.integer i64>) !32:
+        flat_v136 = memref.reshape selected_v40 : memref.ranked <4 : builtin.integer i64> !33;
+        index_v42 = index.from_integer position_v32 : index.index  !34;
+        value_v137 = memref.load flat_v136[index_v42] : builtin.integer i64 !35;
+        llvm.return value_v137
+    };
+    llvm.func @reshape_two_targets: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block9v5(source_p_v44: llvm.ptr (0), control_v45: builtin.integer i64, position_v46: builtin.integer i64) !36:
+        source_v47 = llvm.load source_p_v44  : memref.ranked <3x4 : builtin.integer i64> !37;
+        slice_v138 = memref.subview source_v47 [0, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !38;
+        zero_v49 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !39;
+        has_slice_v50 = llvm.icmp control_v45 <NE> zero_v49 : builtin.integer i1 !40;
+        llvm.cond_br if has_slice_v50 ^dispatch_block15v1() else ^other_block17v1()
+
+      ^dispatch_block15v1():
+        one_v51 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !41;
+        to_a_v52 = llvm.icmp control_v45 <EQ> one_v51 : builtin.integer i1 !42;
+        v168 = memref.cast slice_v138 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+        llvm.cond_br if to_a_v52 ^a_block14v3(v168) else ^b_block13v5(slice_v138)
+
+      ^other_block17v1():
+        offset_v53 = index.from_integer control_v45 : index.index  !43;
+        other_slice_v139 = memref.subview source_v47 [0, offset_v53] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>> !44;
+        llvm.br ^a_block14v3(other_slice_v139)
+
+      ^a_block14v3(selected_v55: memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>) !45:
+        v140 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v140 <- selected_v55;
+        flat_v141 = memref.reshape v140 : memref.ranked <4 : builtin.integer i64> !46;
+        index_v57 = index.from_integer position_v46 : index.index  !47;
+        value_v142 = memref.load flat_v141[index_v57] : builtin.integer i64 !48;
+        llvm.return value_v142
+
+      ^b_block13v5(exact_v59: memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>>) !49:
+        v143 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v143 <- exact_v59;
+        flat_b_v144 = memref.reshape v143 : memref.ranked <4 : builtin.integer i64> !50;
+        index_b_v61 = index.from_integer position_v46 : index.index  !51;
+        value_b_v145 = memref.load flat_b_v144[index_b_v61] : builtin.integer i64 !52;
+        llvm.return value_b_v145
+    };
+    llvm.func @reshape_two_static_targets: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block16v3(source_p_v63: llvm.ptr (0), control_v64: builtin.integer i64, position_v65: builtin.integer i64) !53:
+        source_v66 = llvm.load source_p_v63  : memref.ranked <3x4 : builtin.integer i64> !54;
+        slice_v146 = memref.subview source_v66 [0, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !55;
+        zero_v68 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !56;
+        has_slice_v69 = llvm.icmp control_v64 <NE> zero_v68 : builtin.integer i1 !57;
+        llvm.cond_br if has_slice_v69 ^dispatch_block20v1() else ^other_block22v1()
+
+      ^dispatch_block20v1():
+        one_v70 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !58;
+        to_a_v71 = llvm.icmp control_v64 <EQ> one_v70 : builtin.integer i1 !59;
+        v169 = memref.cast slice_v146 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+        llvm.cond_br if to_a_v71 ^a_block19v3(v169) else ^b_block18v5(slice_v146)
+
+      ^other_block22v1():
+        offset_v72 = index.from_integer control_v64 : index.index  !60;
+        other_slice_v147 = memref.subview source_v66 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 0>> !61;
+        v170 = memref.cast other_slice_v147 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+        llvm.br ^a_block19v3(v170)
+
+      ^a_block19v3(selected_v74: memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>) !62:
+        v148 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v148 <- selected_v74;
+        flat_v149 = memref.reshape v148 : memref.ranked <4 : builtin.integer i64> !63;
+        index_v76 = index.from_integer position_v65 : index.index  !64;
+        value_v150 = memref.load flat_v149[index_v76] : builtin.integer i64 !65;
+        llvm.return value_v150
+
+      ^b_block18v5(exact_v78: memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>>) !66:
+        v151 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v151 <- exact_v78;
+        flat_b_v152 = memref.reshape v151 : memref.ranked <4 : builtin.integer i64> !67;
+        index_b_v80 = index.from_integer position_v65 : index.index  !68;
+        value_b_v153 = memref.load flat_b_v152[index_b_v80] : builtin.integer i64 !69;
+        llvm.return value_b_v153
+    };
+    llvm.func @reshape_loop: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block21v3(source_p_v82: llvm.ptr (0), control_v83: builtin.integer i64, position_v84: builtin.integer i64) !70:
+        source_v85 = llvm.load source_p_v82  : memref.ranked <3x4 : builtin.integer i64> !71;
+        scalar_v86 = builtin.constant <builtin.integer <99: i64>> : builtin.integer i64 !72;
+        initial_v154 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !73;
+        memref.generate initial_v154
+        {
+          ^entry_block32v1(v155: index.index , v156: index.index ):
+            memref.yield scalar_v86
+        };
+        zero_v88 = index.constant <index.constant 0> : index.index  !74;
+        one_v89 = index.constant <index.constant 1> : index.index  !75;
+        iterations_v90 = index.from_integer control_v83 : index.index  !76;
+        v171 = memref.cast initial_v154 : memref.ranked <2x2 : builtin.integer i64, strided<[?, 1], offset: ?>>;
+        selected_v91 = cf.for zero_v88 to iterations_v90 step one_v89 (v171) 
+        {
+          ^body_block23v1(i_v92: index.index , carried_v93: memref.ranked <2x2 : builtin.integer i64, strided<[?, 1], offset: ?>>) !77:
+            view_v157 = memref.subview source_v85 [0, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !78;
+            v172 = memref.cast view_v157 : memref.ranked <2x2 : builtin.integer i64, strided<[?, 1], offset: ?>>;
+            cf.yield v172
+        }
+ !79;
+        v158 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v158 <- selected_v91;
+        flat_v159 = memref.reshape v158 : memref.ranked <4 : builtin.integer i64> !80;
+        index_v96 = index.from_integer position_v84 : index.index  !81;
+        value_v160 = memref.load flat_v159[index_v96] : builtin.integer i64 !82;
+        llvm.return value_v160
+    };
+    llvm.func @reshape_entry: llvm.func <builtin.integer i64(memref.ranked <2x2 : builtin.integer i64>, builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block24v1(source_v98: memref.ranked <2x2 : builtin.integer i64>, position_v99: builtin.integer i64) !83:
+        flat_v161 = memref.reshape source_v98 : memref.ranked <4 : builtin.integer i64> !84;
+        index_v101 = index.from_integer position_v99 : index.index  !85;
+        value_v162 = memref.load flat_v161[index_v101] : builtin.integer i64 !86;
+        llvm.return value_v162
+    };
+    llvm.func @return_slice: llvm.func <memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>>(llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block25v1(source_p_v103: llvm.ptr (0)) !87:
+        source_v104 = llvm.load source_p_v103  : memref.ranked <3x4 : builtin.integer i64> !88;
+        selected_v163 = memref.subview source_v104 [0, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !89;
+        llvm.return selected_v163
+    };
+    llvm.func @return_merged: llvm.func <memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>(llvm.ptr (0), builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block26v1(source_p_v106: llvm.ptr (0), control_v107: builtin.integer i64) !90:
+        source_v108 = llvm.load source_p_v106  : memref.ranked <3x4 : builtin.integer i64> !91;
+        zero_v109 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !92;
+        condition_v110 = llvm.icmp control_v107 <NE> zero_v109 : builtin.integer i1 !93;
+        llvm.cond_br if condition_v110 ^first_block29v1() else ^second_block27v3()
+
+      ^first_block29v1():
+        first_slice_v164 = memref.subview source_v108 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 0>> !94;
+        v173 = memref.cast first_slice_v164 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+        llvm.return v173
+
+      ^second_block27v3():
+        second_slice_v165 = memref.subview source_v108 [1, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 5>> !95;
+        v174 = memref.cast second_slice_v165 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
+        llvm.return v174
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [source_p, control, position]]
+!1 = [builtin_given_names = builtin.given_names [source]]
+!2 = [builtin_given_names = builtin.given_names [selected]]
+!3 = [builtin_given_names = builtin.given_names [flat]]
+!4 = [builtin_given_names = builtin.given_names [index]]
+!5 = [builtin_given_names = builtin.given_names [value]]
+!6 = [builtin_given_names = builtin.given_names [source_p, control, position]]
+!7 = [builtin_given_names = builtin.given_names [source]]
+!8 = [builtin_given_names = builtin.given_names [rows]]
+!9 = [builtin_given_names = builtin.given_names [selected]]
+!10 = [builtin_given_names = builtin.given_names [flat]]
+!11 = [builtin_given_names = builtin.given_names [index]]
+!12 = [builtin_given_names = builtin.given_names [value]]
+!13 = [builtin_given_names = builtin.given_names [source_p, control, position]]
+!14 = [builtin_given_names = builtin.given_names [source]]
+!15 = [builtin_given_names = builtin.given_names [zero]]
+!16 = [builtin_given_names = builtin.given_names [condition]]
+!17 = [builtin_given_names = builtin.given_names [view]]
+!18 = [builtin_given_names = builtin.given_names [scalar]]
+!19 = [builtin_given_names = builtin.given_names [new_tensor]]
+!20 = [builtin_given_names = builtin.given_names [selected]]
+!21 = [builtin_given_names = builtin.given_names [flat]]
+!22 = [builtin_given_names = builtin.given_names [index]]
+!23 = [builtin_given_names = builtin.given_names [value]]
+!24 = [builtin_given_names = builtin.given_names [source_p, control, position]]
+!25 = [builtin_given_names = builtin.given_names [source]]
+!26 = [builtin_given_names = builtin.given_names [zero]]
+!27 = [builtin_given_names = builtin.given_names [condition]]
+!28 = [builtin_given_names = builtin.given_names [scalar_a]]
+!29 = [builtin_given_names = builtin.given_names [view]]
+!30 = [builtin_given_names = builtin.given_names [scalar]]
+!31 = [builtin_given_names = builtin.given_names [new_tensor]]
+!32 = [builtin_given_names = builtin.given_names [selected]]
+!33 = [builtin_given_names = builtin.given_names [flat]]
+!34 = [builtin_given_names = builtin.given_names [index]]
+!35 = [builtin_given_names = builtin.given_names [value]]
+!36 = [builtin_given_names = builtin.given_names [source_p, control, position]]
+!37 = [builtin_given_names = builtin.given_names [source]]
+!38 = [builtin_given_names = builtin.given_names [slice]]
+!39 = [builtin_given_names = builtin.given_names [zero]]
+!40 = [builtin_given_names = builtin.given_names [has_slice]]
+!41 = [builtin_given_names = builtin.given_names [one]]
+!42 = [builtin_given_names = builtin.given_names [to_a]]
+!43 = [builtin_given_names = builtin.given_names [offset]]
+!44 = [builtin_given_names = builtin.given_names [other_slice]]
+!45 = [builtin_given_names = builtin.given_names [selected]]
+!46 = [builtin_given_names = builtin.given_names [flat]]
+!47 = [builtin_given_names = builtin.given_names [index]]
+!48 = [builtin_given_names = builtin.given_names [value]]
+!49 = [builtin_given_names = builtin.given_names [exact]]
+!50 = [builtin_given_names = builtin.given_names [flat_b]]
+!51 = [builtin_given_names = builtin.given_names [index_b]]
+!52 = [builtin_given_names = builtin.given_names [value_b]]
+!53 = [builtin_given_names = builtin.given_names [source_p, control, position]]
+!54 = [builtin_given_names = builtin.given_names [source]]
+!55 = [builtin_given_names = builtin.given_names [slice]]
+!56 = [builtin_given_names = builtin.given_names [zero]]
+!57 = [builtin_given_names = builtin.given_names [has_slice]]
+!58 = [builtin_given_names = builtin.given_names [one]]
+!59 = [builtin_given_names = builtin.given_names [to_a]]
+!60 = [builtin_given_names = builtin.given_names [offset]]
+!61 = [builtin_given_names = builtin.given_names [other_slice]]
+!62 = [builtin_given_names = builtin.given_names [selected]]
+!63 = [builtin_given_names = builtin.given_names [flat]]
+!64 = [builtin_given_names = builtin.given_names [index]]
+!65 = [builtin_given_names = builtin.given_names [value]]
+!66 = [builtin_given_names = builtin.given_names [exact]]
+!67 = [builtin_given_names = builtin.given_names [flat_b]]
+!68 = [builtin_given_names = builtin.given_names [index_b]]
+!69 = [builtin_given_names = builtin.given_names [value_b]]
+!70 = [builtin_given_names = builtin.given_names [source_p, control, position]]
+!71 = [builtin_given_names = builtin.given_names [source]]
+!72 = [builtin_given_names = builtin.given_names [scalar]]
+!73 = [builtin_given_names = builtin.given_names [initial]]
+!74 = [builtin_given_names = builtin.given_names [zero]]
+!75 = [builtin_given_names = builtin.given_names [one]]
+!76 = [builtin_given_names = builtin.given_names [iterations]]
+!77 = [builtin_given_names = builtin.given_names [i, carried]]
+!78 = [builtin_given_names = builtin.given_names [view]]
+!79 = [builtin_given_names = builtin.given_names [selected]]
+!80 = [builtin_given_names = builtin.given_names [flat]]
+!81 = [builtin_given_names = builtin.given_names [index]]
+!82 = [builtin_given_names = builtin.given_names [value]]
+!83 = [builtin_given_names = builtin.given_names [source, position]]
+!84 = [builtin_given_names = builtin.given_names [flat]]
+!85 = [builtin_given_names = builtin.given_names [index]]
+!86 = [builtin_given_names = builtin.given_names [value]]
+!87 = [builtin_given_names = builtin.given_names [source_p]]
+!88 = [builtin_given_names = builtin.given_names [source]]
+!89 = [builtin_given_names = builtin.given_names [selected]]
+!90 = [builtin_given_names = builtin.given_names [source_p, control]]
+!91 = [builtin_given_names = builtin.given_names [source]]
+!92 = [builtin_given_names = builtin.given_names [zero]]
+!93 = [builtin_given_names = builtin.given_names [condition]]
+!94 = [builtin_given_names = builtin.given_names [first_slice]]
+!95 = [builtin_given_names = builtin.given_names [second_slice]]

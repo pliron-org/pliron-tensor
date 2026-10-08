@@ -22,7 +22,7 @@ use pliron::{
     irbuild::{
         dialect_conversion::{DialectConversionRewriter, OperandsInfo},
         inserter::{Inserter, OpInsertionPoint},
-        rewriter::{Rewriter, ScopedRewriter},
+        rewriter::Rewriter,
     },
     linked_list::ContainsLinkedList,
     location::Located,
@@ -42,7 +42,8 @@ use pliron_common_dialects::{
     index::ops::IndexConstantOp,
 };
 use pliron_llvm::ops::{
-    FPExtOp, FPToSIOp, FPToUIOp, FPTruncOp, FuncOp, SExtOp, SIToFPOp, TruncOp, UIToFPOp, ZExtOp,
+    FPExtOp, FPToSIOp, FPToUIOp, FPTruncOp, FuncOp, ReturnOp, SExtOp, SIToFPOp, TruncOp, UIToFPOp,
+    ZExtOp,
 };
 use pliron_llvm::{
     attributes::FastmathFlagsAttr,
@@ -53,7 +54,7 @@ use crate::{
     memref::{
         self, ToMemrefType,
         attributes::DenseElementsAttr,
-        descriptor,
+        layout::{MemrefLayout, subview_layout},
         op_interfaces::{
             DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface, ReshapeOpInterface,
         },
@@ -81,7 +82,7 @@ use crate::{
 #[type_interface_impl]
 impl ToMemrefType for RankedTensorType {
     fn convert(&self, ctx: &Context) -> Result<TypeHandle> {
-        let memref_ty = RankedMemrefType::get(ctx, self.element_type(), self.shape().clone());
+        let memref_ty = RankedMemrefType::get(ctx, self.element_type(), self.shape().clone(), None);
         Ok(memref_ty.into())
     }
 }
@@ -651,7 +652,13 @@ impl BufferizableOpInterface for ElementwiseCastOp {
             .iter()
             .enumerate()
             .filter(|(_, dim)| matches!(dim, Dimension::Dynamic))
-            .map(|(i, _)| descriptor::unpack_size(ctx, rewriter, input, i))
+            .map(|(i, _)| {
+                let index = IndexConstantOp::new(ctx, i);
+                rewriter.append_op(ctx, &index);
+                let dim = memref::ops::DimOp::new(ctx, input, index.get_result(ctx));
+                rewriter.append_op(ctx, &dim);
+                dim.get_result(ctx)
+            })
             .collect::<Vec<_>>();
         let alloc = bufferizer_state
             .tmm
@@ -781,22 +788,23 @@ trait ElementWiseBinaryTensorOpToMemref: ElementWiseBinaryTensorOpInterface {
 
         let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
         let elem_ty = result_ty.deref(ctx).element_type();
-        // Based on the operand shapes, it is possible that the result shape can be inferred
-        // to have more static dimensions than what we know with `result_ty` above.
-        let compatible_shape = self.compatible_shape(ctx);
-        let dynamic_dim_operands = compatible_shape
+        let result_shape = result_ty.deref(ctx).shape().clone();
+        let dynamic_dim_operands = result_shape
             .iter()
             .enumerate()
             .filter_map(|(i, dim)| {
                 if let Dimension::Dynamic = dim {
-                    // Get the dynamic operands from the memref descriptor of the first operand.
-                    Some(descriptor::unpack_size(ctx, rewriter, lhs, i))
+                    let index = IndexConstantOp::new(ctx, i);
+                    rewriter.append_op(ctx, &index);
+                    let dim = memref::ops::DimOp::new(ctx, lhs, index.get_result(ctx));
+                    rewriter.append_op(ctx, &dim);
+                    Some(dim.get_result(ctx))
                 } else {
                     None
                 }
             })
             .collect::<Vec<_>>();
-        let result_ty = RankedMemrefType::get(ctx, elem_ty, compatible_shape);
+        let result_ty = RankedMemrefType::get(ctx, elem_ty, result_shape, None);
 
         let alloc =
             bufferizer_state
@@ -938,6 +946,15 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
         None
     }
 
+    fn result_layout(
+        &self,
+        _ctx: &Context,
+        _result: Value,
+        _operand_layout: &dyn Fn(Use<Value>) -> MemrefLayout,
+    ) -> MemrefLayout {
+        None
+    }
+
     fn rewrite(
         &self,
         ctx: &mut Context,
@@ -952,9 +969,9 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
     }
 }
 
-/// Bufferizes tensor loop-carried values in place by changing the initial
-/// value, block argument, and result to the same memref type. The loop itself
-/// remains a `cf.for`:
+/// Bufferize loop-carried values in place. The block argument and the result get the
+/// layout inferred from the init and yield values. Casts make the init and yield types agree.
+/// The loop itself remains a `cf.for`:
 ///
 /// ```text
 /// %result = cf.for ... iter_args(%arg = %tensor) -> tensor<4xf32> { ... }
@@ -1011,14 +1028,14 @@ impl BufferizableOpInterface for ForOp {
         _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
-        let iter_args_init = self.get_iter_args_init(ctx);
-        let loop_carried_vars = self.get_loop_carried_variables(ctx);
-        for (block_arg, init_val) in loop_carried_vars.iter().zip(iter_args_init.iter()) {
-            rewriter.set_value_type(ctx, *block_arg, init_val.get_type(ctx));
-        }
-        let results: Vec<Value> = self.get_operation().deref(ctx).results().collect();
-        for (result, init_val) in results.iter().zip(iter_args_init.iter()) {
-            rewriter.set_value_type(ctx, *result, init_val.get_type(ctx));
+        // Layout inference has set the block argument types.
+        // Each result gets that corresponding type.
+        let results: Vec<_> = self.get_operation().deref(ctx).results().collect();
+        for (result, arg) in results
+            .into_iter()
+            .zip(self.get_loop_carried_variables(ctx))
+        {
+            rewriter.set_value_type(ctx, result, arg.get_type(ctx));
         }
         Ok(())
     }
@@ -1084,7 +1101,8 @@ impl BufferizableOpInterface for MatMulOp {
 }
 
 /// Lowers `tensor.batch_matmul` using accumulator aliasing. For every batch
-/// index it takes 2-D views of the three operands and invokes `memref.matmul`.
+/// index it takes rank-reducing 2-D views of the three operands and invokes
+/// `memref.matmul`.
 ///
 /// ```text
 /// %result = tensor.batch_matmul %lhs, %rhs, %accum
@@ -1095,9 +1113,9 @@ impl BufferizableOpInterface for MatMulOp {
 ///
 /// ```text
 /// cf.ndfor %b = 0 to 2 {
-///   %lhs2d   = memref.reshape (memref.subview %lhs[%b, 0, 0] [1, 3, 4])
-///   %rhs2d   = memref.reshape (memref.subview %rhs[%b, 0, 0] [1, 4, 5])
-///   %accum2d = memref.reshape (memref.subview %accum[%b, 0, 0] [1, 3, 5])
+///   %lhs2d   = memref.subview %lhs [%b, 0, 0] [1, 3, 4] [1, 1, 1] drop [0]
+///   %rhs2d   = memref.subview %rhs [%b, 0, 0] [1, 4, 5] [1, 1, 1] drop [0]
+///   %accum2d = memref.subview %accum [%b, 0, 0] [1, 3, 5] [1, 1, 1] drop [0]
 ///   memref.matmul %lhs2d, %rhs2d, %accum2d
 /// }
 /// // %result is replaced by %accum
@@ -1136,286 +1154,106 @@ impl BufferizableOpInterface for BatchMatMulOp {
         _bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
-        use crate::memref::type_interfaces::Dimension;
-
         let lhs = self.get_operation().deref(ctx).get_operand(0);
         let rhs = self.get_operation().deref(ctx).get_operand(1);
         let accum = self.get_operation().deref(ctx).get_operand(2);
-
-        let lhs_memref_ty = TypedHandle::<RankedMemrefType>::from_handle(lhs.get_type(ctx), ctx)
-            .expect("BatchMatMulOp lhs must be a ranked memref after conversion");
-        let rhs_memref_ty = TypedHandle::<RankedMemrefType>::from_handle(rhs.get_type(ctx), ctx)
-            .expect("BatchMatMulOp rhs must be a ranked memref after conversion");
-        let accum_memref_ty =
-            TypedHandle::<RankedMemrefType>::from_handle(accum.get_type(ctx), ctx)
-                .expect("BatchMatMulOp accum must be a ranked memref after conversion");
-
-        let rank = lhs_memref_ty.deref(ctx).rank();
-        let batch_rank = rank - 2;
-
-        let lhs_shape = lhs_memref_ty.deref(ctx).shape().clone();
-        let rhs_shape = rhs_memref_ty.deref(ctx).shape().clone();
-        let elem_ty = accum_memref_ty.deref(ctx).element_type();
-
-        let lhs_sizes = lhs_shape
-            .iter()
-            .enumerate()
-            .map(|(i, dim)| match dim {
-                Dimension::Dynamic => descriptor::unpack_size(ctx, rewriter, lhs, i),
-                Dimension::Static(v) => {
-                    let c = IndexConstantOp::new(ctx, *v);
-                    rewriter.append_op(ctx, &c);
-                    c.get_result(ctx)
-                }
-            })
-            .collect::<Vec<_>>();
-        let rhs_sizes = rhs_shape
-            .iter()
-            .enumerate()
-            .map(|(i, dim)| match dim {
-                Dimension::Dynamic => descriptor::unpack_size(ctx, rewriter, rhs, i),
-                Dimension::Static(v) => {
-                    let c = IndexConstantOp::new(ctx, *v);
-                    rewriter.append_op(ctx, &c);
-                    c.get_result(ctx)
-                }
-            })
-            .collect::<Vec<_>>();
-
-        if batch_rank == 0 {
+        let rank = TypedHandle::<RankedMemrefType>::from_handle(accum.get_type(ctx), ctx)?
+            .deref(ctx)
+            .rank();
+        if rank == 2 {
             let matmul = MemrefMatMulOp::new(ctx, lhs, rhs, accum);
-            rewriter.append_operation(ctx, matmul.get_operation());
+            rewriter.append_op(ctx, &matmul);
             rewriter.replace_operation(ctx, self.get_operation(), matmul.get_operation());
             return Ok(());
         }
+        let batch_rank = rank - 2;
 
-        let const_index_0 = IndexConstantOp::new(ctx, 0);
-        let const_index_1 = IndexConstantOp::new(ctx, 1);
-        rewriter.append_op(ctx, &const_index_0);
-        rewriter.append_op(ctx, &const_index_1);
-
-        let lb0 = const_index_0.get_result(ctx);
-        let step1 = const_index_1.get_result(ctx);
-
-        let batch_ubs = (0..batch_rank).map(|i| lhs_sizes[i]).collect::<Vec<_>>();
-
-        let ndfor = {
-            let scoped_rewriter = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
-
-            struct State<'a> {
-                rewriter: ScopedRewriter<'a>,
-                lhs: Value,
-                rhs: Value,
-                accum: Value,
-                lhs_shape: Vec<Dimension>,
-                rhs_shape: Vec<Dimension>,
-                lhs_sizes: Vec<Value>,
-                rhs_sizes: Vec<Value>,
-                rank: usize,
-                batch_rank: usize,
-                elem_ty: TypeHandle,
-            }
-
-            let mut state = State {
-                rewriter: scoped_rewriter,
-                lhs,
-                rhs,
-                accum,
-                lhs_shape,
-                rhs_shape,
-                lhs_sizes,
-                rhs_sizes,
-                rank,
-                batch_rank,
-                elem_ty,
-            };
-
-            NDForOp::new(
-                ctx,
-                vec![lb0; batch_rank],
-                batch_ubs,
-                vec![step1; batch_rank],
-                |ctx, state, inserter, indices| {
-                    let rewriter = &mut state.rewriter;
-                    rewriter.set_insertion_point(inserter.get_insertion_point());
-
-                    let dim_to_size = |dim: &Dimension, size_val: Value| match dim {
-                        Dimension::Static(v) => SliceParam::Static(*v),
-                        Dimension::Dynamic => SliceParam::Dynamic(size_val),
-                    };
-
-                    let one_sizes = vec![SliceParam::Static(1); state.batch_rank];
-                    let zero_offsets = vec![SliceParam::Static(0); 2];
-                    let unit_steps = vec![SliceParam::Static(1); state.rank];
-
-                    let lhs_m_dim = dim_to_size(
-                        &state.lhs_shape[state.rank - 2],
-                        state.lhs_sizes[state.rank - 2],
-                    );
-                    let lhs_k_dim = dim_to_size(
-                        &state.lhs_shape[state.rank - 1],
-                        state.lhs_sizes[state.rank - 1],
-                    );
-                    let rhs_k_dim = dim_to_size(
-                        &state.rhs_shape[state.rank - 2],
-                        state.rhs_sizes[state.rank - 2],
-                    );
-                    let rhs_n_dim = dim_to_size(
-                        &state.rhs_shape[state.rank - 1],
-                        state.rhs_sizes[state.rank - 1],
-                    );
-
-                    let mut lhs_offsets = indices
-                        .iter()
-                        .copied()
-                        .map(SliceParam::Dynamic)
-                        .collect::<Vec<_>>();
-                    lhs_offsets.extend(zero_offsets.clone());
-                    let mut lhs_sizes = one_sizes.clone();
-                    lhs_sizes.push(lhs_m_dim.clone());
-                    lhs_sizes.push(lhs_k_dim.clone());
-
-                    let lhs_subview = MemrefSubviewOp::new(
-                        ctx,
-                        state.lhs,
-                        lhs_offsets,
-                        lhs_sizes,
-                        unit_steps.clone(),
-                    );
-                    rewriter.append_op(ctx, &lhs_subview);
-
-                    let mut rhs_offsets = indices
-                        .iter()
-                        .copied()
-                        .map(SliceParam::Dynamic)
-                        .collect::<Vec<_>>();
-                    rhs_offsets.extend(zero_offsets.clone());
-                    let mut rhs_sizes = one_sizes.clone();
-                    rhs_sizes.push(rhs_k_dim.clone());
-                    rhs_sizes.push(rhs_n_dim.clone());
-
-                    let rhs_subview = MemrefSubviewOp::new(
-                        ctx,
-                        state.rhs,
-                        rhs_offsets,
-                        rhs_sizes,
-                        unit_steps.clone(),
-                    );
-                    rewriter.append_op(ctx, &rhs_subview);
-
-                    let mut accum_offsets = indices
-                        .iter()
-                        .copied()
-                        .map(SliceParam::Dynamic)
-                        .collect::<Vec<_>>();
-                    accum_offsets.extend(zero_offsets);
-                    let mut accum_sizes = one_sizes;
-                    accum_sizes.push(lhs_m_dim.clone());
-                    accum_sizes.push(rhs_n_dim.clone());
-
-                    let accum_subview = MemrefSubviewOp::new(
-                        ctx,
-                        state.accum,
-                        accum_offsets,
-                        accum_sizes,
-                        unit_steps,
-                    );
-                    rewriter.append_op(ctx, &accum_subview);
-
-                    let m_dim = match &lhs_m_dim {
-                        SliceParam::Static(v) => Dimension::Static(*v),
-                        SliceParam::Dynamic(_) => Dimension::Dynamic,
-                    };
-                    let k_dim = match &lhs_k_dim {
-                        SliceParam::Static(v) => Dimension::Static(*v),
-                        SliceParam::Dynamic(_) => Dimension::Dynamic,
-                    };
-                    let n_dim = match &rhs_n_dim {
-                        SliceParam::Static(v) => Dimension::Static(*v),
-                        SliceParam::Dynamic(_) => Dimension::Dynamic,
-                    };
-
-                    let lhs_2d_ty = RankedMemrefType::get(
-                        ctx,
-                        state.elem_ty,
-                        vec![m_dim.clone(), k_dim.clone()],
-                    );
-                    let rhs_2d_ty = RankedMemrefType::get(
-                        ctx,
-                        state.elem_ty,
-                        vec![k_dim.clone(), n_dim.clone()],
-                    );
-                    let accum_2d_ty = RankedMemrefType::get(
-                        ctx,
-                        state.elem_ty,
-                        vec![m_dim.clone(), n_dim.clone()],
-                    );
-
-                    let dyn_value = |p: &SliceParam| match p {
-                        SliceParam::Dynamic(v) => Some(*v),
-                        SliceParam::Static(_) => None,
-                    };
-
-                    let mut lhs_2d_dyn = Vec::new();
-                    if let Some(v) = dyn_value(&lhs_m_dim) {
-                        lhs_2d_dyn.push(v);
-                    }
-                    if let Some(v) = dyn_value(&lhs_k_dim) {
-                        lhs_2d_dyn.push(v);
-                    }
-
-                    let mut rhs_2d_dyn = Vec::new();
-                    if let Some(v) = dyn_value(&rhs_k_dim) {
-                        rhs_2d_dyn.push(v);
-                    }
-                    if let Some(v) = dyn_value(&rhs_n_dim) {
-                        rhs_2d_dyn.push(v);
-                    }
-
-                    let mut accum_2d_dyn = Vec::new();
-                    if let Some(v) = dyn_value(&lhs_m_dim) {
-                        accum_2d_dyn.push(v);
-                    }
-                    if let Some(v) = dyn_value(&rhs_n_dim) {
-                        accum_2d_dyn.push(v);
-                    }
-
-                    let lhs_2d = MemrefReshapeOp::new(
-                        ctx,
-                        lhs_subview.get_result(ctx),
-                        lhs_2d_dyn,
-                        lhs_2d_ty,
-                    );
-                    rewriter.append_op(ctx, &lhs_2d);
-
-                    let rhs_2d = MemrefReshapeOp::new(
-                        ctx,
-                        rhs_subview.get_result(ctx),
-                        rhs_2d_dyn,
-                        rhs_2d_ty,
-                    );
-                    rewriter.append_op(ctx, &rhs_2d);
-
-                    let accum_2d = MemrefReshapeOp::new(
-                        ctx,
-                        accum_subview.get_result(ctx),
-                        accum_2d_dyn,
-                        accum_2d_ty,
-                    );
-                    rewriter.append_op(ctx, &accum_2d);
-
-                    let matmul = MemrefMatMulOp::new(
-                        ctx,
-                        lhs_2d.get_result(ctx),
-                        rhs_2d.get_result(ctx),
-                        accum_2d.get_result(ctx),
-                    );
-                    rewriter.append_operation(ctx, matmul.get_operation());
-                },
-                &mut state,
-            )
+        // Get the size of a dimension. A dynamic size is read with `memref.dim`.
+        fn dim_size(
+            ctx: &mut Context,
+            rewriter: &mut DialectConversionRewriter,
+            source: Value,
+            dim: usize,
+        ) -> Result<(SliceParam, Value)> {
+            let ty = TypedHandle::<RankedMemrefType>::from_handle(source.get_type(ctx), ctx)?;
+            let size = ty.deref(ctx).shape()[dim].clone();
+            Ok(match size {
+                Dimension::Static(v) => {
+                    let constant = IndexConstantOp::new(ctx, v);
+                    rewriter.append_op(ctx, &constant);
+                    (SliceParam::Static(v), constant.get_result(ctx))
+                }
+                Dimension::Dynamic => {
+                    let index = IndexConstantOp::new(ctx, dim);
+                    rewriter.append_op(ctx, &index);
+                    let dim_op = memref::ops::DimOp::new(ctx, source, index.get_result(ctx));
+                    rewriter.append_op(ctx, &dim_op);
+                    let size = dim_op.get_result(ctx);
+                    (SliceParam::Dynamic(size), size)
+                }
+            })
+        }
+        // Get the subview sizes of one batch
+        let mut batch_sizes = |ctx: &mut Context, source: Value| -> Result<Vec<SliceParam>> {
+            // 1 for each batch dimension,
+            let mut sizes = vec![SliceParam::Static(1); batch_rank];
+            // then the two matrix sizes.
+            sizes.push(dim_size(ctx, rewriter, source, rank - 2)?.0);
+            sizes.push(dim_size(ctx, rewriter, source, rank - 1)?.0);
+            Ok(sizes)
         };
+        let lhs_sizes = batch_sizes(ctx, lhs)?;
+        let rhs_sizes = batch_sizes(ctx, rhs)?;
+        let accum_sizes = batch_sizes(ctx, accum)?;
+        let bounds = (0..batch_rank)
+            .map(|dim| Ok(dim_size(ctx, rewriter, accum, dim)?.1))
+            .collect::<Result<Vec<_>>>()?;
 
+        let zero = IndexConstantOp::new(ctx, 0);
+        let one = IndexConstantOp::new(ctx, 1);
+        rewriter.append_op(ctx, &zero);
+        rewriter.append_op(ctx, &one);
+
+        struct State {
+            operands: [(Value, Vec<SliceParam>); 3],
+            rank: usize,
+        }
+        let mut state = State {
+            operands: [(lhs, lhs_sizes), (rhs, rhs_sizes), (accum, accum_sizes)],
+            rank,
+        };
+        let ndfor = NDForOp::new(
+            ctx,
+            vec![zero.get_result(ctx); batch_rank],
+            bounds,
+            vec![one.get_result(ctx); batch_rank],
+            |ctx, state, inserter, indices| {
+                let mut offsets = indices
+                    .iter()
+                    .copied()
+                    .map(SliceParam::Dynamic)
+                    .collect::<Vec<_>>();
+                offsets.extend([SliceParam::Static(0), SliceParam::Static(0)]);
+                let steps = vec![SliceParam::Static(1); state.rank];
+                // Drop the batch dimensions for the subview
+                let dropped_dims = (0..indices.len()).collect::<Vec<_>>();
+                let [lhs, rhs, accum] = state.operands.clone().map(|(source, sizes)| {
+                    let view = MemrefSubviewOp::new(
+                        ctx,
+                        source,
+                        offsets.clone(),
+                        sizes,
+                        steps.clone(),
+                        dropped_dims.clone(),
+                    );
+                    inserter.append_op(ctx, &view);
+                    view.get_result(ctx)
+                });
+                let matmul = MemrefMatMulOp::new(ctx, lhs, rhs, accum);
+                inserter.append_op(ctx, &matmul);
+            },
+            &mut state,
+        );
         rewriter.append_op(ctx, &ndfor);
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![accum]);
         Ok(())
@@ -1424,6 +1262,7 @@ impl BufferizableOpInterface for BatchMatMulOp {
 
 /// Update a [FuncOp]'s type signature and entry block argument types,
 /// converting any tensor types to their memref equivalents.
+/// Arguments are assumed to have the identity layout. A tensor result gets `result_layout`.
 ///
 /// ```text
 /// llvm.func @map(%arg: tensor<?xf32>) -> tensor<?xf32>
@@ -1434,11 +1273,21 @@ impl BufferizableOpInterface for BatchMatMulOp {
 /// ```text
 /// llvm.func @map(%arg: memref<?xf32>) -> memref<?xf32>
 /// ```
-pub fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
+pub fn lower_func_op_to_llvm(
+    func_op: &FuncOp,
+    ctx: &mut Context,
+    result_layout: MemrefLayout,
+) -> Result<()> {
     // update the function type to convert any tensor types in the signature to memref types.
     let func_ty = func_op.get_type(ctx);
     let res_ty = func_ty.deref(ctx).result_type();
     let res_ty = memref::to_memref_type(res_ty, ctx)?;
+    let res_ty = match res_ty.deref(ctx).downcast_ref::<RankedMemrefType>() {
+        Some(ty) => {
+            RankedMemrefType::get(ctx, ty.element_type(), ty.shape().clone(), result_layout).into()
+        }
+        None => res_ty,
+    };
     let arg_tys = func_ty.deref(ctx).arg_types();
     let arg_tys = arg_tys
         .iter()
@@ -1498,10 +1347,27 @@ impl BufferizableOpInterface for FuncOp {
         &self,
         ctx: &mut Context,
         _rewriter: &mut DialectConversionRewriter,
-        _bufferizer_state: &mut BufferizerState,
+        bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
-        lower_func_op_to_llvm(self, ctx)
+        // The result gets the merged layout of the returned values.
+        let result_ty = self.get_type(ctx).deref(ctx).result_type();
+        let shape = type_cast::<dyn ShapedType>(&*result_ty.deref(ctx))
+            .map(|ty| ty.shape().clone())
+            .unwrap_or_default();
+        let result_layout = {
+            let region = self.get_operation().deref(ctx).get_region(0);
+            let region = region.deref(ctx);
+            region
+                .iter(ctx)
+                .filter_map(|block| block.deref(ctx).get_terminator(ctx))
+                .filter_map(|op| Operation::get_op::<ReturnOp>(op, ctx))
+                .filter_map(|ret| ret.retval(ctx))
+                .filter_map(|value| bufferizer_state.layouts.get(&value).cloned())
+                .reduce(|a, b| memref::layout::merge(&a, &b, &shape))
+                .unwrap_or(None)
+        };
+        lower_func_op_to_llvm(self, ctx, result_layout)
     }
 }
 
@@ -1545,6 +1411,33 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
         None
     }
 
+    fn result_layout(
+        &self,
+        ctx: &Context,
+        _result: Value,
+        operand_layout: &dyn Fn(Use<Value>) -> MemrefLayout,
+    ) -> MemrefLayout {
+        let source = self.source(ctx).get_type(ctx);
+        let source = source.deref(ctx);
+        let shape = type_cast::<dyn ShapedType>(&*source)
+            .expect("Slice source must be shaped")
+            .shape();
+        let dimensions = |params: Vec<memref::ops::SliceParam>| {
+            params
+                .iter()
+                .map(memref::ops::SliceParam::dimension)
+                .collect::<Vec<_>>()
+        };
+        subview_layout(
+            shape,
+            &operand_layout(self.get_operation().deref(ctx).get_operand_as_use(0)),
+            &dimensions(self.slice_offsets(ctx)),
+            &dimensions(self.slice_sizes(ctx)),
+            &dimensions(self.slice_steps(ctx)),
+            &[],
+        )
+    }
+
     fn rewrite(
         &self,
         ctx: &mut Context,
@@ -1558,6 +1451,7 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
             self.slice_offsets(ctx),
             self.slice_sizes(ctx),
             self.slice_steps(ctx),
+            vec![],
         );
         rewriter.append_op(ctx, &subview);
         rewriter.replace_operation(ctx, self.get_operation(), subview.get_operation());
@@ -1621,6 +1515,7 @@ impl BufferizableOpInterface for TensorInsertSliceOp {
             self.slice_offsets(ctx),
             self.slice_sizes(ctx),
             self.slice_steps(ctx),
+            vec![],
         );
         rewriter.append_op(ctx, &view);
 
@@ -1632,7 +1527,8 @@ impl BufferizableOpInterface for TensorInsertSliceOp {
     }
 }
 
-/// A tensor reshape becomes a memref view with the converted result type:
+/// A tensor reshape gives an identity memref view.
+/// A non-identity source is first copied into an identity buffer.
 ///
 /// ```text
 /// %matrix = tensor.reshape %vector : tensor<6xf32> to tensor<2x3xf32>
@@ -1654,11 +1550,12 @@ impl BufferizableOpInterface for TensorReshapeOp {
     }
 
     fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
+        // This declared alias will not exist if [Self::rewrite] introduces a copy.
         let operand = self.get_operation().deref(ctx).get_operand_as_use(0);
         vec![Alias {
             operand,
             result: self.get_result(ctx),
-            kind: AliasKind::Must,
+            kind: AliasKind::May,
             relation: BufferRelation::Equivalent,
         }]
     }
@@ -1671,20 +1568,39 @@ impl BufferizableOpInterface for TensorReshapeOp {
         None
     }
 
+    fn result_layout(
+        &self,
+        _ctx: &Context,
+        _result: Value,
+        _operand_layout: &dyn Fn(Use<Value>) -> MemrefLayout,
+    ) -> MemrefLayout {
+        None
+    }
+
     fn rewrite(
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _bufferizer_state: &mut BufferizerState,
+        bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
-        let memref_reshape = MemrefReshapeOp::new(
-            ctx,
-            self.get_source(ctx),
-            self.get_dynamic_dimensions(ctx),
-            result_ty,
-        );
+        let source = self.get_source(ctx);
+        let source_type = TypedHandle::<RankedMemrefType>::from_handle(source.get_type(ctx), ctx)?;
+        let source = if source_type.deref(ctx).layout().is_none() {
+            source
+        } else {
+            // Reshape needs an identity layout source.
+            crate::tensor::bufferize::copy_to_identity_buffer(
+                ctx,
+                rewriter,
+                bufferizer_state.tmm,
+                source,
+                None,
+            )?
+        };
+        let memref_reshape =
+            MemrefReshapeOp::new(ctx, source, self.get_dynamic_dimensions(ctx), result_ty);
         rewriter.append_op(ctx, &memref_reshape);
         rewriter.replace_operation(ctx, self.get_operation(), memref_reshape.get_operation());
         Ok(())

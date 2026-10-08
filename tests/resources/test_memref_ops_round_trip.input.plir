@@ -26,8 +26,12 @@ builtin.module @test_module {
         idx1 = index.constant <index.constant 1> : index.index;
         rows = memref.dim a, idx0 : index.index;
 
-        view = memref.subview a [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64>;
-        dynamic_view = memref.subview a [idx0, idx1] [2, 2] [idx1, idx1] : memref.ranked<2 x 2 : builtin.integer i64>;
+        view = memref.subview a [0, 1] [2, 2] [1, 1] : memref.ranked<2 x 2 : builtin.integer i64, strided<[3, 1], offset: 1>>;
+        dynamic_view = memref.subview a [idx0, idx1] [2, 2] [idx1, idx1] : memref.ranked<2 x 2 : builtin.integer i64, strided<[?, ?], offset: ?>>;
+        row_view = memref.subview a [idx1, 0] [1, 3] [1, 1] drop [0] : memref.ranked<3 : builtin.integer i64, strided<[1], offset: ?>>;
+        cast_view = memref.cast view : memref.ranked<2 x 2 : builtin.integer i64, strided<[?, ?], offset: ?>>;
+        scalar = memref.alloc : memref.ranked< : builtin.integer i64>;
+        scalar_view = memref.cast scalar : memref.ranked< : builtin.integer i64, strided<[], offset: ?>>;
 
         memref.store arg to c[idx0, idx1];
         loaded = memref.load c[idx0, idx1]: builtin.integer i64;
@@ -46,6 +50,7 @@ builtin.module @test_module {
         memref.dealloc c;
         memref.dealloc rhs;
         memref.dealloc accum;
+        memref.dealloc scalar;
         llvm.return loaded
     }
 }

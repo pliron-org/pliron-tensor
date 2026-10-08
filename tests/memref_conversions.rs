@@ -91,8 +91,8 @@ fn test_memref_dim() {
     assert_eq!(const_index(), 16032);
 }
 
-/// `memref.subview`, `memref.copy`, and the `memref.copy + memref.subview +
-/// memref.copy` insertion sequence, lowered to CF / LLVM.
+/// `memref.subview`, `memref.copy`, the `memref.copy + memref.subview +
+/// memref.copy` insertion sequence, and `memref.cast`, lowered to CF / LLVM.
 ///
 /// Every function fills its memrefs with `memref.generate` and returns the element
 /// at the index it is called with.
@@ -135,6 +135,16 @@ fn test_subview_copy_and_insert_slice() {
                 100 + i * 4 + j
             };
             assert_eq!(result, expected, "test_insert_slice({i}, {j}) = {result}");
+        }
+    }
+
+    // Check that a layout cast keeps the runtime descriptor: the view above,
+    // cast to a fully dynamic layout, must read the same elements.
+    let cast = unsafe { lookup_fn::<fn(i64, i64) -> i64>(&jit, "test_cast") };
+    for i in 0..2_i64 {
+        for j in 0..2_i64 {
+            let result = cast(i, j);
+            assert_eq!(result, i * 3 + j + 1, "test_cast({i}, {j}) = {result}");
         }
     }
 }

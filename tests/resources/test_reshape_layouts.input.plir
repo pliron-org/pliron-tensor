@@ -1,0 +1,157 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @reshape_slice: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        selected = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+    };
+    llvm.func @reshape_dynamic_slice: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        rows = index.from_integer control : index.index;
+        selected = tensor.extract_slice source [0, 1] [rows, 2] [1, 1] : tensor.ranked<?x2:builtin.integer i64>;
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+    };
+    llvm.func @reshape_branch: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        condition = llvm.icmp control <NE> zero : builtin.integer i1;
+        llvm.cond_br if condition ^slice() else ^fresh()
+      ^slice():
+        view = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.br ^merge(view)
+      ^fresh():
+        scalar = builtin.constant <builtin.integer <99: i64>> : builtin.integer i64;
+        new_tensor = tensor.splat scalar : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.br ^merge(new_tensor)
+      ^merge(selected: tensor.ranked<2x2:builtin.integer i64>):
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+    };
+    llvm.func @reshape_identity_branch: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        condition = llvm.icmp control <NE> zero : builtin.integer i1;
+        llvm.cond_br if condition ^slice() else ^fresh()
+      ^slice():
+        scalar_a = builtin.constant <builtin.integer <7: i64>> : builtin.integer i64;
+        view = tensor.splat scalar_a : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.br ^merge(view)
+      ^fresh():
+        scalar = builtin.constant <builtin.integer <99: i64>> : builtin.integer i64;
+        new_tensor = tensor.splat scalar : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.br ^merge(new_tensor)
+      ^merge(selected: tensor.ranked<2x2:builtin.integer i64>):
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+    };
+    llvm.func @reshape_two_targets: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        slice = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        has_slice = llvm.icmp control <NE> zero : builtin.integer i1;
+        llvm.cond_br if has_slice ^dispatch() else ^other()
+      ^dispatch():
+        one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+        to_a = llvm.icmp control <EQ> one : builtin.integer i1;
+        llvm.cond_br if to_a ^a(slice) else ^b(slice)
+      ^other():
+        offset = index.from_integer control : index.index;
+        other_slice = tensor.extract_slice source [0, offset] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.br ^a(other_slice)
+      ^a(selected: tensor.ranked<2x2:builtin.integer i64>):
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+      ^b(exact: tensor.ranked<2x2:builtin.integer i64>):
+        flat_b = tensor.reshape exact : tensor.ranked<4:builtin.integer i64>;
+        index_b = index.from_integer position : index.index;
+        value_b = tensor.extract flat_b[index_b] : builtin.integer i64;
+        llvm.return value_b
+    };
+    llvm.func @reshape_two_static_targets: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        slice = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        has_slice = llvm.icmp control <NE> zero : builtin.integer i1;
+        llvm.cond_br if has_slice ^dispatch() else ^other()
+      ^dispatch():
+        one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+        to_a = llvm.icmp control <EQ> one : builtin.integer i1;
+        llvm.cond_br if to_a ^a(slice) else ^b(slice)
+      ^other():
+        offset = index.from_integer control : index.index;
+        other_slice = tensor.extract_slice source [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.br ^a(other_slice)
+      ^a(selected: tensor.ranked<2x2:builtin.integer i64>):
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+      ^b(exact: tensor.ranked<2x2:builtin.integer i64>):
+        flat_b = tensor.reshape exact : tensor.ranked<4:builtin.integer i64>;
+        index_b = index.from_integer position : index.index;
+        value_b = tensor.extract flat_b[index_b] : builtin.integer i64;
+        llvm.return value_b
+    };
+    llvm.func @reshape_loop: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        scalar = builtin.constant <builtin.integer <99: i64>> : builtin.integer i64;
+        initial = tensor.splat scalar : tensor.ranked<2x2:builtin.integer i64>;
+        zero = index.constant <index.constant 0> : index.index;
+        one = index.constant <index.constant 1> : index.index;
+        iterations = index.from_integer control : index.index;
+        selected = cf.for zero to iterations step one (initial) {
+          ^body(i: index.index, carried: tensor.ranked<2x2:builtin.integer i64>):
+            view = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+            cf.yield view
+        };
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+    };
+    llvm.func @reshape_entry: llvm.func <builtin.integer i64 (tensor.ranked<2x2:builtin.integer i64>, builtin.integer i64) variadic = false> [] {
+      ^entry(source: tensor.ranked<2x2:builtin.integer i64>, position: builtin.integer i64):
+        flat = tensor.reshape source : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+    };
+    llvm.func @return_slice: llvm.func <tensor.ranked<2x2:builtin.integer i64> (llvm.ptr(0)) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0)):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        selected = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.return selected
+    };
+    llvm.func @return_merged: llvm.func <tensor.ranked<2x2:builtin.integer i64> (llvm.ptr(0), builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        condition = llvm.icmp control <NE> zero : builtin.integer i1;
+        llvm.cond_br if condition ^first() else ^second()
+      ^first():
+        first_slice = tensor.extract_slice source [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.return first_slice
+      ^second():
+        second_slice = tensor.extract_slice source [1, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.return second_slice
+    }
+}

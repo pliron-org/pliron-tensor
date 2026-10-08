@@ -12,6 +12,12 @@
 //!   memory and the start of the memref).
 //! * The sizes (a rank length'd array) of each dimension of the memref.
 //! * The strides (a rank length'd array) of each dimension of the memref.
+//!
+//! The offset, sizes and strides are:
+//! * `i64` in the LLVM struct of the descriptor.
+//! * [IndexType] values in [Descriptor].
+//!
+//! [pack_descriptor] and the `unpack_*` functions convert between the two types.
 
 use std::num::NonZero;
 
@@ -29,14 +35,16 @@ use pliron::{
     utils::apint::APInt,
     value::Value,
 };
-use pliron_common_dialects::index::ops::IndexConstantOp;
+use pliron_common_dialects::index::{
+    ops::{IndexAddOp, IndexConstantOp, IndexMulOp, IndexToIntegerOp, IntegerToIndexOp},
+    types::IndexType,
+};
 use pliron_llvm::{
     ToLLVMType,
-    attributes::IntegerOverflowFlagsAttr,
-    op_interfaces::IntBinArithOpWithOverflowFlag,
+    op_interfaces::CastOpInterface,
     ops::{
-        AddOp, AllocaOp, ExtractValueOp, GepIndex, GetElementPtrOp, InsertValueOp, LoadOp, MulOp,
-        StoreOp, UndefOp,
+        AllocaOp, ExtractValueOp, GepIndex, GetElementPtrOp, InsertValueOp, LoadOp, StoreOp,
+        UndefOp,
     },
     types::StructType,
 };
@@ -102,12 +110,7 @@ pub fn compute_sizes_strides(
             (Stride::Dynamic(v), Dimension::Static(d)) => {
                 let d_val = IndexConstantOp::new(ctx, *d);
                 inserter.append_op(ctx, &d_val);
-                let next_stride = MulOp::new_with_overflow_flag(
-                    ctx,
-                    v,
-                    d_val.get_result(ctx),
-                    IntegerOverflowFlagsAttr::default(),
-                );
+                let next_stride = IndexMulOp::new(ctx, v, d_val.get_result(ctx));
                 inserter.append_op(ctx, &next_stride);
                 running_stride = Stride::Dynamic(next_stride.get_result(ctx));
                 strides.push(next_stride.get_result(ctx));
@@ -115,23 +118,13 @@ pub fn compute_sizes_strides(
             (Stride::Static(s), Dimension::Dynamic) => {
                 let s_val = IndexConstantOp::new(ctx, s);
                 inserter.append_op(ctx, &s_val);
-                let next_stride = MulOp::new_with_overflow_flag(
-                    ctx,
-                    s_val.get_result(ctx),
-                    *size_val,
-                    IntegerOverflowFlagsAttr::default(),
-                );
+                let next_stride = IndexMulOp::new(ctx, s_val.get_result(ctx), *size_val);
                 inserter.append_op(ctx, &next_stride);
                 running_stride = Stride::Dynamic(next_stride.get_result(ctx));
                 strides.push(next_stride.get_result(ctx));
             }
             (Stride::Dynamic(v), Dimension::Dynamic) => {
-                let next_stride = MulOp::new_with_overflow_flag(
-                    ctx,
-                    v,
-                    *size_val,
-                    IntegerOverflowFlagsAttr::default(),
-                );
+                let next_stride = IndexMulOp::new(ctx, v, *size_val);
                 inserter.append_op(ctx, &next_stride);
                 running_stride = Stride::Dynamic(next_stride.get_result(ctx));
                 strides.push(next_stride.get_result(ctx));
@@ -146,12 +139,46 @@ pub fn compute_sizes_strides(
     (sizes, strides, total_elements)
 }
 
+/// Convert an [IndexType] value to `i64`. A non [IndexType] value is returned as is.
+pub(crate) fn index_to_i64(ctx: &mut Context, inserter: &mut dyn Inserter, value: Value) -> Value {
+    if !value.get_type(ctx).deref(ctx).is::<IndexType>() {
+        return value;
+    }
+    let integer_type = IndexType::get(ctx)
+        .deref(ctx)
+        .convert(ctx)
+        .expect("Index must lower to an integer");
+    let cast = IndexToIntegerOp::new(ctx, value, integer_type);
+    inserter.append_op(ctx, &cast);
+    cast.get_result(ctx)
+}
+
+/// Convert an `i64` value to an [IndexType] value.
+pub(crate) fn i64_to_index(ctx: &mut Context, inserter: &mut dyn Inserter, value: Value) -> Value {
+    assert!(
+        value
+            .get_type(ctx)
+            .deref(ctx)
+            .downcast_ref::<IntegerType>()
+            .is_some_and(|ty| ty.width() == 64 && ty.is_signless()),
+        "A descriptor field must be an i64 value"
+    );
+    let cast = IntegerToIndexOp::new(ctx, value, IndexType::get(ctx).into());
+    inserter.append_op(ctx, &cast);
+    cast.get_result(ctx)
+}
+
 /// Represents the fields of a memref descriptor.
 pub struct Descriptor {
+    /// The pointer that was allocated, and that is freed (`llvm.ptr`).
     pub allocated_ptr: Value,
+    /// The aligned pointer that the offset is added to (`llvm.ptr`).
     pub aligned_ptr: Value,
+    /// The position of the first element, in elements ([IndexType]).
     pub offset: Value,
+    /// The size of each dimension ([IndexType]).
     pub sizes: Vec<Value>,
+    /// The stride of each dimension, in elements ([IndexType]).
     pub strides: Vec<Value>,
 }
 
@@ -202,7 +229,7 @@ pub fn unpack_sizes(
             let size = ExtractValueOp::new(ctx, sizes_arr_val, vec![dim.try_into().unwrap()])
                 .expect("Expected size field in sizes array");
             inserter.append_op(ctx, &size);
-            size.get_result(ctx)
+            i64_to_index(ctx, inserter, size.get_result(ctx))
         })
         .collect()
 }
@@ -233,7 +260,7 @@ pub fn unpack_strides(
             let stride = ExtractValueOp::new(ctx, strides_array_val, vec![dim.try_into().unwrap()])
                 .expect("Expected stride field in strides array");
             inserter.append_op(ctx, &stride);
-            stride.get_result(ctx)
+            i64_to_index(ctx, inserter, stride.get_result(ctx))
         })
         .collect()
 }
@@ -268,7 +295,7 @@ pub fn unpack_offset(ctx: &mut Context, inserter: &mut dyn Inserter, descriptor:
         .expect("Expected offset field in memref descriptor");
 
     inserter.append_op(ctx, &extracter);
-    extracter.get_result(ctx)
+    i64_to_index(ctx, inserter, extracter.get_result(ctx))
 }
 
 /// Unpack / extract the size of a specific dimension from a memref descriptor.
@@ -288,7 +315,7 @@ pub fn unpack_size(
     )
     .expect("Expected size field in sizes array");
     inserter.append_op(ctx, &size);
-    size.get_result(ctx)
+    i64_to_index(ctx, inserter, size.get_result(ctx))
 }
 
 /// Unpack / extract the size of a specific dimension from a memref descriptor,
@@ -322,6 +349,7 @@ pub fn unpack_size_dynamic_dim_idx(
 
     let store_descriptor = StoreOp::new(ctx, descriptor, descriptor_slot_ptr);
     inserter.append_op(ctx, &store_descriptor);
+    let dim_idx = index_to_i64(ctx, inserter, dim_idx);
 
     let size_ptr = GetElementPtrOp::new(
         ctx,
@@ -337,7 +365,7 @@ pub fn unpack_size_dynamic_dim_idx(
 
     let load_size = LoadOp::new(ctx, size_ptr.get_result(ctx), size_elem_ty.into());
     inserter.append_op(ctx, &load_size);
-    load_size.get_result(ctx)
+    i64_to_index(ctx, inserter, load_size.get_result(ctx))
 }
 
 /// Unpack / extract the stride of a specific dimension from a memref descriptor.
@@ -357,7 +385,7 @@ pub fn unpack_stride(
     )
     .expect("Expected stride field in strides array");
     inserter.append_op(ctx, &stride);
-    stride.get_result(ctx)
+    i64_to_index(ctx, inserter, stride.get_result(ctx))
 }
 
 /// Pack the allocated pointer, aligned pointer, offset, sizes, and strides into a memref descriptor.
@@ -394,12 +422,9 @@ pub fn pack_descriptor(
     inserter.append_op(ctx, &aligned_ptr_struct);
 
     // Insert the offset
-    let offset_struct = InsertValueOp::new(
-        ctx,
-        aligned_ptr_struct.get_result(ctx),
-        descriptor.offset,
-        vec![2],
-    );
+    let offset = index_to_i64(ctx, inserter, descriptor.offset);
+    let offset_struct =
+        InsertValueOp::new(ctx, aligned_ptr_struct.get_result(ctx), offset, vec![2]);
     inserter.append_op(ctx, &offset_struct);
 
     // Insert the sizes array
@@ -410,6 +435,7 @@ pub fn pack_descriptor(
     inserter.append_op(ctx, &sizes_array);
     let mut sizes_array = sizes_array.get_result(ctx);
     for (i, size) in descriptor.sizes.into_iter().enumerate() {
+        let size = index_to_i64(ctx, inserter, size);
         let insert_op = InsertValueOp::new(ctx, sizes_array, size, vec![i.try_into().unwrap()]);
         sizes_array = insert_op.get_result(ctx);
         inserter.append_op(ctx, &insert_op);
@@ -425,6 +451,7 @@ pub fn pack_descriptor(
     inserter.append_op(ctx, &strides_array);
     let mut strides_array = strides_array.get_result(ctx);
     for (i, stride) in descriptor.strides.into_iter().enumerate() {
+        let stride = index_to_i64(ctx, inserter, stride);
         let insert_op = InsertValueOp::new(ctx, strides_array, stride, vec![i.try_into().unwrap()]);
         strides_array = insert_op.get_result(ctx);
         inserter.append_op(ctx, &insert_op);
@@ -450,50 +477,26 @@ pub fn get_strided_element_ptr(
     let strides = unpack_strides(ctx, inserter, memref);
     let offset = unpack_offset(ctx, inserter, memref);
 
-    let offsetted_ptr = GetElementPtrOp::new(
-        ctx,
-        base_aligned_ptr,
-        vec![GepIndex::Value(offset)],
-        elem_ty,
-    );
-    inserter.append_op(ctx, &offsetted_ptr);
-    let offsetted_ptr = offsetted_ptr.get_result(ctx);
-    let products: Vec<_> = indices
+    let position = indices
         .into_iter()
         .zip(strides)
-        .map(|(index, stride)| {
-            let index_offset = MulOp::new_with_overflow_flag(
-                ctx,
-                stride,
-                index,
-                IntegerOverflowFlagsAttr::default(),
-            );
-            inserter.append_op(ctx, &index_offset);
-            index_offset.get_result(ctx)
-        })
-        .collect();
-    let indexed_offset = products
-        .into_iter()
-        .reduce(|sum_of_products, product| {
-            let sum = AddOp::new_with_overflow_flag(
-                ctx,
-                product,
-                sum_of_products,
-                IntegerOverflowFlagsAttr::default(),
-            );
+        .fold(offset, |position, (index, stride)| {
+            let product = IndexMulOp::new(ctx, index, stride);
+            inserter.append_op(ctx, &product);
+            let sum = IndexAddOp::new(ctx, position, product.get_result(ctx));
             inserter.append_op(ctx, &sum);
             sum.get_result(ctx)
-        })
-        .expect("Zero rank not handled");
+        });
+    let position = index_to_i64(ctx, inserter, position);
 
-    let final_gep = GetElementPtrOp::new(
+    let element_ptr = GetElementPtrOp::new(
         ctx,
-        offsetted_ptr,
-        vec![GepIndex::Value(indexed_offset)],
+        base_aligned_ptr,
+        vec![GepIndex::Value(position)],
         elem_ty,
     );
-    inserter.append_op(ctx, &final_gep);
-    final_gep.get_result(ctx)
+    inserter.append_op(ctx, &element_ptr);
+    element_ptr.get_result(ctx)
 }
 
 #[cfg(test)]
@@ -534,6 +537,7 @@ mod tests {
             ctx,
             fp32.into(),
             vec![Dimension::Static(4), Dimension::Static(8)],
+            None,
         );
 
         let module = ModuleOp::new(ctx, ident!("test_module"));
@@ -593,6 +597,7 @@ mod tests {
             ctx,
             fp32.into(),
             vec![Dimension::Dynamic, Dimension::Dynamic],
+            None,
         );
 
         let module = ModuleOp::new(ctx, ident!("test_module"));
@@ -632,8 +637,8 @@ mod tests {
                     v1 = index.constant <index.constant 8> : index.index ;
                     v2 = index.constant <index.constant 1> : index.index ;
                     v3 = index.constant <index.constant 1> : index.index ;
-                    v4 = llvm.mul v3, v1 <{nsw=false,nuw=false}>: index.index ;
-                    v5 = llvm.mul v4, v0 <{nsw=false,nuw=false}>: index.index ;
+                    v4 = index.mul v3, v1 : index.index ;
+                    v5 = index.mul v4, v0 : index.index ;
                     llvm.return 
                 }
             }"#]]

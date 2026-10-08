@@ -10,6 +10,7 @@ use expect_test::expect_file;
 use pliron::{
     context::{Context, Ptr},
     location::erase_locations,
+    op::verify_op,
     operation::Operation,
     printable::Printable,
     result::ExpectOk,
@@ -38,6 +39,7 @@ fn bufferize_module<TMM: TensorMemoryManager>(
     parsed_op: Ptr<Operation>,
 ) -> String {
     bufferize(tmm, parsed_op, ctx).expect_ok(ctx);
+    verify_op(Operation::get_op_dyn(parsed_op, ctx).as_ref(), ctx).expect_ok(ctx);
     erase_locations(ctx, parsed_op);
     let after_bufferization = parsed_op.disp(ctx).to_string();
     log::debug!("pliron module after bufferization {}", after_bufferization);
@@ -158,6 +160,21 @@ fn test_broadcast_splat_and_elementwise_cast_from_rust() {
             3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0,
             3.25, 4.5, 5.75, 6.0, 3.25, 4.5, 5.75, 6.0
         ]
+    );
+
+    // A cast with a dynamic dimension must allocate its result with the input's size.
+    let dynamic_data = [1.5f64, 2.5, 3.5, 4.5, 5.5, 6.5];
+    let dynamic_input = input_tensor(&[3, 2], &dynamic_data);
+    let mut dynamic_output = output_tensor::<f32>(&[3, 2]).build_ir_descriptor();
+    let dynamic_cast =
+        unsafe { lookup_fn::<extern "C" fn(*const u8, *mut u8) -> ()>(&jit, "test_dynamic_cast") };
+    dynamic_cast(
+        dynamic_input.build_ir_descriptor().as_ptr(),
+        dynamic_output.as_mut_ptr(),
+    );
+    assert_eq!(
+        unsafe { output_data::<f32>(&dynamic_output, 2) },
+        [1.5, 2.5, 3.5, 4.5, 5.5, 6.5]
     );
 }
 
@@ -771,4 +788,99 @@ fn test_constant_from_rust() {
         unsafe { output_data::<f64>(&splat_res_ir_descr, 2) },
         [1.0f64; 16]
     );
+}
+
+/// Layout inference, cast insertion, and the copy before `tensor.reshape`.
+#[test]
+fn test_reshape_layouts() {
+    let input = include_str!("resources/test_reshape_layouts.input.plir");
+    let ctx = &mut Context::new();
+    let (jit, ir) = compile_and_jit(ctx, &mut MallocFreeTMM, input);
+    assert_module_round_trips(input);
+    assert_module_round_trips(&ir);
+    expect_file!["resources/test_reshape_layouts.expect.plir"].assert_eq(&ir);
+    let values: Vec<i64> = (0..12).collect();
+    let descriptor = input_tensor(&[3, 4], &values).build_ir_descriptor();
+    // A control value, and the four elements of the reshaped tensor.
+    type Case = (i64, [i64; 4]);
+    let cases: [(&str, &[Case]); 7] = [
+        // A non-contiguous slice must be copied to an identity buffer before reshape.
+        ("reshape_slice", &[(0, [1, 2, 5, 6])]),
+        // The identity copy must read a dynamic slice dimension with memref.dim.
+        ("reshape_dynamic_slice", &[(2, [1, 2, 5, 6])]),
+        // A slice merged with an identity buffer must keep the common stride, both edges
+        // must be cast, and reshape must copy the merged value.
+        ("reshape_branch", &[(1, [1, 2, 5, 6]), (0, [99; 4])]),
+        // Two identity branch inputs must merge to identity, with no cast and no reshape copy.
+        ("reshape_identity_branch", &[(1, [7; 4]), (0, [99; 4])]),
+        // A value passed to two successors must be cast only in the slot whose type differs.
+        (
+            "reshape_two_targets",
+            &[(0, [0, 1, 4, 5]), (1, [1, 2, 5, 6]), (2, [1, 2, 5, 6])],
+        ),
+        // Two different static offsets must merge to a dynamic offset, with a cast on each edge.
+        (
+            "reshape_two_static_targets",
+            &[(0, [0, 1, 4, 5]), (1, [1, 2, 5, 6]), (2, [1, 2, 5, 6])],
+        ),
+        // The loop init and yield must be cast to the inferred loop-carried layout.
+        (
+            "reshape_loop",
+            &[(0, [99; 4]), (1, [1, 2, 5, 6]), (2, [1, 2, 5, 6])],
+        ),
+    ];
+    for (name, cases) in cases {
+        let f = unsafe { lookup_fn::<extern "C" fn(*const u8, i64, i64) -> i64>(&jit, name) };
+        for (control, expected) in cases {
+            for (position, expected) in expected.iter().enumerate() {
+                assert_eq!(
+                    f(descriptor.as_ptr(), *control, position as i64),
+                    *expected,
+                    "{name}: control {control}, position {position}"
+                );
+            }
+        }
+    }
+}
+
+/// Batch multiplication must read and write the correct elements
+/// through non-identity operand layouts.
+#[test]
+fn test_batch_matmul_strided() {
+    let input = include_str!("resources/test_batch_matmul_strided.input.plir");
+    let ctx = &mut Context::new();
+    let (jit, ir) = compile_and_jit(ctx, &mut MallocFreeTMM, input);
+    assert_module_round_trips(&ir);
+    expect_file!["resources/test_batch_matmul_strided.expect.plir"].assert_eq(&ir);
+    let a_data: Vec<i64> = (1..=32).collect();
+    let b_data: Vec<i64> = (33..=64).collect();
+    let c_data: Vec<i64> = (0..32).collect();
+    let mut expected = Vec::new();
+    for batch in 0..2 {
+        for i in 0..2 {
+            for j in 0..2 {
+                let position = batch * 16 + (i + 1) * 4 + j + 1;
+                let value = c_data[position]
+                    + (0..3)
+                        .map(|k| {
+                            a_data[batch * 16 + (i + 1) * 4 + k + 1]
+                                * b_data[batch * 16 + k * 4 + j + 1]
+                        })
+                        .sum::<i64>();
+                expected.push(value);
+            }
+        }
+    }
+    let a = input_tensor(&[2, 4, 4], &a_data).build_ir_descriptor();
+    let b = input_tensor(&[2, 4, 4], &b_data).build_ir_descriptor();
+    let c = input_tensor(&[2, 4, 4], &c_data).build_ir_descriptor();
+    let mut output = output_tensor::<i64>(&[2, 2, 2]).build_ir_descriptor();
+    let f = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, *const u8, *const u8, *mut u8)>(
+            &jit,
+            "test_batch_strided",
+        )
+    };
+    f(a.as_ptr(), b.as_ptr(), c.as_ptr(), output.as_mut_ptr());
+    assert_eq!(unsafe { output_data::<i64>(&output, 3) }, expected);
 }
