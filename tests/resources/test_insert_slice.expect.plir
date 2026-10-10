@@ -7,8 +7,8 @@ builtin.module @test_module
       ^entry_block2v1(src_p_v0: llvm.ptr (0), dst_p_v1: llvm.ptr (0), out_p_v2: llvm.ptr (0)) !0:
         src_v3 = llvm.load src_p_v0  : memref.ranked <5x10 : builtin.integer i64> !1;
         dst_v4 = llvm.load dst_p_v1  : memref.ranked <10x20 : builtin.integer i64> !2;
-        v21 = memref.subview dst_v4 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64, strided<[20, 2], offset: 2>>;
-        memref.copy v21 <- src_v3;
+        v33 = memref.subview dst_v4 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64, strided<[20, 2], offset: 2>>;
+        memref.copy v33 <- src_v3;
         llvm.store *out_p_v2 <- dst_v4 ;
         llvm.return 
     };
@@ -18,11 +18,11 @@ builtin.module @test_module
       ^entry_block3v1(src_p_v6: llvm.ptr (0), dst_p_v7: llvm.ptr (0), out_updated_p_v8: llvm.ptr (0), out_dst_p_v9: llvm.ptr (0)) !3:
         src_v10 = llvm.load src_p_v6  : memref.ranked <5x10 : builtin.integer i64> !4;
         dst_v11 = llvm.load dst_p_v7  : memref.ranked <10x20 : builtin.integer i64> !5;
-        updated_v22 = memref.alloc  : memref.ranked <10x20 : builtin.integer i64> !6;
-        memref.copy updated_v22 <- dst_v11;
-        v23 = memref.subview updated_v22 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64, strided<[20, 2], offset: 2>>;
-        memref.copy v23 <- src_v10;
-        llvm.store *out_updated_p_v8 <- updated_v22 ;
+        updated_v34 = memref.alloc  : memref.ranked <10x20 : builtin.integer i64> !6;
+        memref.copy updated_v34 <- dst_v11;
+        v35 = memref.subview updated_v34 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64, strided<[20, 2], offset: 2>>;
+        memref.copy v35 <- src_v10;
+        llvm.store *out_updated_p_v8 <- updated_v34 ;
         llvm.store *out_dst_p_v9 <- dst_v11 ;
         llvm.return 
     };
@@ -32,13 +32,36 @@ builtin.module @test_module
       ^entry_block4v1(t_p_v13: llvm.ptr (0), small_p_v14: llvm.ptr (0), out_u_p_v15: llvm.ptr (0), out_t_p_v16: llvm.ptr (0)) !7:
         t_v17 = llvm.load t_p_v13  : memref.ranked <4x4 : builtin.integer i64> !8;
         small_v18 = llvm.load small_p_v14  : memref.ranked <2x2 : builtin.integer i64> !9;
-        s_v24 = memref.subview t_v17 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 0>> !10;
-        u_v25 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !11;
-        memref.copy u_v25 <- s_v24;
-        v26 = memref.subview u_v25 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
-        memref.copy v26 <- small_v18;
-        llvm.store *out_u_p_v15 <- u_v25 ;
+        s_v36 = memref.subview t_v17 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 0>> !10;
+        u_v37 = memref.alloc  : memref.ranked <2x2 : builtin.integer i64> !11;
+        memref.copy u_v37 <- s_v36;
+        v38 = memref.subview u_v37 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64>;
+        memref.copy v38 <- small_v18;
+        llvm.store *out_u_p_v15 <- u_v37 ;
         llvm.store *out_t_p_v16 <- t_v17 ;
+        llvm.return 
+    };
+    llvm.func @test_insert_slice_loop_init_read_in_body: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block5v1(src_p_v21: llvm.ptr (0), dst_p_v22: llvm.ptr (0), out_p_v23: llvm.ptr (0)) !12:
+        src_v24 = llvm.load src_p_v21  : memref.ranked <5x10 : builtin.integer i64> !13;
+        dst_v25 = llvm.load dst_p_v22  : memref.ranked <10x20 : builtin.integer i64> !14;
+        c0_v26 = index.constant <index.constant 0> : index.index  !15;
+        c1_v27 = index.constant <index.constant 1> : index.index  !16;
+        result_v28 = cf.for c0_v26 to c1_v27 step c1_v27 (dst_v25) 
+        {
+          ^entry_block6v1(i_v29: index.index , acc_v30: memref.ranked <10x20 : builtin.integer i64>) !17:
+            updated_v39 = memref.alloc  : memref.ranked <10x20 : builtin.integer i64> !18;
+            memref.copy updated_v39 <- acc_v30;
+            v40 = memref.subview updated_v39 [0, 2] [5, 10] [1, 2] : memref.ranked <5x10 : builtin.integer i64, strided<[20, 2], offset: 2>>;
+            memref.copy v40 <- src_v24;
+            sum_v41 = memref.alloc  : memref.ranked <10x20 : builtin.integer i64> !19;
+            memref.add sum_v41 <- updated_v39 + dst_v25;
+            cf.yield sum_v41
+        }
+ !20;
+        llvm.store *out_p_v23 <- result_v28 ;
         llvm.return 
     }
 }
@@ -56,3 +79,12 @@ outlined_attributes:
 !9 = [builtin_given_names = builtin.given_names [small]]
 !10 = [builtin_given_names = builtin.given_names [s]]
 !11 = [builtin_given_names = builtin.given_names [u]]
+!12 = [builtin_given_names = builtin.given_names [src_p, dst_p, out_p]]
+!13 = [builtin_given_names = builtin.given_names [src]]
+!14 = [builtin_given_names = builtin.given_names [dst]]
+!15 = [builtin_given_names = builtin.given_names [c0]]
+!16 = [builtin_given_names = builtin.given_names [c1]]
+!17 = [builtin_given_names = builtin.given_names [i, acc]]
+!18 = [builtin_given_names = builtin.given_names [updated]]
+!19 = [builtin_given_names = builtin.given_names [sum]]
+!20 = [builtin_given_names = builtin.given_names [result]]

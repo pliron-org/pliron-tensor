@@ -38,6 +38,26 @@ builtin.module @test_module {
         value = tensor.extract flat[index] : builtin.integer i64;
         llvm.return value
     };
+    llvm.func @reshape_if: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
+        source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
+        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+        condition = llvm.icmp control <NE> zero : builtin.integer i1;
+        selected = cf.if condition -> (tensor.ranked<2x2:builtin.integer i64>) {
+          ^entry():
+            view = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
+            cf.yield view
+        } else {
+          ^entry():
+            scalar = builtin.constant <builtin.integer <99: i64>> : builtin.integer i64;
+            new_tensor = tensor.splat scalar : tensor.ranked<2x2:builtin.integer i64>;
+            cf.yield new_tensor
+        };
+        flat = tensor.reshape selected : tensor.ranked<4:builtin.integer i64>;
+        index = index.from_integer position : index.index;
+        value = tensor.extract flat[index] : builtin.integer i64;
+        llvm.return value
+    };
     llvm.func @reshape_identity_branch: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64) variadic = false> [] {
       ^entry(source_p: llvm.ptr(0), control: builtin.integer i64, position: builtin.integer i64):
         source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;

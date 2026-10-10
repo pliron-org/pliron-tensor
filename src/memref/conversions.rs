@@ -9,8 +9,8 @@ use pliron::{
     builtin::{
         attributes::TypeAttr,
         op_interfaces::{
-            CallOpCallable, OneOpdInterface, OneResultInterface, SingleBlockRegionInterface,
-            SymbolOpInterface,
+            CallOpCallable, OneOpdInterface, OneResultInterface, RegionBranchOpInterface,
+            SingleBlockRegionInterface, SymbolOpInterface,
         },
         ops::ModuleOp,
         type_interfaces::{FloatTypeInterface, FunctionTypeInterface},
@@ -35,11 +35,7 @@ use pliron::{
     value::{DefiningEntity, Value},
 };
 use pliron_common_dialects::{
-    cf::{
-        ToCFDialect,
-        op_interfaces::YieldingRegions,
-        ops::{ForOp, NDForOp},
-    },
+    cf::{ToCFDialect, op_interfaces::YieldingRegions, ops::NDForOp},
     index::{
         ops::{IndexAddOp, IndexConstantOp, IndexMulOp},
         types::IndexType,
@@ -1231,7 +1227,7 @@ pub struct MemrefToCF;
 impl DialectConversion for MemrefToCF {
     fn can_convert_op(&self, ctx: &Context, op: Ptr<Operation>) -> bool {
         op_impls::<dyn ToCFDialect>(&*Operation::get_op_dyn(op, ctx))
-            || Operation::get_op::<ForOp>(op, ctx).is_some()
+            || op_impls::<dyn RegionBranchOpInterface>(&*Operation::get_op_dyn(op, ctx))
             || Operation::get_op::<FuncOp>(op, ctx).is_some()
             || Operation::get_op::<pliron_llvm::ops::LoadOp>(op, ctx).is_some()
     }
@@ -1259,10 +1255,12 @@ impl DialectConversion for MemrefToCF {
         op: Ptr<Operation>,
         operands_info: &OperandsInfo,
     ) -> Result<()> {
-        if Operation::get_op::<ForOp>(op, ctx).is_some() {
-            // Loop results must use the same descriptor type as loop arguments.
+        if op_impls::<dyn RegionBranchOpInterface>(&*Operation::get_op_dyn(op, ctx)) {
+            // Update the results of region branch ops to the
+            // converted types of the values that flow into them.
             let results: Vec<_> = op.deref(ctx).results().collect();
             for result in results {
+                // RegionBranchOpInterface verifies that `result` and the values flowing into it have the same type.
                 let converted = self.convert_type(ctx, result.get_type(ctx))?;
                 rewriter.set_value_type(ctx, result, converted);
             }

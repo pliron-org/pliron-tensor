@@ -31,13 +31,13 @@ use pliron::{
     printable::Printable,
     result::Result,
     symbol_table::nearest_symbol_table,
-    r#type::{TypeHandle, Typed, TypedHandle, type_cast},
+    r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
     value::{Use, Value},
 };
 use pliron_common_dialects::{
     cf::{
         op_interfaces::YieldingRegions,
-        ops::{ForOp, NDForOp},
+        ops::{ForOp, IfOp, NDForOp},
     },
     index::ops::IndexConstantOp,
 };
@@ -1036,6 +1036,75 @@ impl BufferizableOpInterface for ForOp {
             .zip(self.get_loop_carried_variables(ctx))
         {
             rewriter.set_value_type(ctx, result, arg.get_type(ctx));
+        }
+        Ok(())
+    }
+}
+
+/// Bufferize the results of a `cf.if`. Each result gets the memref type with the layout
+/// inferred for it. The op itself remains a `cf.if`:
+///
+/// ```text
+/// %result = cf.if %cond -> (tensor<4xf32>) { cf.yield %a } else { cf.yield %b }
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %result = cf.if %cond -> (memref<4xf32>) { cf.yield %a } else { cf.yield %b }
+/// ```
+#[op_interface_impl]
+impl BufferizableOpInterface for IfOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        // The only operand is the condition.
+        false
+    }
+
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+
+    // The results get the buffers of the yielded values, which are not operands of this op.
+    // The bufferizer gets that sharing from the region flows of [IfOp].
+    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        vec![]
+    }
+
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
+        None
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let results: Vec<_> = self.get_operation().deref(ctx).results().collect();
+        for result in results {
+            let ty = result.get_type(ctx);
+            if !type_impls::<dyn ToMemrefType>(&*ty.deref(ctx)) {
+                continue;
+            }
+            let layout = bufferizer_state
+                .layouts
+                .get(&result)
+                .cloned()
+                .expect("A tensor result must have an inferred layout");
+            let memref_ty = tensor_type_to_memref_type(ty, ctx)?;
+            let memref_ty = memref_ty.deref(ctx);
+            let inferred = RankedMemrefType::get(
+                ctx,
+                memref_ty.element_type(),
+                memref_ty.shape().clone(),
+                layout,
+            );
+            rewriter.set_value_type(ctx, result, inferred.into());
         }
         Ok(())
     }

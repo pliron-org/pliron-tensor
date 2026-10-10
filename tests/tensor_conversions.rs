@@ -541,7 +541,7 @@ fn test_insert_slice() {
     let (jit, after_bufferization) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
 
     // `tensor.insert_slice` writes in place only when destination buffer isn't seen later.
-    // Only the two functions whose destination stays visible allocate a buffer.
+    // Only the functions whose destination stays visible allocate a buffer.
     expect_file!["resources/test_insert_slice.expect.plir"].assert_eq(&after_bufferization);
 
     let src_data: Vec<u64> = (100..150_u64).collect();
@@ -630,6 +630,31 @@ fn test_insert_slice() {
         unsafe { output_data::<u64>(&out_t_ir_descr, 2) },
         t_data,
         "`t` was clobbered by a write through its slice"
+    );
+
+    // The loop body writes the loop-carried `acc` in place and then reads `dst`, the init of `acc`.
+    // The write must not change `dst`.
+    let loop_init_read_in_body = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            &jit,
+            "test_insert_slice_loop_init_read_in_body",
+        )
+    };
+    let mut out_sum_ir_descr = output_tensor::<u64>(&[10, 20]).build_ir_descriptor();
+    loop_init_read_in_body(
+        src.build_ir_descriptor().as_ptr(),
+        dst.build_ir_descriptor().as_ptr(),
+        out_sum_ir_descr.as_mut_ptr(),
+    );
+    let expected_sum: Vec<u64> = expected_updated
+        .iter()
+        .zip(&dst_data)
+        .map(|(updated, dst)| updated + dst)
+        .collect();
+    assert_eq!(
+        unsafe { output_data::<u64>(&out_sum_ir_descr, 2) },
+        expected_sum,
+        "`dst` was clobbered by an in-place write to the loop-carried value"
     );
 }
 
@@ -803,7 +828,7 @@ fn test_reshape_layouts() {
     let descriptor = input_tensor(&[3, 4], &values).build_ir_descriptor();
     // A control value, and the four elements of the reshaped tensor.
     type Case = (i64, [i64; 4]);
-    let cases: [(&str, &[Case]); 7] = [
+    let cases: [(&str, &[Case]); 8] = [
         // A non-contiguous slice must be copied to an identity buffer before reshape.
         ("reshape_slice", &[(0, [1, 2, 5, 6])]),
         // The identity copy must read a dynamic slice dimension with memref.dim.
@@ -811,6 +836,7 @@ fn test_reshape_layouts() {
         // A slice merged with an identity buffer must keep the common stride, both edges
         // must be cast, and reshape must copy the merged value.
         ("reshape_branch", &[(1, [1, 2, 5, 6]), (0, [99; 4])]),
+        ("reshape_if", &[(1, [1, 2, 5, 6]), (0, [99; 4])]),
         // Two identity branch inputs must merge to identity, with no cast and no reshape copy.
         ("reshape_identity_branch", &[(1, [7; 4]), (0, [99; 4])]),
         // A value passed to two successors must be cast only in the slot whose type differs.

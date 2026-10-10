@@ -26,5 +26,20 @@ builtin.module @test_module {
                 llvm.store *out_u_p <- u;
                 llvm.store *out_t_p <- t;
                 llvm.return
+        };
+        llvm.func @test_insert_slice_loop_init_read_in_body: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+            ^entry(src_p: llvm.ptr(0), dst_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+                src = llvm.load src_p : tensor.ranked<5x10:builtin.integer i64>;
+                dst = llvm.load dst_p : tensor.ranked<10x20:builtin.integer i64>;
+                c0 = index.constant <index.constant 0> : index.index;
+                c1 = index.constant <index.constant 1> : index.index;
+                result = cf.for c0 to c1 step c1 (dst) {
+                    ^entry(i: index.index, acc: tensor.ranked<10x20:builtin.integer i64>):
+                        updated = tensor.insert_slice src into acc [0, 2] [5, 10] [1, 2] : tensor.ranked<10x20:builtin.integer i64>;
+                        sum = tensor.add updated, dst : tensor.ranked<10x20:builtin.integer i64>;
+                        cf.yield sum
+                };
+                llvm.store *out_p <- result;
+                llvm.return
         }
 }

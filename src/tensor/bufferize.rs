@@ -52,8 +52,8 @@
 //! - After copy decisions (before any rewrites), layouts are inferred to a fixed point:
 //!   - An op result gets [BufferizableOpInterface::result_layout], or a fully dynamic
 //!     layout if its op does not implement the interface.
-//!   - Block args, loop results and function results get the merged layout of the values
-//!     that flow into them.
+//!   - Block args, results of [RegionBranchOpInterface] ops and function results
+//!     get the merged layout of the values that flow into them.
 //! - `memref.cast` operations are inserted on these values when required.
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -62,7 +62,7 @@ use std::collections::hash_map::Entry;
 use crate::tensor::types::RankedTensorType;
 use pliron::{
     analyses::liveness::{Liveness, LivenessTq},
-    builtin::op_interfaces::{BranchOpInterface, OneResultInterface, OperandSegmentInterface},
+    builtin::op_interfaces::{BranchOpInterface, OneResultInterface, RegionBranchOpInterface},
     common_traits::Verify,
     context::{Context, Ptr},
     derive::op_interface,
@@ -86,10 +86,7 @@ use pliron::{
     value::{DefiningEntity, Use, Value},
     verify_err_noloc,
 };
-use pliron_common_dialects::{
-    cf::{op_interfaces::YieldingRegions, ops::ForOp},
-    index::{ops::IndexConstantOp, types::IndexType},
-};
+use pliron_common_dialects::index::{ops::IndexConstantOp, types::IndexType};
 use pliron_llvm::ops::{FuncOp, ReturnOp};
 use thiserror::Error;
 
@@ -470,7 +467,8 @@ impl<'a> DialectConversion for Bufferizer<'a> {
 ///    Dialect conversion cannot correctly set block argument types, because it converts
 ///    from the type only and cannot access the layouts of the incoming values.
 /// 5. Rewrite the IR with [BufferizableOpInterface::rewrite].
-/// 6. Cast the values passed to block arguments and [ReturnOp]s on type mis-match.
+/// 6. Cast the values passed to block arguments, to [RegionBranchOpInterface] op results
+///    and to [ReturnOp]s on type mis-match.
 ///
 /// The algorithm is, at worst, O(n^2) in the number of ops.
 pub fn bufferize(
@@ -581,7 +579,7 @@ pub fn bufferize(
     ) {
         let op_dyn = Operation::get_op_dyn(op, ctx);
 
-        // Aliases the op declares between its own operands and results.
+        // Add the aliases that the op declares between its own operands and results.
         if let Some(op_iface) = op_cast::<dyn BufferizableOpInterface>(op_dyn.as_ref()) {
             for alias in op_iface.get_operand_result_aliases(ctx) {
                 if state.out_of_place_operands.contains(&alias.operand) {
@@ -594,30 +592,11 @@ pub fn bufferize(
             }
         }
 
-        // A successor operand shares its buffer with the block argument it is forwarded to.
-        if op.deref(ctx).get_num_successors() == 0 {
-            // No successor operands to union with block arguments.
-            return;
-        }
-        let Some(branch_iface) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) else {
-            // Without BranchOpInterface there is no operand -> block argument mapping to
-            // union over. `analyze_successor_operands` handles this by conservatively
-            // copying every tensor-typed operand, and a copy severs the alias, so there
-            // is no sharing left to record.
-            return;
-        };
-        for succ_idx in 0..op.deref(ctx).get_num_successors() {
-            let succ_block = op.deref(ctx).get_successor(succ_idx);
-            for (arg_idx, val) in branch_iface
-                .successor_operands(ctx, succ_idx)
-                .into_iter()
-                .enumerate()
-            {
-                if !type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
-                    continue;
-                }
-                let block_arg = succ_block.deref(ctx).get_argument(arg_idx);
-                state.buffer_classes.union(val, block_arg);
+        // An operand shares its buffer with each value it flows into.
+        for (receiver, operand) in operand_flows(ctx, op) {
+            let value = operand.get_def(ctx);
+            if type_impls::<dyn ToMemrefType>(&*value.get_type(ctx).deref(ctx)) {
+                state.buffer_classes.union(value, receiver);
             }
         }
     }
@@ -794,7 +773,7 @@ pub fn bufferize(
         successor_operands_needing_copy: analysis.successor_operands_needing_copy,
     };
     let status = apply_dialect_conversion(ctx, &mut bufferizer, op)?;
-    cast_to_block_argument_types(ctx, op);
+    cast_to_receiver_types(ctx, op);
     cast_to_function_result_types(ctx, op);
     Ok(status)
 }
@@ -851,11 +830,11 @@ fn collect_ops(ctx: &Context, root: Ptr<Operation>) -> Vec<Ptr<Operation>> {
     ops
 }
 
-/// Get the operands that flow into block arguments, each paired with its block argument:
-///   - For a branch `op`, its successor operands.
-///   - For a [ForOp], its init operands and the operands of its yield.
-fn block_arg_operands(ctx: &Context, op: Ptr<Operation>) -> Vec<(Value, Use<Value>)> {
-    let mut operands = Vec::new();
+/// Get the operands that flow into other values, each paired with its receiver:
+///   - For a branch `op`, its successor operands flowing into the successor block arguments.
+///   - For a [RegionBranchOpInterface] `op`, the flows of its region edges.
+fn operand_flows(ctx: &Context, op: Ptr<Operation>) -> Vec<(Value, Use<Value>)> {
+    let mut flows = Vec::new();
     let op_dyn = Operation::get_op_dyn(op, ctx);
     if let Some(branch) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) {
         for succ in 0..op.deref(ctx).get_num_successors() {
@@ -865,23 +844,19 @@ fn block_arg_operands(ctx: &Context, op: Ptr<Operation>) -> Vec<(Value, Use<Valu
                 .arguments()
                 .zip(branch.successor_operand_range(ctx, succ))
             {
-                operands.push((arg, op.deref(ctx).get_operand_as_use(position)));
+                flows.push((arg, op.deref(ctx).get_operand_as_use(position)));
             }
         }
     }
-    if let Some(for_op) = op_dyn.downcast_ref::<ForOp>() {
-        let yield_op = for_op.get_yield(ctx, 0).get_operation();
-        let start = for_op.segment_range(ctx, 1).start;
-        for (i, arg) in for_op
-            .get_loop_carried_variables(ctx)
-            .into_iter()
-            .enumerate()
-        {
-            operands.push((arg, op.deref(ctx).get_operand_as_use(start + i)));
-            operands.push((arg, yield_op.deref(ctx).get_operand_as_use(i)));
-        }
+    if let Some(region_branch) = op_cast::<dyn RegionBranchOpInterface>(op_dyn.as_ref()) {
+        flows.extend(
+            region_branch
+                .region_flows(ctx)
+                .into_iter()
+                .map(|(operand, receiver)| (receiver, operand)),
+        );
     }
-    operands
+    flows
 }
 
 /// Infer layouts to a fixed point.
@@ -912,21 +887,9 @@ fn infer_layouts(
     let is_tensor = |value: Value| value.get_type(ctx).deref(ctx).is::<RankedTensorType>();
     let mut incoming: FxHashMap<Value, Vec<Use<Value>>> = FxHashMap::default();
     for &op in ops {
-        for (arg, operand) in block_arg_operands(ctx, op) {
-            if is_tensor(arg) {
-                incoming.entry(arg).or_default().push(operand);
-            }
-        }
-        // A loop result has the same incoming values as its block argument.
-        if let Some(for_op) = Operation::get_op::<ForOp>(op, ctx) {
-            for (result, arg) in op
-                .deref(ctx)
-                .results()
-                .zip(for_op.get_loop_carried_variables(ctx))
-            {
-                if let Some(operands) = incoming.get(&arg).cloned() {
-                    incoming.insert(result, operands);
-                }
+        for (receiver, operand) in operand_flows(ctx, op) {
+            if is_tensor(receiver) {
+                incoming.entry(receiver).or_default().push(operand);
             }
         }
     }
@@ -1020,7 +983,7 @@ fn infer_layouts(
                 continue;
             }
             for result in op.deref(ctx).results() {
-                // Loop results get their layouts from their incoming values.
+                // A result that receives flows gets its layout from its incoming operands.
                 if !is_tensor(result) || incoming.contains_key(&result) {
                     continue;
                 }
@@ -1105,15 +1068,20 @@ fn cast_to_type(
     cast.get_result(ctx)
 }
 
-/// Cast each value passed to a block argument to the type of that argument.
-fn cast_to_block_argument_types(ctx: &mut Context, root: Ptr<Operation>) {
+/// Cast each operand that flows into a receiver to the type of that receiver.
+fn cast_to_receiver_types(ctx: &mut Context, root: Ptr<Operation>) {
     for op in collect_ops(ctx, root) {
-        for (arg, operand) in block_arg_operands(ctx, op) {
-            let user = operand.user_op();
-            let value = operand.get_def(ctx);
-            let casted = cast_to_type(ctx, user, value, arg.get_type(ctx));
+        // An operand can flow into more than one receiver, and a replaced operand gets a new [Use].
+        // So record each operand position before any replacement.
+        let flows: Vec<_> = operand_flows(ctx, op)
+            .into_iter()
+            .map(|(receiver, operand)| (receiver, operand.user_op(), operand.find_index(ctx)))
+            .collect();
+        for (receiver, user, index) in flows {
+            let value = user.deref(ctx).get_operand(index);
+            let casted = cast_to_type(ctx, user, value, receiver.get_type(ctx));
             if casted != value {
-                Operation::replace_operand(user, ctx, operand.find_index(ctx), casted);
+                Operation::replace_operand(user, ctx, index, casted);
             }
         }
     }
