@@ -70,6 +70,7 @@ use pliron::{
         dominance::DomInfo,
         walkers::{self, IRNode},
     },
+    input_err,
     irbuild::{
         IRStatus,
         dialect_conversion::{
@@ -77,6 +78,8 @@ use pliron::{
         },
         inserter::{IRInserter, Inserter, OpInsertionPoint},
     },
+    linked_list::ContainsLinkedList,
+    location::Located,
     op::{Op, op_cast, op_impls},
     operation::Operation,
     result::Result,
@@ -168,7 +171,7 @@ impl Alias {
 
 #[derive(Debug, Error)]
 
-pub enum AliasErr {
+pub enum BufferizableOpInterfaceVerifyErr {
     #[error("Invalid alias: the operand and result do not belong to the same op")]
     InvalidAlias,
     #[error(
@@ -181,13 +184,21 @@ pub enum AliasErr {
     InvalidOperandType,
 }
 
+#[derive(Debug, Error)]
+pub enum BufferizeErr {
+    #[error(
+        "{0} must implement RegionBranchOpInterface to pass tensors into or out of its regions"
+    )]
+    RegionBranchOpRequired(String),
+}
+
 impl Verify for Alias {
     fn verify(&self, _ctx: &Context) -> Result<()> {
         let DefiningEntity::Op(op) = self.result.defining_entity() else {
-            return verify_err_noloc!(AliasErr::InvalidAlias);
+            return verify_err_noloc!(BufferizableOpInterfaceVerifyErr::InvalidAlias);
         };
         if self.operand.user_op() != op {
-            return verify_err_noloc!(AliasErr::InvalidAlias);
+            return verify_err_noloc!(BufferizableOpInterfaceVerifyErr::InvalidAlias);
         }
         Ok(())
     }
@@ -298,19 +309,23 @@ pub trait BufferizableOpInterface {
             let opd_ty = alias.operand.get_type(ctx);
             let opd_ty = opd_ty.deref(ctx);
             let Some(shaped_ty) = type_cast::<dyn ShapedType>(&*opd_ty) else {
-                return verify_err_noloc!(AliasErr::InvalidOperandType);
+                return verify_err_noloc!(BufferizableOpInterfaceVerifyErr::InvalidOperandType);
             };
             let dynamic_dims_opt = op.get_operand_dynamic_dimensions(ctx, alias.operand);
             let num_dynamic_dims = shaped_ty.num_dynamic_dimensions();
             if let Some(dynamic_dims) = dynamic_dims_opt {
                 if dynamic_dims.len() != num_dynamic_dims {
-                    return verify_err_noloc!(AliasErr::IncorrectNumDynamicDims);
+                    return verify_err_noloc!(
+                        BufferizableOpInterfaceVerifyErr::IncorrectNumDynamicDims
+                    );
                 }
                 if !dynamic_dims
                     .iter()
                     .all(|dim| dim.get_type(ctx).deref(ctx).is::<IndexType>())
                 {
-                    return verify_err_noloc!(AliasErr::InvalidDynamicDimOpdType);
+                    return verify_err_noloc!(
+                        BufferizableOpInterfaceVerifyErr::InvalidDynamicDimOpdType
+                    );
                 }
             }
         }
@@ -722,6 +737,9 @@ pub fn bufferize(
         successor_operands_needing_copy: FxHashSet::default(),
     };
 
+    let ops = collect_ops(ctx, op);
+    check_region_flows(ctx, &ops)?;
+
     // Successor-operand copies don't depend on the buffer classes, so they're decided once.
     walkers::uninterruptible::immutable::walk_op(
         ctx,
@@ -730,8 +748,6 @@ pub fn bufferize(
         op,
         analyze_successor_operands,
     );
-
-    let ops = collect_ops(ctx, op);
 
     // Decide the in-place bufferization of every aliasing operand, in program order.
     // - Classes start maximal:
@@ -828,6 +844,42 @@ fn collect_ops(ctx: &Context, root: Ptr<Operation>) -> Vec<Ptr<Operation>> {
         },
     );
     ops
+}
+
+/// Check that ops (other than [FuncOp]) that pass tensors into or out of its regions
+/// implement [RegionBranchOpInterface].
+fn check_region_flows(ctx: &Context, ops: &[Ptr<Operation>]) -> Result<()> {
+    let is_tensor = |value: Value| type_impls::<dyn ToMemrefType>(&*value.get_type(ctx).deref(ctx));
+    for &op in ops {
+        let op_dyn = Operation::get_op_dyn(op, ctx);
+        if op_impls::<dyn RegionBranchOpInterface>(op_dyn.as_ref())
+            || Operation::get_op::<FuncOp>(op, ctx).is_some()
+        {
+            continue;
+        }
+        let passes_tensors = op.deref(ctx).regions().any(|region| {
+            let region = region.deref(ctx);
+            // Tensors that come into the region.
+            let entry_args = region
+                .get_entry_block()
+                .is_some_and(|entry| entry.deref(ctx).arguments().any(is_tensor));
+            // Tensors that go out of the region, from a terminator without successors.
+            let exits = region.iter(ctx).any(|block| {
+                block.deref(ctx).get_terminator(ctx).is_some_and(|term| {
+                    let term = term.deref(ctx);
+                    term.get_num_successors() == 0 && term.operands().any(is_tensor)
+                })
+            });
+            entry_args || exits
+        });
+        if passes_tensors {
+            return input_err!(
+                op.deref(ctx).loc(),
+                BufferizeErr::RegionBranchOpRequired(Operation::get_opid(op, ctx).to_string())
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Get the operands that flow into other values, each paired with its receiver:
