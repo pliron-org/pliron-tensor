@@ -80,7 +80,9 @@ pub fn lower_to_llvm_ir(
     );
     verify_op(&module_op, ctx).expect_ok(ctx);
 
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     log::debug!("LLVM-IR generated:\n{}", llvm_ir);
     llvm_ir
         .verify()
