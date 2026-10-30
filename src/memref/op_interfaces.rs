@@ -328,16 +328,7 @@ pub trait ElementWiseBinaryMemrefOpInterface:
     where
         Self: Sized,
     {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            vec![res, lhs, rhs],
-            vec![],
-            0,
-        );
-        Operation::get_op(op, ctx)
-            .expect("Failed to create element-wise binary memref op with specified operands")
+        Operation::new_op::<Self>(ctx, vec![], vec![res, lhs, rhs], vec![], 0)
     }
 
     /// Get the result memref operand.

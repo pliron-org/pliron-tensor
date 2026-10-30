@@ -90,15 +90,7 @@ impl ConstantOp {
     /// Create a new [ConstantOp] with the value `value`.
     pub fn new(ctx: &mut Context, value: DenseElementsAttr) -> Self {
         let result_ty = value.ty();
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_ty.into()],
-            vec![],
-            vec![],
-            0,
-        );
-        let op = ConstantOp { op };
+        let op = Operation::new_op::<Self>(ctx, vec![result_ty.into()], vec![], vec![], 0);
         op.set_attr_tensor_constant_value(ctx, value);
         op
     }
@@ -199,15 +191,7 @@ impl BroadcastOp {
     ) -> Self {
         let mut operands = vec![source];
         operands.extend(dynamic_dimensions);
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            operands,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0)
     }
 
     /// Get the source tensor.
@@ -277,15 +261,7 @@ impl SplatOp {
     ) -> Self {
         let mut operands = vec![value];
         operands.extend(dynamic_dimensions);
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            operands,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0)
     }
     /// Get the scalar value that is replicated.
     pub fn value(&self, ctx: &Context) -> Value {
@@ -356,15 +332,7 @@ impl ElementwiseCastOp {
         result_type: TypedHandle<RankedTensorType>,
         signedness: CastSignednessAttr,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            vec![input],
-            vec![],
-            0,
-        );
-        let op = Self { op };
+        let op = Operation::new_op::<Self>(ctx, vec![result_type.into()], vec![input], vec![], 0);
         op.set_attr_tensor_cast_signedness(ctx, signedness);
         op
     }
@@ -481,15 +449,8 @@ impl GenerateOp {
         ) -> Value,
         body_builder_state: State,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            dynamic_dimensions,
-            vec![],
-            1,
-        );
-        let opop = GenerateOp { op };
+        let opop =
+            Operation::new_op::<Self>(ctx, vec![result_type.into()], dynamic_dimensions, vec![], 1);
         let rank = result_type.deref(ctx).rank();
 
         // Create the initializer region.
@@ -545,7 +506,7 @@ impl Printable for ExtractOp {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &printable::State,
+        state: &printable::State,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         let tensor = self.get_tensor_operand(ctx);
@@ -553,15 +514,15 @@ impl Printable for ExtractOp {
         write!(
             f,
             "{} = {} {}[{}] : {}",
-            self.get_result(ctx).disp(ctx),
+            self.get_result(ctx).print(ctx, state),
             Self::get_opid_static(),
-            tensor.disp(ctx),
+            tensor.print(ctx, state),
             iter_with_sep(
                 indices.iter(),
                 pliron::printable::ListSeparator::CharSpace(',')
             )
-            .disp(ctx),
-            self.result_type(ctx).disp(ctx)
+            .print(ctx, state),
+            self.result_type(ctx).print(ctx, state)
         )
     }
 }
@@ -596,15 +557,7 @@ impl ExtractOp {
     pub fn new(ctx: &mut Context, res_ty: TypeHandle, tensor: Value, indices: Vec<Value>) -> Self {
         let mut operands = vec![tensor];
         operands.extend(indices);
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![res_ty],
-            operands,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![res_ty], operands, vec![], 0)
     }
 
     /// Get the operand representing the tensor to extract from.
@@ -690,15 +643,7 @@ pub struct AddOp;
 impl AddOp {
     /// Create a new AddOp with the given operands and result type.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![lhs.get_type(ctx)],
-            vec![lhs, rhs],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
     }
 }
 
@@ -733,15 +678,7 @@ pub struct SubOp;
 impl SubOp {
     /// Create a new SubOp with the given operands and result type.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![lhs.get_type(ctx)],
-            vec![lhs, rhs],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
     }
 }
 
@@ -776,15 +713,7 @@ pub struct MulOp;
 impl MulOp {
     /// Create a new MulOp with the given operands and result type.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![lhs.get_type(ctx)],
-            vec![lhs, rhs],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
     }
 }
 
@@ -819,15 +748,7 @@ pub struct DivOp;
 impl DivOp {
     /// Create a new DivOp with the given operands and result type.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![lhs.get_type(ctx)],
-            vec![lhs, rhs],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
     }
 }
 
@@ -1042,15 +963,13 @@ impl Verify for MatMulOp {
 impl MatMulOp {
     /// Create a new [MatMulOp]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, accum: Value) -> Self {
-        let op = Operation::new(
+        Operation::new_op::<Self>(
             ctx,
-            Self::get_concrete_op_info(),
             vec![accum.get_type(ctx)],
             vec![lhs, rhs, accum],
             vec![],
             0,
-        );
-        Self { op }
+        )
     }
 }
 
@@ -1290,15 +1209,13 @@ impl Verify for BatchMatMulOp {
 impl BatchMatMulOp {
     /// Create a new [BatchMatMulOp]
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, accum: Value) -> Self {
-        let op = Operation::new(
+        Operation::new_op::<Self>(
             ctx,
-            Self::get_concrete_op_info(),
             vec![accum.get_type(ctx)],
             vec![lhs, rhs, accum],
             vec![],
             0,
-        );
-        Self { op }
+        )
     }
 }
 
@@ -1340,16 +1257,16 @@ impl Printable for ExtractSliceOp {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &printable::State,
+        state: &printable::State,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         let source = self.source(ctx);
         write!(
             f,
             "{} = {} {}",
-            self.get_result(ctx).disp(ctx),
+            self.get_result(ctx).print(ctx, state),
             Self::get_opid_static(),
-            source.disp(ctx)
+            source.print(ctx, state)
         )?;
 
         let offsets = self.slice_offsets(ctx);
@@ -1359,20 +1276,20 @@ impl Printable for ExtractSliceOp {
         write!(
             f,
             " [{}]",
-            list_with_sep(&offsets, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&offsets, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
         write!(
             f,
             " [{}]",
-            list_with_sep(&sizes, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&sizes, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
         write!(
             f,
             " [{}]",
-            list_with_sep(&steps, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&steps, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
 
-        write!(f, " : {}", self.result_type(ctx).disp(ctx))?;
+        write!(f, " : {}", self.result_type(ctx).print(ctx, state))?;
 
         Ok(())
     }
@@ -1641,16 +1558,7 @@ impl ExtractSliceOp {
             }
         }
 
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            operands,
-            vec![],
-            0,
-        );
-
-        let op = Self { op };
+        let op = Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0);
         let slice_params = SliceParamsAttr {
             offsets: offset_attrs,
             sizes: size_attrs,
@@ -1749,7 +1657,7 @@ impl Printable for InsertSliceOp {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &printable::State,
+        state: &printable::State,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         let source = self.source(ctx);
@@ -1757,10 +1665,10 @@ impl Printable for InsertSliceOp {
         write!(
             f,
             "{} = {} {} into {}",
-            self.get_result(ctx).disp(ctx),
+            self.get_result(ctx).print(ctx, state),
             Self::get_opid_static(),
-            source.disp(ctx),
-            destination.disp(ctx)
+            source.print(ctx, state),
+            destination.print(ctx, state)
         )?;
 
         let offsets = self.slice_offsets(ctx);
@@ -1770,20 +1678,20 @@ impl Printable for InsertSliceOp {
         write!(
             f,
             " [{}]",
-            list_with_sep(&offsets, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&offsets, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
         write!(
             f,
             " [{}]",
-            list_with_sep(&sizes, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&sizes, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
         write!(
             f,
             " [{}]",
-            list_with_sep(&steps, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&steps, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
 
-        write!(f, " : {}", self.result_type(ctx).disp(ctx))?;
+        write!(f, " : {}", self.result_type(ctx).print(ctx, state))?;
 
         Ok(())
     }
@@ -2077,16 +1985,7 @@ impl InsertSliceOp {
             }
         }
 
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            operands,
-            vec![],
-            0,
-        );
-
-        let op = Self { op };
+        let op = Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0);
         let slice_params = SliceParamsAttr {
             offsets: offset_attrs,
             sizes: size_attrs,
@@ -2192,14 +2091,6 @@ impl ReshapeOp {
     ) -> Self {
         let mut operands = vec![source];
         operands.extend(dynamic_dimensions);
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            operands,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0)
     }
 }

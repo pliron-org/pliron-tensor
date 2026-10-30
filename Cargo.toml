@@ -14,8 +14,12 @@ pliron-llvm = { git = "https://github.com/pliron-org/pliron.git" }
 pliron-common-dialects = { git = "https://github.com/pliron-org/pliron-common-dialects.git" }
 thiserror = "2"
 log = { version = "0" }
-rustc-hash = "2"
 
 [dev-dependencies]
 expect-test = "1"
 env_logger = "0"
+
+[workspace.metadata.dylint]
+libraries = [
+    { git = "https://github.com/pliron-org/pliron.git", branch = "master", pattern = "lints/pliron_lints" },
+]

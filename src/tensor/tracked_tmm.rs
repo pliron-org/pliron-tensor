@@ -5,7 +5,6 @@
 //! Provides tracked AllocOp and DeallocOp operations that expand, during lowering,
 //! to allocations / deallocation and tracking operations.
 
-use std::collections::HashSet;
 use std::ffi::c_void;
 use std::num::NonZero;
 
@@ -36,7 +35,7 @@ use pliron::{
     result::Result,
     symbol_table::{SymbolTableCollection, nearest_symbol_table},
     r#type::{Typed, TypedHandle},
-    utils::apint::APInt,
+    utils::{apint::APInt, table::ISet},
     value::Value,
     verify_err,
 };
@@ -79,7 +78,7 @@ unsafe extern "C" {
 /// The [tracked_malloc] and [tracked_dealloc] functions implement the runtime
 /// side; they are called from JIT-compiled code via [TrackedAllocOp] and [TrackedDeallocOp].
 pub struct TrackedTMM {
-    tracked: HashSet<*const ()>,
+    tracked: ISet<*const ()>,
 }
 
 unsafe impl Send for TrackedTMM {}
@@ -91,7 +90,7 @@ impl TrackedTMM {
     }
 
     /// Returns the set of currently live (not yet freed) allocation pointers.
-    pub fn tracked_allocations(&self) -> &HashSet<*const ()> {
+    pub fn tracked_allocations(&self) -> &ISet<*const ()> {
         &self.tracked
     }
 
@@ -133,7 +132,7 @@ pub unsafe extern "C" fn tracked_malloc(state: *mut TrackedTMM, size: u64) -> *m
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn tracked_dealloc(state: *mut TrackedTMM, ptr: *mut ()) {
     if let Some(state) = unsafe { state.as_mut() } {
-        state.tracked.remove(&(ptr as *const ()));
+        state.tracked.swap_remove(&(ptr as *const ()));
     }
     unsafe { free(ptr.cast::<c_void>()) };
 }
@@ -249,15 +248,8 @@ impl TrackedAllocOp {
         dynamic_dimensions: Vec<Value>,
         tmm: ConstPointerAttr,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_ty.into()],
-            dynamic_dimensions,
-            vec![],
-            0,
-        );
-        let op = Self { op };
+        let op =
+            Operation::new_op::<Self>(ctx, vec![result_ty.into()], dynamic_dimensions, vec![], 0);
         op.set_attr_memref_tmm_ptr_alloc(ctx, tmm);
         op
     }
@@ -423,15 +415,7 @@ pub struct TrackedDeallocOp;
 impl TrackedDeallocOp {
     /// Create a new [TrackedDeallocOp] with `tmm` as the runtime state pointer.
     pub fn new_with_tmm(ctx: &mut Context, memref: Value, tmm: ConstPointerAttr) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            vec![memref],
-            vec![],
-            0,
-        );
-        let op = Self { op };
+        let op = Operation::new_op::<Self>(ctx, vec![], vec![memref], vec![], 0);
         op.set_attr_memref_tmm_ptr_dealloc(ctx, tmm);
         op
     }

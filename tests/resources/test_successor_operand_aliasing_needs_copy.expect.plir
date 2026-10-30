@@ -58,7 +58,7 @@ builtin.module @test_module
         memref.copy v46 <- x_v42;
         v47 = memref.alloc  : memref.ranked <4 : builtin.integer i64>;
         memref.copy v47 <- x_v42;
-        llvm.cond_br if flag_v15 ^block_b_block11v1(v46, v45) else ^block_c_block10v1(v47, v44)
+        llvm.cond_br if flag_v15 ^block_b_block11v1(v44, v45) else ^block_c_block10v1(v46, v47)
 
       ^block_c_block10v1(z_c_v21: memref.ranked <4 : builtin.integer i64>, x_c_v22: memref.ranked <4 : builtin.integer i64>) !21:
         src_v48 = memref.alloc  : memref.ranked <1 : builtin.integer i64> !22;

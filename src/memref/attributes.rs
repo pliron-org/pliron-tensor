@@ -20,8 +20,9 @@ use pliron::{
     irfmt::parsers::{
         delimited_list_parser, number_as_string_parser, quoted_string_parser, spaced,
     },
-    location::Located,
-    parsable::{IntoParseResult, Parsable, ParseResult, StateStream, parser_combinator},
+    parsable::{
+        IntoParseResult, Parsable, ParseResult, StateStream, StreamLocation, parser_combinator,
+    },
     printable::{self, Printable},
     result::{Error, ErrorKind, Result},
     r#type::{TypeHandle, TypeInterfaceHandle},
