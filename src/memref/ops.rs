@@ -119,15 +119,7 @@ impl AllocOp {
         result_ty: TypedHandle<RankedMemrefType>,
         dynamic_dimensions: Vec<Value>,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_ty.into()],
-            dynamic_dimensions,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![result_ty.into()], dynamic_dimensions, vec![], 0)
     }
 }
 
@@ -160,15 +152,7 @@ impl Verify for DeallocOp {
 impl DeallocOp {
     /// Create a new `DeallocOp` for the given memref.
     pub fn new(ctx: &mut Context, memref: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            vec![memref],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![], vec![memref], vec![], 0)
     }
 
     /// Get the memref operand to deallocate.
@@ -222,15 +206,7 @@ impl GenerateOp {
         ) -> Value,
         body_builder_state: State,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            vec![memref],
-            vec![],
-            1,
-        );
-        let opop = Self { op };
+        let opop = Operation::new_op::<Self>(ctx, vec![], vec![memref], vec![], 1);
 
         let rank = {
             let memref_type = memref.get_type(ctx).deref(ctx);
@@ -303,15 +279,7 @@ pub struct YieldOp;
 impl YieldOp {
     /// Creates a new `YieldOp` with the specified operand.
     pub fn new(ctx: &mut Context, value: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            vec![value],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![], vec![value], vec![], 0)
     }
 }
 
@@ -338,7 +306,7 @@ impl Printable for StoreOp {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &printable::State,
+        state: &printable::State,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         let value = self.get_value(ctx);
@@ -348,9 +316,10 @@ impl Printable for StoreOp {
             f,
             "{} {} to {}[{}]",
             Self::get_opid_static(),
-            value.disp(ctx),
-            memref.disp(ctx),
-            iter_with_sep(indices.iter(), printable::ListSeparator::CharSpace(',')).disp(ctx)
+            value.print(ctx, state),
+            memref.print(ctx, state),
+            iter_with_sep(indices.iter(), printable::ListSeparator::CharSpace(','))
+                .print(ctx, state)
         )
     }
 }
@@ -383,15 +352,7 @@ impl StoreOp {
     pub fn new(ctx: &mut Context, value: Value, memref: Value, indices: Vec<Value>) -> Self {
         let mut operands = vec![value, memref];
         operands.extend(indices);
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            operands,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![], operands, vec![], 0)
     }
 
     /// Get the value operand to be stored.
@@ -480,7 +441,7 @@ impl Printable for LoadOp {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &printable::State,
+        state: &printable::State,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         let memref = self.get_source_memref(ctx);
@@ -488,11 +449,12 @@ impl Printable for LoadOp {
         write!(
             f,
             "{} = {} {}[{}] : {}",
-            self.get_result(ctx).disp(ctx),
+            self.get_result(ctx).print(ctx, state),
             Self::get_opid_static(),
-            memref.disp(ctx),
-            iter_with_sep(indices.iter(), printable::ListSeparator::CharSpace(',')).disp(ctx),
-            self.get_result(ctx).get_type(ctx).disp(ctx)
+            memref.print(ctx, state),
+            iter_with_sep(indices.iter(), printable::ListSeparator::CharSpace(','))
+                .print(ctx, state),
+            self.get_result(ctx).get_type(ctx).print(ctx, state)
         )
     }
 }
@@ -573,15 +535,7 @@ impl LoadOp {
     ) -> Self {
         let mut operands = vec![memref];
         operands.extend(indices);
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![element_ty],
-            operands,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![element_ty], operands, vec![], 0)
     }
 
     /// Get the memref operand to load from.
@@ -623,15 +577,13 @@ pub struct DimOp;
 impl DimOp {
     /// Create a new `DimOp`.
     pub fn new(ctx: &mut Context, memref: Value, dim_index: Value) -> Self {
-        let op = Operation::new(
+        Operation::new_op::<Self>(
             ctx,
-            Self::get_concrete_op_info(),
             vec![IndexType::get(ctx).into()],
             vec![memref, dim_index],
             vec![],
             0,
-        );
-        Self { op }
+        )
     }
 
     /// Get the memref operand.
@@ -904,15 +856,13 @@ impl Verify for MatMulOp {
 impl MatMulOp {
     /// Create a new [MatMulOp].
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value, accum: Value) -> Self {
-        let op = Operation::new(
+        Operation::new_op::<Self>(
             ctx,
-            Self::get_concrete_op_info(),
             vec![accum.get_type(ctx)],
             vec![lhs, rhs, accum],
             vec![],
             0,
-        );
-        Self { op }
+        )
     }
 
     /// Get the result memref value.
@@ -960,12 +910,12 @@ impl Printable for SliceParam {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &printable::State,
+        state: &printable::State,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         match self {
             SliceParam::Static(val) => write!(f, "{}", val),
-            SliceParam::Dynamic(opd) => write!(f, "{}", opd.disp(ctx)),
+            SliceParam::Dynamic(opd) => write!(f, "{}", opd.print(ctx, state)),
         }
     }
 }
@@ -1055,15 +1005,7 @@ impl Verify for CopyOp {
 
 impl CopyOp {
     pub fn new(ctx: &mut Context, destination: Value, source: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            vec![destination, source],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![], vec![destination, source], vec![], 0)
     }
 
     pub fn destination(&self, ctx: &Context) -> Value {
@@ -1110,16 +1052,16 @@ impl Printable for SubviewOp {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &printable::State,
+        state: &printable::State,
         f: &mut std::fmt::Formatter,
     ) -> std::fmt::Result {
         let source = self.source(ctx);
         write!(
             f,
             "{} = {} {}",
-            self.get_result(ctx).disp(ctx),
+            self.get_result(ctx).print(ctx, state),
             Self::get_opid_static(),
-            source.disp(ctx)
+            source.print(ctx, state)
         )?;
 
         let offsets = self.slice_offsets(ctx);
@@ -1129,17 +1071,17 @@ impl Printable for SubviewOp {
         write!(
             f,
             " [{}]",
-            list_with_sep(&offsets, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&offsets, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
         write!(
             f,
             " [{}]",
-            list_with_sep(&sizes, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&sizes, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
         write!(
             f,
             " [{}]",
-            list_with_sep(&steps, ListSeparator::CharSpace(',')).disp(ctx)
+            list_with_sep(&steps, ListSeparator::CharSpace(',')).print(ctx, state)
         )?;
 
         let dropped_dims = self.dropped_dims(ctx);
@@ -1147,11 +1089,11 @@ impl Printable for SubviewOp {
             write!(
                 f,
                 " drop [{}]",
-                list_with_sep(&dropped_dims, ListSeparator::CharSpace(',')).disp(ctx)
+                list_with_sep(&dropped_dims, ListSeparator::CharSpace(',')).print(ctx, state)
             )?;
         }
 
-        write!(f, " : {}", self.result_type(ctx).disp(ctx))
+        write!(f, " : {}", self.result_type(ctx).print(ctx, state))
     }
 }
 
@@ -1471,15 +1413,7 @@ impl SubviewOp {
             }
         }
 
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            operands,
-            vec![],
-            0,
-        );
-        let op = Self { op };
+        let op = Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0);
         op.set_attr_memref_subview_slice_params(
             ctx,
             SliceParamsAttr {
@@ -1623,15 +1557,7 @@ impl ReshapeOp {
     ) -> Self {
         let mut operands = vec![source];
         operands.extend(dynamic_dimensions);
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            operands,
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0)
     }
 }
 
@@ -1675,8 +1601,7 @@ impl GlobalOp {
         initializer: Option<DenseElementsAttr>,
         is_constant: bool,
     ) -> Self {
-        let op = Operation::new(ctx, Self::get_concrete_op_info(), vec![], vec![], vec![], 0);
-        let op = GlobalOp { op };
+        let op = Operation::new_op::<Self>(ctx, vec![], vec![], vec![], 0);
         op.set_symbol_name(ctx, name);
         op.set_attr_memref_global_type(ctx, TypeAttr::new(ty.into()));
         op.set_attr_memref_global_constant(ctx, is_constant.into());
@@ -1811,15 +1736,7 @@ impl GetGlobalOp {
         name: Identifier,
         result_ty: TypedHandle<RankedMemrefType>,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_ty.into()],
-            vec![],
-            vec![],
-            0,
-        );
-        let op = GetGlobalOp { op };
+        let op = Operation::new_op::<Self>(ctx, vec![result_ty.into()], vec![], vec![], 0);
         op.set_attr_memref_global_name(ctx, IdentifierAttr::new(name));
         op
     }
@@ -1923,15 +1840,7 @@ impl MemrefCastOp {
         source: Value,
         result_type: TypedHandle<RankedMemrefType>,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![result_type.into()],
-            vec![source],
-            vec![],
-            0,
-        );
-        Self { op }
+        Operation::new_op::<Self>(ctx, vec![result_type.into()], vec![source], vec![], 0)
     }
 }
 

@@ -25,7 +25,6 @@ use pliron::{
         rewriter::Rewriter,
     },
     linked_list::ContainsLinkedList,
-    location::Located,
     op::Op,
     operation::Operation,
     printable::Printable,

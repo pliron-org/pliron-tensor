@@ -1,0 +1,35 @@
+name: "CI: Dylint"
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  # The lint library pins its own nightly in its `rust-toolchain.toml`.
+  # Let rustup install that toolchain when Dylint builds the library.
+  RUSTUP_AUTO_INSTALL: 1
+
+jobs:
+  dylint:
+    name: Dylint Lints
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Setup LLVM
+      run: |
+        wget https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 23 all
+
+    - name: Install Dylint
+      run: cargo install --locked cargo-dylint dylint-link
+
+    - name: Lint the workspace
+      # The libraries are in `[workspace.metadata.dylint]` of `Cargo.toml`.
+      run: DYLINT_RUSTFLAGS="-D warnings" cargo dylint --all -- --workspace --all-targets

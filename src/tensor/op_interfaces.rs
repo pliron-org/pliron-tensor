@@ -55,14 +55,6 @@ pub trait ElementWiseBinaryTensorOpInterface:
         use pliron::r#type::Typed;
         let operands = vec![lhs, rhs];
         let result_types = vec![lhs.get_type(ctx)];
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            result_types,
-            operands,
-            vec![],
-            0,
-        );
-        Self::from_operation(op)
+        Operation::new_op::<Self>(ctx, result_types, operands, vec![], 0)
     }
 }

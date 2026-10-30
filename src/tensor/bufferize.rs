@@ -56,9 +56,6 @@
 //!     get the merged layout of the values that flow into them.
 //! - `memref.cast` operations are inserted on these values when required.
 
-use rustc_hash::{FxHashMap, FxHashSet};
-use std::collections::hash_map::Entry;
-
 use crate::tensor::types::RankedTensorType;
 use pliron::{
     analyses::liveness::{Liveness, LivenessTq},
@@ -79,13 +76,15 @@ use pliron::{
         inserter::{IRInserter, Inserter, OpInsertionPoint},
     },
     linked_list::ContainsLinkedList,
-    location::Located,
     op::{Op, op_cast, op_impls},
     operation::Operation,
     result::Result,
     symbol_table::SymbolTableCollection,
     r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
-    utils::union_find::UnionFind,
+    utils::{
+        table::{HSet, IMap, itable::Entry},
+        union_find::UnionFind,
+    },
     value::{DefiningEntity, Use, Value},
     verify_err_noloc,
 };
@@ -363,11 +362,11 @@ fn is_value_writable(ctx: &Context, value: Value) -> bool {
 struct Bufferizer<'a> {
     state: BufferizerState<'a>,
     /// Aliasing operands that must be copied to a fresh buffer before the op runs.
-    out_of_place_operands: FxHashSet<Use<Value>>,
+    out_of_place_operands: HSet<Use<Value>>,
     /// Set of successor operands that must be copied before being passed to a successor block,
     /// because the operand and the successor block argument would otherwise share a buffer while
     /// both are live.
-    successor_operands_needing_copy: FxHashSet<Use<Value>>,
+    successor_operands_needing_copy: HSet<Use<Value>>,
 }
 
 /// Common state required by Ops implementing [BufferizableOpInterface].
@@ -379,7 +378,7 @@ pub struct BufferizerState<'a> {
     /// A counter for new names generated, helps with uniquing.
     pub name_counter: u64,
     /// Inferred layouts of tensor values.
-    pub layouts: FxHashMap<Value, MemrefLayout>,
+    pub layouts: IMap<Value, MemrefLayout>,
 }
 
 impl<'a> DialectConversion for Bufferizer<'a> {
@@ -404,7 +403,7 @@ impl<'a> DialectConversion for Bufferizer<'a> {
         // Two kinds of operands need to be copied to a new buffer:
         // 1. Successor operands that were previously identified to need a copy.
         // 2. Aliasing operands the analysis decided to bufferize out-of-place.
-        let opds_needing_copy: FxHashSet<_> = op
+        let opds_needing_copy: Vec<_> = op
             .deref(ctx)
             .operands_as_uses()
             .filter(|opd| {
@@ -499,8 +498,8 @@ pub fn bufferize(
         /// Aliasing operands decided to need a copy. Everything not in here is
         /// bufferized in place. Only ever grows; recording one severs its alias edge
         /// the next time the buffer classes are rebuilt.
-        out_of_place_operands: FxHashSet<Use<Value>>,
-        successor_operands_needing_copy: FxHashSet<Use<Value>>,
+        out_of_place_operands: HSet<Use<Value>>,
+        successor_operands_needing_copy: HSet<Use<Value>>,
     }
 
     impl InPlaceBufferizationAnalysis {
@@ -531,14 +530,16 @@ pub fn bufferize(
         // *Note*: Two tensors T1 and T2 that may be passed from different predecessor blocks to the
         // same successor block argument may share a buffer. If they do, they acquired it through a
         // common alias, so they are in one buffer class and every write checks the whole class.
-        if op.deref(ctx).get_num_successors() == 0 {
+        let num_successors = op.deref(ctx).get_num_successors();
+        if num_successors == 0 {
             return;
         }
 
+        let opd_uses: Vec<_> = op.deref(ctx).operands_as_uses().collect();
         let Some(branch_iface) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) else {
             // Without BranchOpInterface we cannot identify which operands are successor
             // operands, so conservatively copy all tensor-typed operands.
-            for opd_use in op.deref(ctx).operands_as_uses() {
+            for opd_use in opd_uses {
                 let val = opd_use.get_def(ctx);
                 if type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
                     state.successor_operands_needing_copy.insert(opd_use);
@@ -547,13 +548,13 @@ pub fn bufferize(
             return;
         };
 
-        for opd_use in op.deref(ctx).operands_as_uses() {
+        for opd_use in opd_uses {
             let val = opd_use.get_def(ctx);
             if !type_impls::<dyn ToMemrefType>(&*val.get_type(ctx).deref(ctx)) {
                 continue;
             }
             let mut needs_copy = false;
-            for succ_idx in 0..op.deref(ctx).get_num_successors() {
+            for succ_idx in 0..num_successors {
                 let succ_opds = branch_iface.successor_operands(ctx, succ_idx);
                 if !succ_opds.contains(&val) {
                     continue;
@@ -632,7 +633,8 @@ pub fn bufferize(
             return;
         }
 
-        for opd in op.deref(ctx).operands_as_uses() {
+        let opds: Vec<_> = op.deref(ctx).operands_as_uses().collect();
+        for &opd in &opds {
             let opd_ty = opd.get_type(ctx);
             if !type_impls::<dyn ToMemrefType>(&*opd_ty.deref(ctx)) {
                 continue;
@@ -670,7 +672,7 @@ pub fn bufferize(
             // storage this operand is about to be written through, during the op itself.
             // A liveness query cannot catch that since the hazard is within the op.
             let mut conflicts_with_other_operand = false;
-            for other in op.deref(ctx).operands_as_uses() {
+            for &other in &opds {
                 if other != opd && state.buffer_classes.find(other.get_def(ctx)) == opd_class {
                     conflicts_with_other_operand = true;
                     break;
@@ -733,8 +735,8 @@ pub fn bufferize(
         liveness: Liveness::<LivenessTq>::default(),
         dom_info: DomInfo::default(),
         buffer_classes: UnionFind::default(),
-        out_of_place_operands: FxHashSet::default(),
-        successor_operands_needing_copy: FxHashSet::default(),
+        out_of_place_operands: HSet::default(),
+        successor_operands_needing_copy: HSet::default(),
     };
 
     let ops = collect_ops(ctx, op);
@@ -889,7 +891,8 @@ fn operand_flows(ctx: &Context, op: Ptr<Operation>) -> Vec<(Value, Use<Value>)> 
     let mut flows = Vec::new();
     let op_dyn = Operation::get_op_dyn(op, ctx);
     if let Some(branch) = op_cast::<dyn BranchOpInterface>(op_dyn.as_ref()) {
-        for succ in 0..op.deref(ctx).get_num_successors() {
+        let num_successors = op.deref(ctx).get_num_successors();
+        for succ in 0..num_successors {
             let block = op.deref(ctx).get_successor(succ);
             for (arg, position) in block
                 .deref(ctx)
@@ -916,9 +919,9 @@ fn infer_layouts(
     ctx: &Context,
     root: Ptr<Operation>,
     ops: &[Ptr<Operation>],
-    out_of_place: &FxHashSet<Use<Value>>,
-    successor_copies: &FxHashSet<Use<Value>>,
-) -> FxHashMap<Value, MemrefLayout> {
+    out_of_place: &HSet<Use<Value>>,
+    successor_copies: &HSet<Use<Value>>,
+) -> IMap<Value, MemrefLayout> {
     let mut arguments = Vec::new();
     walkers::uninterruptible::immutable::walk_op(
         ctx,
@@ -937,7 +940,7 @@ fn infer_layouts(
         },
     );
     let is_tensor = |value: Value| value.get_type(ctx).deref(ctx).is::<RankedTensorType>();
-    let mut incoming: FxHashMap<Value, Vec<Use<Value>>> = FxHashMap::default();
+    let mut incoming: IMap<Value, Vec<Use<Value>>> = IMap::default();
     for &op in ops {
         for (receiver, operand) in operand_flows(ctx, op) {
             if is_tensor(receiver) {
@@ -954,7 +957,7 @@ fn infer_layouts(
             .clone()
     };
     // Compute the initial layouts for every argument.
-    let mut layouts = FxHashMap::default();
+    let mut layouts = IMap::default();
     for &arg in &arguments {
         if incoming.contains_key(&arg) {
             continue;
@@ -981,7 +984,7 @@ fn infer_layouts(
     }
     let copied =
         |use_: Use<Value>| out_of_place.contains(&use_) || successor_copies.contains(&use_);
-    let get_layout = |use_: Use<Value>, layouts: &FxHashMap<Value, MemrefLayout>| {
+    let get_layout = |use_: Use<Value>, layouts: &IMap<Value, MemrefLayout>| {
         if copied(use_) {
             // Copies inserted by the bufferizer have identity layout.
             return Some(None);
@@ -999,7 +1002,7 @@ fn infer_layouts(
     loop {
         let mut changed = false;
         let mut update =
-            |value: Value, layout: MemrefLayout, layouts: &mut FxHashMap<Value, MemrefLayout>| {
+            |value: Value, layout: MemrefLayout, layouts: &mut IMap<Value, MemrefLayout>| {
                 match layouts.entry(value) {
                     Entry::Occupied(mut previous) => {
                         let merged = merge(previous.get(), &layout, &shape(value));
@@ -1034,7 +1037,8 @@ fn infer_layouts(
             {
                 continue;
             }
-            for result in op.deref(ctx).results() {
+            let results: Vec<_> = op.deref(ctx).results().collect();
+            for result in results {
                 // A result that receives flows gets its layout from its incoming operands.
                 if !is_tensor(result) || incoming.contains_key(&result) {
                     continue;
@@ -1066,7 +1070,7 @@ fn infer_layouts(
 }
 
 /// Convert tensor block arguments to memrefs with their inferred layouts.
-fn set_block_argument_types(ctx: &Context, layouts: &FxHashMap<Value, MemrefLayout>) {
+fn set_block_argument_types(ctx: &Context, layouts: &IMap<Value, MemrefLayout>) {
     for (&arg, layout) in layouts {
         if arg.defining_block().is_none() {
             continue;
