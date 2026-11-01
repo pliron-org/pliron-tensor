@@ -7,14 +7,7 @@
 //! - execution of the result in a JIT.
 
 use expect_test::expect_file;
-use pliron::{
-    context::{Context, Ptr},
-    location::erase_locations,
-    op::verify_op,
-    operation::Operation,
-    printable::Printable,
-    result::ExpectOk,
-};
+use pliron::context::Context;
 
 use pliron_llvm::llvm_sys::{
     core::{LLVMContext, LLVMModule},
@@ -23,28 +16,15 @@ use pliron_llvm::llvm_sys::{
 };
 
 use pliron_tensor::tensor::{
-    bufferize::bufferize,
     memory_management::{MallocFreeTMM, TensorMemoryManager},
-    runtime_utils::TensorDesciptor,
     tracked_tmm::TrackedTMM,
 };
 
 mod common;
-use common::{assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module};
-
-/// Bufferize the module with `tmm` and return the bufferized IR as text.
-fn bufferize_module<TMM: TensorMemoryManager>(
-    ctx: &mut Context,
-    tmm: &mut TMM,
-    parsed_op: Ptr<Operation>,
-) -> String {
-    bufferize(tmm, parsed_op, ctx).expect_ok(ctx);
-    verify_op(Operation::get_op_dyn(parsed_op, ctx).as_ref(), ctx).expect_ok(ctx);
-    erase_locations(ctx, parsed_op);
-    let after_bufferization = parsed_op.disp(ctx).to_string();
-    log::debug!("pliron module after bufferization {}", after_bufferization);
-    after_bufferization
-}
+use common::{
+    assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module,
+    tensor::{bufferize_module, input_tensor, output_data, output_tensor},
+};
 
 /// Run `input_ir` through the full pipeline and return
 /// (LLVMContext, lowered LLVM module, bufferized pliron IR)
@@ -102,28 +82,6 @@ unsafe fn lookup_lljit_fn<F: Copy>(jit: &LLVMLLJIT, name: &str) -> F {
     let symbol_addr = jit.lookup_symbol(name).expect("Failed to lookup symbol");
     assert!(symbol_addr != 0);
     unsafe { std::mem::transmute_copy::<u64, F>(&symbol_addr) }
-}
-
-/// A descriptor for an input tensor with shape `dims` and elements `data`.
-fn input_tensor<T>(dims: &[usize], data: &[T]) -> TensorDesciptor {
-    TensorDesciptor::new(dims.to_vec(), size_of::<T>(), data.as_ptr() as *const u8)
-}
-
-/// A descriptor for a result tensor with shape `dims`.
-fn output_tensor<T>(dims: &[usize]) -> TensorDesciptor {
-    TensorDesciptor::new(dims.to_vec(), size_of::<T>(), std::ptr::null::<u8>())
-}
-
-/// Read back the tensor that an executed function wrote into `out_ir_descr`.
-///
-/// # Safety
-/// `out_ir_descr` must hold a tensor of rank `rank` with elements of type `T`.
-unsafe fn output_data<T: Copy>(out_ir_descr: &[u8], rank: usize) -> Vec<T> {
-    let descr =
-        unsafe { TensorDesciptor::from_ir_descriptor(out_ir_descr.as_ptr(), rank, size_of::<T>()) };
-    let mut data = Vec::new();
-    unsafe { descr.copy_to_vec(&mut data) };
-    data
 }
 
 /// Every tensor operation must print in a form that parses back.

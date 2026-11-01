@@ -26,6 +26,10 @@ use pliron_llvm::llvm_sys::{
 
 use pliron_tensor::memref::conversions::MemrefToCF;
 
+/// Helpers for tests of tensor IR. The memref tests do not use them.
+#[allow(dead_code)]
+pub mod tensor;
+
 /// Parse `input_ir` into a module and verify it.
 pub fn parse_module(ctx: &mut Context, input_ir: &str) -> (Ptr<Operation>, ModuleOp) {
     init_env_logger_for_tests!();

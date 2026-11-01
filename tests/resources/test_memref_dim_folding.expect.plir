@@ -1,0 +1,31 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_memref_dim_dynamic_index: llvm.func <builtin.integer i64(builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(dim_arg_v0: builtin.integer i64) !0:
+        memref_v1 = memref.alloc  : memref.ranked <16x32 : builtin.integer i64> !1;
+        dim_idx_v2 = index.from_integer dim_arg_v0 : index.index  !2;
+        dim_v3 = memref.dim memref_v1, dim_idx_v2 : index.index  !3;
+        dim_int_v4 = index.to_integer dim_v3 to builtin.integer i64 !4;
+        llvm.return dim_int_v4
+    };
+    llvm.func @test_memref_dim_const_index: llvm.func <builtin.integer i64() variadic = false>
+      [] 
+    {
+      ^entry_block3v1():
+        memref_v5 = memref.alloc  : memref.ranked <16x32 : builtin.integer i64> !5;
+        encoded_v20 = builtin.constant <builtin.integer <16032: i64>> : builtin.integer i64 !6;
+        llvm.return encoded_v20
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [dim_arg]]
+!1 = [builtin_given_names = builtin.given_names [memref]]
+!2 = [builtin_given_names = builtin.given_names [dim_idx]]
+!3 = [builtin_given_names = builtin.given_names [dim]]
+!4 = [builtin_given_names = builtin.given_names [dim_int]]
+!5 = [builtin_given_names = builtin.given_names [memref]]
+!6 = [builtin_given_names = builtin.given_names [encoded]]

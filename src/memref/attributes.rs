@@ -7,6 +7,7 @@ use std::num::NonZero;
 
 use pliron::{
     arg_err_noloc,
+    attribute::{AttrObj, Attribute},
     builtin::{
         attr_interfaces::{OutlinedAttr, PrintOnceAttr, TypedAttrInterface},
         attributes::{FPDoubleAttr, FPHalfAttr, FPSingleAttr, IntegerAttr},
@@ -230,6 +231,11 @@ impl DenseElementType for FP16Type {
         Box::new(FPHalfAttr(decode_half(bytes)))
     }
 
+    fn element_bytes(&self, attr: &dyn Attribute) -> Option<Vec<u8>> {
+        let value = attr.downcast_ref::<FPHalfAttr>()?.0;
+        Some((value.to_bits() as u16).to_ne_bytes().to_vec())
+    }
+
     fn print_element(&self, bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", decode_half(bytes))
     }
@@ -251,6 +257,11 @@ impl DenseElementType for FP32Type {
         Box::new(FPSingleAttr(decode_single(bytes)))
     }
 
+    fn element_bytes(&self, attr: &dyn Attribute) -> Option<Vec<u8>> {
+        let value = attr.downcast_ref::<FPSingleAttr>()?.0;
+        Some((value.to_bits() as u32).to_ne_bytes().to_vec())
+    }
+
     fn print_element(&self, bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", decode_single(bytes))
     }
@@ -270,6 +281,11 @@ impl DenseElementType for FP64Type {
 
     fn element_attr(&self, _ctx: &Context, bytes: &[u8]) -> Box<dyn TypedAttrInterface> {
         Box::new(FPDoubleAttr(decode_double(bytes)))
+    }
+
+    fn element_bytes(&self, attr: &dyn Attribute) -> Option<Vec<u8>> {
+        let value = attr.downcast_ref::<FPDoubleAttr>()?.0;
+        Some((value.to_bits() as u64).to_ne_bytes().to_vec())
     }
 
     fn print_element(&self, bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -294,6 +310,16 @@ impl DenseElementType for IntegerType {
         Box::new(IntegerAttr::new(int_ty, decode_int(bytes, self)))
     }
 
+    fn element_bytes(&self, attr: &dyn Attribute) -> Option<Vec<u8>> {
+        let value = attr.downcast_ref::<IntegerAttr>()?.value();
+        if value.bw() != self.width() as usize {
+            return None;
+        }
+        let mut bytes = vec![0u8; int_element_size(self.width())];
+        value.to_u8_slice(&mut bytes);
+        Some(bytes)
+    }
+
     fn print_element(&self, bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
@@ -312,7 +338,9 @@ impl DenseElementType for IntegerType {
 /// Elements of a constant in a raw byte buffer.
 ///
 /// - Elements are held in row-major order.
-/// - Each element uses `ceildiv(bitwidth, 8)` bytes in the native byte order.
+/// - Each element uses `ceildiv(bitwidth, 8)` bytes.
+///   - Integer elements are in little-endian byte order
+///   - float elements are in the native byte order.
 /// - A buffer with the width of one element is a *splat*.
 #[pliron_attr(name = "memref.dense_elements")]
 #[derive(PartialEq, Eq, Clone, Debug, Hash)]
@@ -430,6 +458,23 @@ impl DenseElementsAttr {
     /// Do all elements have the same value?
     pub fn is_splat(&self, ctx: &Context) -> bool {
         self.data.len() == self.element_size(ctx)
+    }
+
+    /// Get the raw bytes of the element at the row-major position `idx`.
+    pub fn element_data(&self, ctx: &Context, idx: usize) -> &[u8] {
+        let size = self.element_size(ctx);
+        if self.is_splat(ctx) {
+            &self.data
+        } else {
+            &self.data[idx * size..(idx + 1) * size]
+        }
+    }
+
+    /// Get the builtin scalar attribute of the element at the row-major position `idx`.
+    pub fn element_attr(&self, ctx: &Context, idx: usize) -> AttrObj {
+        self.element_type(ctx)
+            .deref(ctx)
+            .element_attr(ctx, self.element_data(ctx, idx))
     }
 
     /// Are all elements zero?

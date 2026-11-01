@@ -4,6 +4,7 @@
 //! Type interfaces for the memref dialect.
 
 use pliron::{
+    attribute::Attribute,
     builtin::attr_interfaces::TypedAttrInterface,
     builtin::{type_interfaces::FloatTypeInterface, types::IntegerType},
     combine::{self, Parser},
@@ -136,6 +137,9 @@ pub trait DenseElementType {
 
     /// Decode one element and get the builtin scalar attribute for it.
     fn element_attr(&self, ctx: &Context, bytes: &[u8]) -> Box<dyn TypedAttrInterface>;
+
+    /// Get the raw bytes of the scalar `attr`, or `None` if it is not a scalar of this type.
+    fn element_bytes(&self, attr: &dyn Attribute) -> Option<Vec<u8>>;
 
     /// Write one element as a literal.
     fn print_element(&self, bytes: &[u8], f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result;

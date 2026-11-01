@@ -1,0 +1,94 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_fold_extract: llvm.func <builtin.fp64 () variadic = false> [] {
+      ^entry():
+        weights = tensor.constant !outlined : tensor.ranked<2x3:builtin.fp64> !100;
+        i = index.constant <index.constant 1> : index.index;
+        j = index.constant <index.constant 2> : index.index;
+        res = tensor.extract weights[i, j]: builtin.fp64;
+        llvm.return res
+    };
+    llvm.func @test_fold_int_arith: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {
+      ^entry(res_p: llvm.ptr(0)):
+        c = tensor.constant !outlined : tensor.ranked<2x2:builtin.integer i64> !101;
+        ten = tensor.constant !outlined : tensor.ranked<2x2:builtin.integer i64> !102;
+        two = tensor.constant !outlined : tensor.ranked<2x2:builtin.integer i64> !103;
+        three = tensor.constant !outlined : tensor.ranked<2x2:builtin.integer i64> !104;
+        sum = tensor.add c, ten : tensor.ranked<2x2:builtin.integer i64>;
+        product = tensor.mul sum, two : tensor.ranked<2x2:builtin.integer i64>;
+        difference = tensor.sub product, c : tensor.ranked<2x2:builtin.integer i64>;
+        quotient = tensor.div difference, three : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.store *res_p <- quotient;
+        llvm.return
+    };
+    llvm.func @test_fold_splats: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {
+      ^entry(res_p: llvm.ptr(0)):
+        scalar = builtin.constant <builtin.single 2.5> : builtin.fp32;
+        splat = tensor.splat scalar : tensor.ranked<4:builtin.fp32>;
+        broadcast = tensor.broadcast splat : tensor.ranked<2x4:builtin.fp32>;
+        cast = tensor.elementwise_cast broadcast : tensor.ranked<2x4:builtin.fp64> {input_is_signed=false,result_is_signed=false};
+        sum = tensor.add cast, cast : tensor.ranked<2x4:builtin.fp64>;
+        reshaped = tensor.reshape sum : tensor.ranked<8:builtin.fp64>;
+        llvm.store *res_p <- reshaped;
+        llvm.return
+    };
+    llvm.func @test_fold_int_casts: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {
+      ^entry(res_p: llvm.ptr(0)):
+        c = tensor.constant !outlined : tensor.ranked<4:builtin.integer i32> !105;
+        narrow = tensor.elementwise_cast c : tensor.ranked<4:builtin.integer i8> {input_is_signed=true,result_is_signed=true};
+        wide = tensor.elementwise_cast narrow : tensor.ranked<4:builtin.integer i64> {input_is_signed=true,result_is_signed=true};
+        float = tensor.elementwise_cast wide : tensor.ranked<4:builtin.fp64> {input_is_signed=true,result_is_signed=false};
+        llvm.store *res_p <- float;
+        llvm.return
+    };
+    llvm.func @test_no_fold_dynamic: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {
+      ^entry(res_p: llvm.ptr(0)):
+        scalar = builtin.constant <builtin.single 1.5> : builtin.fp32;
+        n = index.constant <index.constant 3> : index.index;
+        splat = tensor.splat scalar, n : tensor.ranked<?:builtin.fp32>;
+        llvm.store *res_p <- splat;
+        llvm.return
+    };
+    llvm.func @test_no_fold_undefined: llvm.func <builtin.fp64 (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(div_zero_p: llvm.ptr(0), div_overflow_p: llvm.ptr(0)):
+        lhs = tensor.constant !outlined : tensor.ranked<2:builtin.integer i64> !106;
+        rhs = tensor.constant !outlined : tensor.ranked<2:builtin.integer i64> !107;
+        div_zero = tensor.div lhs, rhs : tensor.ranked<2:builtin.integer i64>;
+        llvm.store *div_zero_p <- div_zero;
+        min = tensor.constant !outlined : tensor.ranked<1:builtin.integer i64> !108;
+        minus_one = tensor.constant !outlined : tensor.ranked<1:builtin.integer i64> !109;
+        div_overflow = tensor.div min, minus_one : tensor.ranked<1:builtin.integer i64>;
+        llvm.store *div_overflow_p <- div_overflow;
+        weights = tensor.constant !outlined : tensor.ranked<2x3:builtin.fp64> !110;
+        i = index.constant <index.constant 0> : index.index;
+        j = index.constant <index.constant 3> : index.index;
+        out_of_bounds = tensor.extract weights[i, j]: builtin.fp64;
+        llvm.return out_of_bounds
+    };
+    llvm.func @test_dce: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(arg_p: llvm.ptr(0), res_p: llvm.ptr(0)):
+        arg = llvm.load arg_p : tensor.ranked<2x2:builtin.integer i64>;
+        dead_sum = tensor.add arg, arg : tensor.ranked<2x2:builtin.integer i64>;
+        dead_generated = tensor.generate : tensor.ranked<2x2:builtin.integer i64> {
+          ^entry(gi : index.index, gj : index.index):
+            element = tensor.extract arg[gi, gj]: builtin.integer i64;
+            memref.yield element
+        };
+        product = tensor.mul arg, arg : tensor.ranked<2x2:builtin.integer i64>;
+        llvm.store *res_p <- product;
+        llvm.return
+    }
+}
+
+outlined_attributes:
+!100 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.fp64> = [1, 2, 3, 4, 5, 6]>]
+!101 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i64> = [1, 2, 3, 4]>]
+!102 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i64> = splat 10>]
+!103 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i64> = splat 2>]
+!104 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i64> = splat 3>]
+!105 = [tensor_constant_value = memref.dense_elements <tensor.ranked<4:builtin.integer i32> = [-1, 2, 300, -4]>]
+!106 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2:builtin.integer i64> = [1, 2]>]
+!107 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2:builtin.integer i64> = [1, 0]>]
+!108 = [tensor_constant_value = memref.dense_elements <tensor.ranked<1:builtin.integer i64> = [-9223372036854775808]>]
+!109 = [tensor_constant_value = memref.dense_elements <tensor.ranked<1:builtin.integer i64> = splat -1>]
+!110 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.fp64> = [1, 2, 3, 4, 5, 6]>]

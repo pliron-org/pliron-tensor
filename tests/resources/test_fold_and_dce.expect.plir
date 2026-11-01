@@ -1,0 +1,100 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_fold_extract: llvm.func <builtin.fp64 () variadic = false>
+      [] 
+    {
+      ^entry_block2v1():
+        res_v50 = builtin.constant <builtin.double 6> : builtin.fp64  !0;
+        llvm.return res_v50
+    };
+    llvm.func @test_fold_int_arith: llvm.func <llvm.void (llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(res_p_v4: llvm.ptr (0)) !1:
+        quotient_v54 = tensor.constant <tensor.ranked <2x2 : builtin.integer i64> = [7, 7, 7, 8]> : tensor.ranked <2x2 : builtin.integer i64> !2;
+        llvm.store *res_p_v4 <- quotient_v54 ;
+        llvm.return 
+    };
+    llvm.func @test_fold_splats: llvm.func <llvm.void (llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block4v1(res_p_v13: llvm.ptr (0)) !3:
+        reshaped_v59 = tensor.constant <tensor.ranked <8 : builtin.fp64 > = splat 5> : tensor.ranked <8 : builtin.fp64 > !4;
+        llvm.store *res_p_v13 <- reshaped_v59 ;
+        llvm.return 
+    };
+    llvm.func @test_fold_int_casts: llvm.func <llvm.void (llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block5v1(res_p_v20: llvm.ptr (0)) !5:
+        float_v62 = tensor.constant <tensor.ranked <4 : builtin.fp64 > = [-1, 2, 44, -4]> : tensor.ranked <4 : builtin.fp64 > !6;
+        llvm.store *res_p_v20 <- float_v62 ;
+        llvm.return 
+    };
+    llvm.func @test_no_fold_dynamic: llvm.func <llvm.void (llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block6v1(res_p_v25: llvm.ptr (0)) !7:
+        scalar_v26 = builtin.constant <builtin.single 1.5> : builtin.fp32  !8;
+        n_v27 = index.constant <index.constant 3> : index.index  !9;
+        splat_v28 = tensor.splat scalar_v26, n_v27 : tensor.ranked <? : builtin.fp32 > !10;
+        llvm.store *res_p_v25 <- splat_v28 ;
+        llvm.return 
+    };
+    llvm.func @test_no_fold_undefined: llvm.func <builtin.fp64 (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block7v1(div_zero_p_v29: llvm.ptr (0), div_overflow_p_v30: llvm.ptr (0)) !11:
+        lhs_v31 = tensor.constant <tensor.ranked <2 : builtin.integer i64> = [1, 2]> : tensor.ranked <2 : builtin.integer i64> !12;
+        rhs_v32 = tensor.constant <tensor.ranked <2 : builtin.integer i64> = [1, 0]> : tensor.ranked <2 : builtin.integer i64> !13;
+        div_zero_v33 = tensor.div lhs_v31, rhs_v32 : tensor.ranked <2 : builtin.integer i64> !14;
+        llvm.store *div_zero_p_v29 <- div_zero_v33 ;
+        min_v34 = tensor.constant <tensor.ranked <1 : builtin.integer i64> = splat -9223372036854775808> : tensor.ranked <1 : builtin.integer i64> !15;
+        minus_one_v35 = tensor.constant <tensor.ranked <1 : builtin.integer i64> = splat -1> : tensor.ranked <1 : builtin.integer i64> !16;
+        div_overflow_v36 = tensor.div min_v34, minus_one_v35 : tensor.ranked <1 : builtin.integer i64> !17;
+        llvm.store *div_overflow_p_v30 <- div_overflow_v36 ;
+        weights_v37 = tensor.constant !outlined : tensor.ranked <2x3 : builtin.fp64 > !18;
+        i_v38 = index.constant <index.constant 0> : index.index  !19;
+        j_v39 = index.constant <index.constant 3> : index.index  !20;
+        out_of_bounds_v40 = tensor.extract weights_v37[i_v38, j_v39] : builtin.fp64  !21;
+        llvm.return out_of_bounds_v40
+    };
+    llvm.func @test_dce: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block8v1(arg_p_v41: llvm.ptr (0), res_p_v42: llvm.ptr (0)) !22:
+        arg_v43 = llvm.load arg_p_v41  : tensor.ranked <2x2 : builtin.integer i64> !23;
+        product_v49 = tensor.mul arg_v43, arg_v43 : tensor.ranked <2x2 : builtin.integer i64> !24;
+        llvm.store *res_p_v42 <- product_v49 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [res]]
+!1 = [builtin_given_names = builtin.given_names [res_p]]
+!2 = [builtin_given_names = builtin.given_names [quotient]]
+!3 = [builtin_given_names = builtin.given_names [res_p]]
+!4 = [builtin_given_names = builtin.given_names [reshaped]]
+!5 = [builtin_given_names = builtin.given_names [res_p]]
+!6 = [builtin_given_names = builtin.given_names [float]]
+!7 = [builtin_given_names = builtin.given_names [res_p]]
+!8 = [builtin_given_names = builtin.given_names [scalar]]
+!9 = [builtin_given_names = builtin.given_names [n]]
+!10 = [builtin_given_names = builtin.given_names [splat]]
+!11 = [builtin_given_names = builtin.given_names [div_zero_p, div_overflow_p]]
+!12 = [builtin_given_names = builtin.given_names [lhs]]
+!13 = [builtin_given_names = builtin.given_names [rhs]]
+!14 = [builtin_given_names = builtin.given_names [div_zero]]
+!15 = [builtin_given_names = builtin.given_names [min]]
+!16 = [builtin_given_names = builtin.given_names [minus_one]]
+!17 = [builtin_given_names = builtin.given_names [div_overflow]]
+!18 = [builtin_given_names = builtin.given_names [weights], tensor_constant_value = !25]
+!19 = [builtin_given_names = builtin.given_names [i]]
+!20 = [builtin_given_names = builtin.given_names [j]]
+!21 = [builtin_given_names = builtin.given_names [out_of_bounds]]
+!22 = [builtin_given_names = builtin.given_names [arg_p, res_p]]
+!23 = [builtin_given_names = builtin.given_names [arg]]
+!24 = [builtin_given_names = builtin.given_names [product]]
+!25 = memref.dense_elements <tensor.ranked <2x3 : builtin.fp64 > = [1, 2, 3, 4, 5, 6]>

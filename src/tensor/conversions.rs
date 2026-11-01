@@ -86,8 +86,9 @@ impl ToMemrefType for RankedTensorType {
     }
 }
 
+/// The scalar (per-element) cast kind of an [ElementwiseCastOp].
 #[derive(Clone, Copy)]
-enum ScalarCastKind {
+pub(crate) enum ScalarCastKind {
     Identity,
     FPTrunc,
     FPExt,
@@ -106,7 +107,10 @@ pub enum ElementwiseCastConversionErr {
     Unsupported { from: String, to: String },
 }
 
-fn scalar_cast_kind(
+/// Determine the [ScalarCastKind] from `from` to `to`, each an integer or a float type.
+///
+/// For integer types, signedness is determined by `input_is_signed` and `result_is_signed`.
+pub(crate) fn scalar_cast_kind(
     ctx: &Context,
     from: TypeHandle,
     to: TypeHandle,
