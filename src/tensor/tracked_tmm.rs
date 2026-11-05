@@ -285,6 +285,23 @@ impl Verify for TrackedAllocOp {
     }
 }
 
+/// Lower [TrackedAllocOp] the same way as [AllocOp](crate::memref::ops::AllocOp), but:
+/// * call [tracked_malloc] instead of `malloc`
+/// * pass the [TrackedTMM] state pointer as the first argument
+///
+/// ```text
+/// %m = memref.tracked_alloc [...] dyn_dims [%n] : memref<4x?xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %addr = llvm.constant <address of the TrackedTMM> : i64
+/// %state = llvm.inttoptr %addr
+/// %bytes = llvm.mul %elem_size, %num_elems
+/// %p = llvm.call @tracked_malloc(%state, %bytes)
+/// %m = <descriptor {allocated: %p, aligned: %p, offset: 0, sizes: [4, %n], strides: [%n, 1]}>
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for TrackedAllocOp {
     fn rewrite(
@@ -438,6 +455,22 @@ impl Verify for TrackedDeallocOp {
     }
 }
 
+/// Lower [TrackedDeallocOp] to a call to [tracked_dealloc], with the arguments:
+/// * the [TrackedTMM] state pointer
+/// * the allocated pointer of the memref
+///
+/// ```text
+/// memref.tracked_dealloc [...] : %m
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %addr = llvm.constant <address of the TrackedTMM> : i64
+/// %state = llvm.inttoptr %addr
+/// %p = <allocated pointer of %m>
+/// llvm.call @tracked_dealloc(%state, %p)
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for TrackedDeallocOp {
     fn rewrite(

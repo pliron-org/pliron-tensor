@@ -724,6 +724,17 @@ impl BufferizableOpInterface for ElementwiseCastOp {
     }
 }
 
+/// An extraction reads one element from the source buffer:
+///
+/// ```text
+/// %v = tensor.extract %t[%i, %j]
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// %v = memref.load %t[%i, %j]
+/// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for ExtractOp {
     fn operand_bufferizes_to_memory_read(&self, ctx: &Context, opd: Use<Value>) -> bool {
@@ -1542,7 +1553,7 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
 ///
 /// ```text
 /// %view = memref.subview %destination[0, 2] [5, 10] [1, 2]
-/// memref.copy %source, %view
+/// memref.copy %view <- %source
 /// // %result is replaced by %destination
 /// ```
 #[op_interface_impl]

@@ -79,12 +79,24 @@ pub enum AllocOpRewriteError {
     NearestSymbolTableNotFound,
 }
 
-// Replace [AllocOp] with
-// * Compute the sizes, strides and total number of elements based on the memref type.
-// * A `malloc` that allocates memory for the total number of elements.
-// * Build the memref descriptor by storing the allocated pointer, aligned pointer,
-//   offset, sizes and strides to the appropriate fields in the descriptor.
-// * Replace uses of the original [AllocOp]'s result with the newly built descriptor.
+/// Replace [AllocOp] with
+/// * Compute the sizes, strides and total number of elements based on the memref type.
+/// * A `malloc` that allocates memory for the total number of elements.
+/// * Build the memref descriptor by storing the allocated pointer, aligned pointer,
+///   offset, sizes and strides to the appropriate fields in the descriptor.
+/// * Replace uses of the original [AllocOp]'s result with the newly built descriptor.
+///
+/// ```text
+/// %m = memref.alloc(%n) : memref<4x?xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %bytes = llvm.mul %elem_size, %num_elems
+/// %p = llvm.call @malloc(%bytes)
+/// %m = <descriptor {allocated: %p, aligned: %p, offset: 0, sizes: [4, %n], strides: [%n, 1]}>
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for AllocOp {
     fn rewrite(
@@ -161,9 +173,20 @@ pub enum DeallocOpRewriteError {
     NearestSymbolTableNotFound,
 }
 
-// Replace [DeallocOp] with
-// * Extract the allocated pointer from the memref descriptor.
-// * A `free` call on the allocated pointer.
+/// Replace [DeallocOp] with
+/// * Extract the allocated pointer from the memref descriptor.
+/// * A `free` call on the allocated pointer.
+///
+/// ```text
+/// memref.dealloc %m
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %p = <allocated pointer of %m>
+/// llvm.call @free(%p)
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for DeallocOp {
     fn rewrite(
@@ -200,10 +223,28 @@ pub enum GenerateOpConversionErr {
     #[error("Unsupported induction variable type for GenerateOp conversion")]
     UnsupportedIVType,
 }
-// Replace [GenerateOp] with
-// * An [NDForOp], with the loop bounds computed from the memref operand.
-// * Inside the innermost loop, the generated value at the current indices,
-//   (the [GenerateOp]'s [YieldOp]'s argument) is [StoreOp]'d to the memref.
+/// Replace [GenerateOp] with
+/// * An [NDForOp], with the loop bounds computed from the memref operand.
+/// * Inside the innermost loop, the generated value at the current indices,
+///   (the [GenerateOp]'s [YieldOp]'s argument) is [StoreOp]'d to the memref.
+///
+/// ```text
+/// memref.generate %m {
+///   ^bb0(%i, %j):
+///     ...
+///     memref.yield %v
+/// }
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %d0, %d1 = <sizes of %m>
+/// cf.ndfor (%i, %j) = (0, 0) to (%d0, %d1) step (1, 1) {
+///   ...
+///   memref.store %v, %m[%i, %j]
+/// }
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for GenerateOp {
     fn rewrite(
@@ -287,8 +328,19 @@ impl ToCFDialect for GenerateOp {
     }
 }
 
-// Replace [StoreOp] with a sequence of operations that compute the address
-// of the element at the given indices in the memref and store the value to that address.
+/// Replace [StoreOp] with a sequence of operations that compute the address
+/// of the element at the given indices in the memref and store the value to that address.
+///
+/// ```text
+/// memref.store %v, %m[%i, %j]
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %p = <aligned pointer of %m> + (offset + %i * stride0 + %j * stride1) elements
+/// llvm.store %v, %p
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for StoreOp {
     fn rewrite(
@@ -310,8 +362,19 @@ impl ToCFDialect for StoreOp {
     }
 }
 
-// Replace [LoadOp] with a sequence of operations that compute the address
-// of the element at the given indices in the memref and load the value from that address.
+/// Replace [LoadOp] with a sequence of operations that compute the address
+/// of the element at the given indices in the memref and load the value from that address.
+///
+/// ```text
+/// %v = memref.load %m[%i, %j]
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %p = <aligned pointer of %m> + (offset + %i * stride0 + %j * stride1) elements
+/// %v = llvm.load %p
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for LoadOp {
     fn rewrite(
@@ -332,6 +395,19 @@ impl ToCFDialect for LoadOp {
     }
 }
 
+/// Replace [DimOp] with a read of a size field of the memref descriptor:
+/// * a constant dimension index reads the field directly
+/// * a dynamic dimension index selects the field at runtime
+///
+/// ```text
+/// %d = memref.dim %m, %c1
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %d = <sizes[1] of %m>
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for DimOp {
     fn rewrite(
@@ -367,6 +443,26 @@ pub enum ElementWiseBinaryMemrefOpConversionErr {
     ExpectedMemrefTypeNotFound,
 }
 
+/// Shared lowering for `memref.add`, `memref.sub`, `memref.mul` and `memref.div`.
+/// An [NDForOp] over the result shape:
+/// * loads both operands
+/// * applies the scalar LLVM op
+/// * stores the result
+///
+/// ```text
+/// memref.add %res, %lhs, %rhs
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// cf.ndfor (%i, %j) = (0, 0) to (%d0, %d1) step (1, 1) {
+///   %a = memref.load %lhs[%i, %j]
+///   %b = memref.load %rhs[%i, %j]
+///   %s = llvm.fadd %a, %b      // llvm.add for integers
+///   memref.store %s, %res[%i, %j]
+/// }
+/// ```
 trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
     fn rewrite(
         &self,
@@ -620,9 +716,30 @@ pub enum MemrefMatMulOpConversionErr {
     ExpectedMemrefTypeNotFound,
 }
 
-// Lowering for memref::MatMulOp -> 3D NDForOp over (i, j, k):
-//   result[i,j] = accum[i,j] + sum_k(lhs[i,k] * rhs[k,j])
-// The op result aliases with the accumulator memref.
+/// Lowering for [MemrefMatMulOp] -> 3D [NDForOp] over (i, j, k):
+///
+/// ```text
+/// result[i,j] = accum[i,j] + sum_k(lhs[i,k] * rhs[k,j])
+/// ```
+///
+/// The op result aliases with the accumulator memref.
+///
+/// ```text
+/// memref.matmul %lhs, %rhs, %accum
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// cf.ndfor (%i, %j, %k) = (0, 0, 0) to (%m, %n, %k_size) step (1, 1, 1) {
+///   %acc = memref.load %accum[%i, %j]
+///   %a = memref.load %lhs[%i, %k]
+///   %b = memref.load %rhs[%k, %j]
+///   %mul = llvm.fmul %a, %b
+///   %sum = llvm.fadd %acc, %mul
+///   memref.store %sum, %accum[%i, %j]
+/// }
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for MemrefMatMulOp {
     fn rewrite(
@@ -805,6 +922,22 @@ fn materialize_slice_params(
         .collect()
 }
 
+/// Replace [CopyOp] with:
+/// * an [NDForOp] over the destination shape
+/// * a load from the source and a store to the destination in each iteration
+///
+/// ```text
+/// memref.copy %dst <- %src
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// cf.ndfor (%i, %j) = (0, 0) to (%d0, %d1) step (1, 1) {
+///   %v = memref.load %src[%i, %j]
+///   memref.store %v, %dst[%i, %j]
+/// }
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for CopyOp {
     fn rewrite(
@@ -873,6 +1006,28 @@ impl ToCFDialect for CopyOp {
     }
 }
 
+/// Replace [SubviewOp] with a new descriptor over the source storage.
+/// There is no data movement.
+/// * the pointers are unchanged
+/// * the offset moves to the first element of the view
+/// * each stride is scaled by its step
+/// * dropped dimensions lose their size and stride
+///
+/// ```text
+/// %v = memref.subview %m[%o0, %o1] [%s0, %s1] [%t0, %t1]
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %v = <descriptor {
+///        allocated: <allocated pointer of %m>,
+///        aligned: <aligned pointer of %m>,
+///        offset: offset + %o0 * stride0 + %o1 * stride1,
+///        sizes: [%s0, %s1],
+///        strides: [stride0 * %t0, stride1 * %t1],
+///      }>
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for SubviewOp {
     fn rewrite(
@@ -942,6 +1097,16 @@ impl ToCFDialect for SubviewOp {
 }
 
 /// Ranked memref types are converted to LLVM struct types with details.
+///
+/// ```text
+/// memref<?x4xf32>
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// llvm.struct <(llvm.ptr, llvm.ptr, i64, [2 x i64], [2 x i64])>
+/// ```
 #[type_interface_impl]
 impl ToLLVMType for RankedMemrefType {
     fn convert(&self, ctx: &Context) -> Result<TypeHandle> {
@@ -973,6 +1138,19 @@ impl ToLLVMType for RankedMemrefType {
     }
 }
 
+/// Convert the memref types in the signature and entry block arguments of `func_op`
+/// to their LLVM descriptor struct types.
+///
+/// ```text
+/// llvm.func @map(%arg: memref<?xf32>) -> memref<?xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// llvm.func @map(%arg: llvm.struct <(llvm.ptr, llvm.ptr, i64, [1 x i64], [1 x i64])>)
+///     -> llvm.struct <(llvm.ptr, llvm.ptr, i64, [1 x i64], [1 x i64])>
+/// ```
 fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
     // update the function type to convert any tensor types in the signature to LLVM types.
     let func_ty = func_op.get_type(ctx);
@@ -1036,9 +1214,25 @@ fn lower_llvm_load_op_to_llvm(
     Ok(())
 }
 
-// Replace [ReshapeOp] with descriptor construction over the source storage.
-// The resulting descriptor reuses source allocated/aligned pointers and offset,
-// while recomputing sizes and strides for the new result shape.
+/// Replace [ReshapeOp] with descriptor construction over the source storage.
+/// The resulting descriptor reuses source allocated/aligned pointers and offset,
+/// while recomputing sizes and strides for the new result shape.
+///
+/// ```text
+/// %r = memref.reshape %m : memref<6xf32> to memref<2x3xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %r = <descriptor {
+///        allocated: <allocated pointer of %m>,
+///        aligned: <aligned pointer of %m>,
+///        offset: <offset of %m>,
+///        sizes: [2, 3],
+///        strides: [3, 1],
+///      }>
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for ReshapeOp {
     fn rewrite(
@@ -1096,9 +1290,19 @@ pub enum GlobalOpConversionErr {
     UnsupportedElementType(String),
 }
 
-// Replace [GlobalOp] with an [LlvmGlobalOp] holding the same data.
-// If the layout packing matches that of LLVM, the raw-buffer is wrapped with [BytesAttr].
-// and if not, each element is mapped to its own attribute and wraped with [AggregateAttr].
+/// Replace [GlobalOp] with an [LlvmGlobalOp] holding the same data.
+/// If the layout packing matches that of LLVM, the raw-buffer is wrapped with [BytesAttr].
+/// and if not, each element is mapped to its own attribute and wraped with [AggregateAttr].
+///
+/// ```text
+/// memref.global private constant @g dense<[1, 2, 3, 4]> : memref<2x2xi32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// llvm.global private constant @g : [16 x i8] = <bytes of 1, 2, 3, 4>
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for GlobalOp {
     fn rewrite(
@@ -1178,9 +1382,20 @@ impl ToCFDialect for GlobalOp {
     }
 }
 
-// Replace [GetGlobalOp] with
-// * The address of the LLVM global that holds the constant.
-// * A memref descriptor built around that address.
+/// Replace [GetGlobalOp] with
+/// * The address of the LLVM global that holds the constant.
+/// * A memref descriptor built around that address.
+///
+/// ```text
+/// %m = memref.get_global @g : memref<2x2xi32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %p = llvm.addressof @g
+/// %m = <descriptor {allocated: %p, aligned: %p, offset: 0, sizes: [2, 2], strides: [2, 1]}>
+/// ```
 #[op_interface_impl]
 impl ToCFDialect for GetGlobalOp {
     fn rewrite(
@@ -1279,6 +1494,8 @@ impl DialectConversion for MemrefToCF {
     }
 }
 
+/// A cast changes only the static type, retaining the descriptor.
+/// Uses of the result are replaced with the operand.
 #[op_interface_impl]
 impl ToCFDialect for MemrefCastOp {
     fn rewrite(
