@@ -32,4 +32,5 @@ jobs:
 
     - name: Lint the workspace
       # The libraries are in `[workspace.metadata.dylint]` of `Cargo.toml`.
-      run: DYLINT_RUSTFLAGS="-D warnings" cargo dylint --all -- --workspace --all-targets
+      # TODO: Remove the `--check-cfg` when pliron_lints upgrades to nightly-2026-10-03 or later.
+      run: DYLINT_RUSTFLAGS='-D warnings --check-cfg=cfg(target_os,values("hyperlight"))' cargo dylint --all -- --workspace --all-targets
