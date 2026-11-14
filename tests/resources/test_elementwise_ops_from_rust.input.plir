@@ -49,5 +49,87 @@ builtin.module @test_module {
         res = tensor.div prod, arg1 : tensor.ranked<4x4:builtin.fp64>;
         llvm.store *res_p <- res;
         llvm.return
+    };
+    llvm.func @test_tensor_max_min_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), max_p: llvm.ptr(0), min_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<8:builtin.fp32>;
+        rhs = llvm.load rhs_p : tensor.ranked<8:builtin.fp32>;
+        max = tensor.max lhs, rhs : tensor.ranked<8:builtin.fp32>;
+        min = tensor.min lhs, rhs : tensor.ranked<8:builtin.fp32>;
+        llvm.store *max_p <- max;
+        llvm.store *min_p <- min;
+        llvm.return
+    };
+    llvm.func @test_tensor_max_min_bf16: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), max_p: llvm.ptr(0), min_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<8:builtin.bf16>;
+        rhs = llvm.load rhs_p : tensor.ranked<8:builtin.bf16>;
+        max = tensor.max lhs, rhs : tensor.ranked<8:builtin.bf16>;
+        min = tensor.min lhs, rhs : tensor.ranked<8:builtin.bf16>;
+        llvm.store *max_p <- max;
+        llvm.store *min_p <- min;
+        llvm.return
+    };
+    llvm.func @test_tensor_max_min_i32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), max_p: llvm.ptr(0), min_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<8:builtin.integer i32>;
+        rhs = llvm.load rhs_p : tensor.ranked<8:builtin.integer i32>;
+        max = tensor.max lhs, rhs : tensor.ranked<8:builtin.integer i32>;
+        min = tensor.min lhs, rhs : tensor.ranked<8:builtin.integer i32>;
+        llvm.store *max_p <- max;
+        llvm.store *min_p <- min;
+        llvm.return
+    };
+    llvm.func @test_tensor_max_min_ui32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), max_p: llvm.ptr(0), min_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<8:builtin.integer ui32>;
+        rhs = llvm.load rhs_p : tensor.ranked<8:builtin.integer ui32>;
+        max = tensor.max lhs, rhs : tensor.ranked<8:builtin.integer ui32>;
+        min = tensor.min lhs, rhs : tensor.ranked<8:builtin.integer ui32>;
+        llvm.store *max_p <- max;
+        llvm.store *min_p <- min;
+        llvm.return
+    };
+    llvm.func @test_tensor_arith_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), add_p: llvm.ptr(0), sub_p: llvm.ptr(0), mul_p: llvm.ptr(0), div_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<8:builtin.fp32>;
+        rhs = llvm.load rhs_p : tensor.ranked<8:builtin.fp32>;
+        add = tensor.add lhs, rhs : tensor.ranked<8:builtin.fp32>;
+        sub = tensor.sub lhs, rhs : tensor.ranked<8:builtin.fp32>;
+        mul = tensor.mul lhs, rhs : tensor.ranked<8:builtin.fp32>;
+        div = tensor.div lhs, rhs : tensor.ranked<8:builtin.fp32>;
+        llvm.store *add_p <- add;
+        llvm.store *sub_p <- sub;
+        llvm.store *mul_p <- mul;
+        llvm.store *div_p <- div;
+        llvm.return
+    };
+    llvm.func @test_tensor_arith_i32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), add_p: llvm.ptr(0), sub_p: llvm.ptr(0), mul_p: llvm.ptr(0), div_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<8:builtin.integer i32>;
+        rhs = llvm.load rhs_p : tensor.ranked<8:builtin.integer i32>;
+        add = tensor.add lhs, rhs : tensor.ranked<8:builtin.integer i32>;
+        sub = tensor.sub lhs, rhs : tensor.ranked<8:builtin.integer i32>;
+        mul = tensor.mul lhs, rhs : tensor.ranked<8:builtin.integer i32>;
+        div = tensor.div lhs, rhs : tensor.ranked<8:builtin.integer i32>;
+        llvm.store *add_p <- add;
+        llvm.store *sub_p <- sub;
+        llvm.store *mul_p <- mul;
+        llvm.store *div_p <- div;
+        llvm.return
+    };
+    llvm.func @test_tensor_arith_ui32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(lhs_p: llvm.ptr(0), rhs_p: llvm.ptr(0), add_p: llvm.ptr(0), sub_p: llvm.ptr(0), mul_p: llvm.ptr(0), div_p: llvm.ptr(0)):
+        lhs = llvm.load lhs_p : tensor.ranked<8:builtin.integer ui32>;
+        rhs = llvm.load rhs_p : tensor.ranked<8:builtin.integer ui32>;
+        add = tensor.add lhs, rhs : tensor.ranked<8:builtin.integer ui32>;
+        sub = tensor.sub lhs, rhs : tensor.ranked<8:builtin.integer ui32>;
+        mul = tensor.mul lhs, rhs : tensor.ranked<8:builtin.integer ui32>;
+        div = tensor.div lhs, rhs : tensor.ranked<8:builtin.integer ui32>;
+        llvm.store *add_p <- add;
+        llvm.store *sub_p <- sub;
+        llvm.store *mul_p <- mul;
+        llvm.store *div_p <- div;
+        llvm.return
     }
 }

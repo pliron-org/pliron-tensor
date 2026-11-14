@@ -689,6 +689,64 @@ pub struct MulOp;
 )]
 pub struct DivOp;
 
+/// Elementwise maximum of two memrefs.
+///
+/// The memrefs must have the same shape and element type.
+///
+/// - Floats: a NaN operand gives NaN, and `-0.0` is less than `+0.0` (IEEE 754-2019 `maximum`).
+/// - Unsigned integers: unsigned comparison.
+/// - Signed and signless integers: signed comparison.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `res` | The memref where the result will be stored. |
+/// | `lhs` | The first memref. |
+/// | `rhs` | The second memref. |
+#[pliron_op(
+    name = "memref.max",
+    format = "$0 ` <- max(` $1 `, ` $2 `)`",
+    interfaces = [
+        NResultsInterface<0>,
+        NOpdsInterface<3>,
+        AllOperandsOfType<RankedMemrefType>,
+        CompatibleShapesOp<RankedMemrefType>,
+        AllResultsOfType<RankedMemrefType>,
+        ElementWiseBinaryMemrefOpInterface,
+    ],
+    verifier = "succ"
+)]
+pub struct MaxOp;
+
+/// Elementwise minimum of two memrefs.
+///
+/// The memrefs must have the same shape and element type.
+///
+/// - Floats: a NaN operand gives NaN, and `-0.0` is less than `+0.0` (IEEE 754-2019 `minimum`).
+/// - Unsigned integers: unsigned comparison.
+/// - Signed and signless integers: signed comparison.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `res` | The memref where the result will be stored. |
+/// | `lhs` | The first memref. |
+/// | `rhs` | The second memref. |
+#[pliron_op(
+    name = "memref.min",
+    format = "$0 ` <- min(` $1 `, ` $2 `)`",
+    interfaces = [
+        NResultsInterface<0>,
+        NOpdsInterface<3>,
+        AllOperandsOfType<RankedMemrefType>,
+        CompatibleShapesOp<RankedMemrefType>,
+        AllResultsOfType<RankedMemrefType>,
+        ElementWiseBinaryMemrefOpInterface,
+    ],
+    verifier = "succ"
+)]
+pub struct MinOp;
+
 /// Matrix multiplication op for memrefs with accumulation.
 /// Computes `result[i,j] = accum[i,j] + sum_k(lhs[i,k] * rhs[k,j])`.
 /// `lhs` has shape [M, K], `rhs` has shape [K, N], and `accum` has shape [M, N].

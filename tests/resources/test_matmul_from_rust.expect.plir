@@ -8,8 +8,8 @@ builtin.module @test_module
         arg1_v4 = llvm.load arg1_p_v0  : memref.ranked <4x4 : builtin.integer i64> !1;
         arg2_v5 = llvm.load arg2_p_v1  : memref.ranked <4x4 : builtin.integer i64> !2;
         arg3_v6 = llvm.load arg3_p_v2  : memref.ranked <4x4 : builtin.integer i64> !3;
-        res_v32 = memref.matmul arg1_v4, arg2_v5, arg3_v6 : memref.ranked <4x4 : builtin.integer i64> !4;
-        llvm.store *res_p_v3 <- res_v32 ;
+        res_v40 = memref.matmul arg1_v4, arg2_v5, arg3_v6 : memref.ranked <4x4 : builtin.integer i64> !4;
+        llvm.store *res_p_v3 <- res_v40 ;
         llvm.return 
     };
     llvm.func @test_matmul_inner_dynamic: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
@@ -19,8 +19,8 @@ builtin.module @test_module
         arg1_v12 = llvm.load arg1_p_v8  : memref.ranked <4x? : builtin.integer i64> !6;
         arg2_v13 = llvm.load arg2_p_v9  : memref.ranked <?x4 : builtin.integer i64> !7;
         arg3_v14 = llvm.load arg3_p_v10  : memref.ranked <4x4 : builtin.integer i64> !8;
-        res_v33 = memref.matmul arg1_v12, arg2_v13, arg3_v14 : memref.ranked <4x4 : builtin.integer i64> !9;
-        llvm.store *res_p_v11 <- res_v33 ;
+        res_v41 = memref.matmul arg1_v12, arg2_v13, arg3_v14 : memref.ranked <4x4 : builtin.integer i64> !9;
+        llvm.store *res_p_v11 <- res_v41 ;
         llvm.return 
     };
     llvm.func @test_matmul_all_dynamic: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
@@ -30,8 +30,8 @@ builtin.module @test_module
         arg1_v20 = llvm.load arg1_p_v16  : memref.ranked <?x? : builtin.integer i64> !11;
         arg2_v21 = llvm.load arg2_p_v17  : memref.ranked <?x? : builtin.integer i64> !12;
         arg3_v22 = llvm.load arg3_p_v18  : memref.ranked <4x4 : builtin.integer i64> !13;
-        res_v34 = memref.matmul arg1_v20, arg2_v21, arg3_v22 : memref.ranked <4x4 : builtin.integer i64> !14;
-        llvm.store *res_p_v19 <- res_v34 ;
+        res_v42 = memref.matmul arg1_v20, arg2_v21, arg3_v22 : memref.ranked <4x4 : builtin.integer i64> !14;
+        llvm.store *res_p_v19 <- res_v42 ;
         llvm.return 
     };
     llvm.func @test_batch_matmul: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
@@ -41,26 +41,37 @@ builtin.module @test_module
         arg1_v28 = llvm.load arg1_p_v24  : memref.ranked <2x2x3 : builtin.integer i64> !16;
         arg2_v29 = llvm.load arg2_p_v25  : memref.ranked <2x3x2 : builtin.integer i64> !17;
         arg3_v30 = llvm.load arg3_p_v26  : memref.ranked <2x2x2 : builtin.integer i64> !18;
-        v35 = index.constant <index.constant 2> : index.index ;
-        v36 = index.constant <index.constant 3> : index.index ;
-        v37 = index.constant <index.constant 3> : index.index ;
-        v38 = index.constant <index.constant 2> : index.index ;
-        v39 = index.constant <index.constant 2> : index.index ;
-        v40 = index.constant <index.constant 2> : index.index ;
-        v41 = index.constant <index.constant 2> : index.index ;
-        v42 = index.constant <index.constant 0> : index.index ;
-        v43 = index.constant <index.constant 1> : index.index ;
-        cf.nd_for [v42] to [v41] step [v43] 
+        v43 = index.constant <index.constant 2> : index.index ;
+        v44 = index.constant <index.constant 3> : index.index ;
+        v45 = index.constant <index.constant 3> : index.index ;
+        v46 = index.constant <index.constant 2> : index.index ;
+        v47 = index.constant <index.constant 2> : index.index ;
+        v48 = index.constant <index.constant 2> : index.index ;
+        v49 = index.constant <index.constant 2> : index.index ;
+        v50 = index.constant <index.constant 0> : index.index ;
+        v51 = index.constant <index.constant 1> : index.index ;
+        cf.nd_for [v50] to [v49] step [v51] 
         {
-          ^entry_block6v1(v44: index.index ):
-            v45 = memref.subview arg1_v28 [v44, 0, 0] [1, 2, 3] [1, 1, 1] drop [0] : memref.ranked <2x3 : builtin.integer i64, strided<[3, 1], offset: ?>>;
-            v46 = memref.subview arg2_v29 [v44, 0, 0] [1, 3, 2] [1, 1, 1] drop [0] : memref.ranked <3x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
-            v47 = memref.subview arg3_v30 [v44, 0, 0] [1, 2, 2] [1, 1, 1] drop [0] : memref.ranked <2x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
-            v48 = memref.matmul v45, v46, v47 : memref.ranked <2x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
+          ^entry_block7v1(v52: index.index ):
+            v53 = memref.subview arg1_v28 [v52, 0, 0] [1, 2, 3] [1, 1, 1] drop [0] : memref.ranked <2x3 : builtin.integer i64, strided<[3, 1], offset: ?>>;
+            v54 = memref.subview arg2_v29 [v52, 0, 0] [1, 3, 2] [1, 1, 1] drop [0] : memref.ranked <3x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
+            v55 = memref.subview arg3_v30 [v52, 0, 0] [1, 2, 2] [1, 1, 1] drop [0] : memref.ranked <2x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
+            v56 = memref.matmul v53, v54, v55 : memref.ranked <2x2 : builtin.integer i64, strided<[2, 1], offset: ?>>;
             cf.yield 
         }
 ;
         llvm.store *res_p_v27 <- arg3_v30 ;
+        llvm.return 
+    };
+    llvm.func @test_matmul_unsigned: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block6v1(arg1_p_v32: llvm.ptr (0), arg2_p_v33: llvm.ptr (0), arg3_p_v34: llvm.ptr (0), res_p_v35: llvm.ptr (0)) !19:
+        arg1_v36 = llvm.load arg1_p_v32  : memref.ranked <4x4 : builtin.integer ui64> !20;
+        arg2_v37 = llvm.load arg2_p_v33  : memref.ranked <4x4 : builtin.integer ui64> !21;
+        arg3_v38 = llvm.load arg3_p_v34  : memref.ranked <4x4 : builtin.integer ui64> !22;
+        res_v57 = memref.matmul arg1_v36, arg2_v37, arg3_v38 : memref.ranked <4x4 : builtin.integer ui64> !23;
+        llvm.store *res_p_v35 <- res_v57 ;
         llvm.return 
     }
 }
@@ -85,3 +96,8 @@ outlined_attributes:
 !16 = [builtin_given_names = builtin.given_names [arg1]]
 !17 = [builtin_given_names = builtin.given_names [arg2]]
 !18 = [builtin_given_names = builtin.given_names [arg3]]
+!19 = [builtin_given_names = builtin.given_names [arg1_p, arg2_p, arg3_p, res_p]]
+!20 = [builtin_given_names = builtin.given_names [arg1]]
+!21 = [builtin_given_names = builtin.given_names [arg2]]
+!22 = [builtin_given_names = builtin.given_names [arg3]]
+!23 = [builtin_given_names = builtin.given_names [res]]

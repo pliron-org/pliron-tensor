@@ -7,7 +7,7 @@ use pliron::{
     attribute::AttrObj,
     basic_block::BasicBlock,
     builtin::{
-        attributes::TypeAttr,
+        attributes::{StringAttr, TypeAttr},
         op_interfaces::{
             CallOpCallable, OneOpdInterface, OneResultInterface, RegionBranchOpInterface,
             SingleBlockRegionInterface, SymbolOpInterface,
@@ -26,6 +26,7 @@ use pliron::{
         rewriter::{Rewriter, ScopedRewriter},
     },
     linked_list::ContainsLinkedList,
+    location::Location,
     op::{Op, op_cast, op_impls},
     operation::Operation,
     printable::Printable,
@@ -52,12 +53,15 @@ use pliron_llvm::{
         compute_type_size_in_bytes, lookup_or_create_free_fn, lookup_or_create_malloc_fn,
     },
     op_interfaces::{
-        AlignableOpInterface, BinArithOp, FloatBinArithOpWithFastMathFlags,
+        AlignableOpInterface, BinArithOp, CastOpInterface, FloatBinArithOpWithFastMathFlags,
         IntBinArithOpWithOverflowFlag,
     },
-    ops::{AddressOfOp, CallOp, FuncOp, GlobalOp as LlvmGlobalOp, MulOp},
-    types::{ArrayType, StructLayout},
+    ops::{
+        AddressOfOp, BitcastOp, CallIntrinsicOp, CallOp, FuncOp, GlobalOp as LlvmGlobalOp, MulOp,
+    },
+    types::{ArrayType, FuncType, StructLayout},
 };
+use pliron_llvm_intrinsics::mangling::llvm_mangled_ty;
 
 use crate::memref::{
     descriptor,
@@ -66,8 +70,8 @@ use crate::memref::{
     },
     ops::{
         AddOp, AllocOp, CopyOp, DeallocOp, DimOp, DivOp, GenerateOp, GetGlobalOp, GlobalOp, LoadOp,
-        MatMulOp as MemrefMatMulOp, MemrefCastOp, MulOp as MemrefMulOp, ReshapeOp, SliceParam,
-        StoreOp, SubOp, SubviewOp, YieldOp,
+        MatMulOp as MemrefMatMulOp, MaxOp, MemrefCastOp, MinOp, MulOp as MemrefMulOp, ReshapeOp,
+        SliceParam, StoreOp, SubOp, SubviewOp, YieldOp,
     },
     type_interfaces::{DenseElementTypeHandle, MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
@@ -443,11 +447,39 @@ pub enum ElementWiseBinaryMemrefOpConversionErr {
     ExpectedMemrefTypeNotFound,
 }
 
-/// Shared lowering for `memref.add`, `memref.sub`, `memref.mul` and `memref.div`.
+/// If `ty` is an integer type, get its signless version, otherwise return `ty` as-is.
+fn signless_type(ctx: &Context, ty: TypeHandle) -> TypeHandle {
+    let width = ty
+        .deref(ctx)
+        .downcast_ref::<IntegerType>()
+        .map(IntegerType::width);
+    match width {
+        Some(width) => IntegerType::get(ctx, width, Signedness::Signless).into(),
+        None => ty,
+    }
+}
+
+/// Bitcast `value` to `ty`.
+fn bitcast_to(
+    ctx: &mut Context,
+    inserter: &mut dyn Inserter,
+    value: Value,
+    ty: TypeHandle,
+) -> Value {
+    if value.get_type(ctx) == ty {
+        return value;
+    }
+    let cast = BitcastOp::new(ctx, value, ty);
+    inserter.append_op(ctx, &cast);
+    cast.get_result(ctx)
+}
+
+/// Shared lowering for elementwise binary ops ([ElementWiseBinaryMemrefOpInterface]).
 /// An [NDForOp] over the result shape:
 /// * loads both operands
 /// * applies the scalar LLVM op
 /// * stores the result
+/// * inserts casts to / from signless integers when necessary
 ///
 /// ```text
 /// memref.add %res, %lhs, %rhs
@@ -519,21 +551,20 @@ trait ElementWiseBinaryMemrefOpToCF: ElementWiseBinaryMemrefOpInterface {
                     rewriter.set_insertion_point(inserter.get_insertion_point());
 
                     let element_ty = state.elem_ty;
+                    let value_ty = signless_type(ctx, element_ty);
                     let lhs_loaded =
                         LoadOp::new(ctx, element_ty, state.memref_lhs, indices.clone());
                     let rhs_loaded =
                         LoadOp::new(ctx, element_ty, state.memref_rhs, indices.clone());
                     rewriter.append_op(ctx, &lhs_loaded);
                     rewriter.append_op(ctx, &rhs_loaded);
+                    let lhs = bitcast_to(ctx, rewriter, lhs_loaded.get_result(ctx), value_ty);
+                    let rhs = bitcast_to(ctx, rewriter, rhs_loaded.get_result(ctx), value_ty);
 
-                    let result = (state.op_fn)(
-                        ctx,
-                        lhs_loaded.get_result(ctx),
-                        rhs_loaded.get_result(ctx),
-                        element_ty,
-                    );
+                    let result = (state.op_fn)(ctx, lhs, rhs, element_ty);
                     rewriter.append_operation(ctx, result);
                     let result = result.deref(ctx).get_result(0);
+                    let result = bitcast_to(ctx, rewriter, result, element_ty);
 
                     let store_op = StoreOp::new(ctx, result, state.memref_result, indices);
                     rewriter.append_op(ctx, &store_op);
@@ -668,31 +699,19 @@ impl ElementWiseBinaryMemrefOpToCF for DivOp {
     fn build_llvm_op(
         &self,
     ) -> fn(&mut Context, Value, Value, elem_ty: TypeHandle) -> Ptr<Operation> {
-        |ctx, lhs, rhs, elem_ty| {
-            if type_impls::<dyn FloatTypeInterface>(&*elem_ty.deref(ctx)) {
-                pliron_llvm::ops::FDivOp::new_with_fast_math_flags(
-                    ctx,
-                    lhs,
-                    rhs,
-                    FastmathFlagsAttr::default(),
-                )
-                .get_operation()
-            } else {
-                let signedness = {
-                    let elem_ty_ref = elem_ty.deref(ctx);
-                    elem_ty_ref
-                        .downcast_ref::<IntegerType>()
-                        .expect("Expected integer element type for integer division")
-                        .signedness()
-                };
-                match signedness {
-                    Signedness::Unsigned => {
-                        pliron_llvm::ops::UDivOp::new(ctx, lhs, rhs).get_operation()
-                    }
-                    Signedness::Signed | Signedness::Signless => {
-                        pliron_llvm::ops::SDivOp::new(ctx, lhs, rhs).get_operation()
-                    }
-                }
+        |ctx, lhs, rhs, elem_ty| match int_signedness(ctx, elem_ty) {
+            None => pliron_llvm::ops::FDivOp::new_with_fast_math_flags(
+                ctx,
+                lhs,
+                rhs,
+                FastmathFlagsAttr::default(),
+            )
+            .get_operation(),
+            Some(Signedness::Unsigned) => {
+                pliron_llvm::ops::UDivOp::new(ctx, lhs, rhs).get_operation()
+            }
+            Some(Signedness::Signed | Signedness::Signless) => {
+                pliron_llvm::ops::SDivOp::new(ctx, lhs, rhs).get_operation()
             }
         }
     }
@@ -700,6 +719,87 @@ impl ElementWiseBinaryMemrefOpToCF for DivOp {
 
 #[op_interface_impl]
 impl ToCFDialect for DivOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        <Self as ElementWiseBinaryMemrefOpToCF>::rewrite(self, ctx, rewriter, operands_info)
+    }
+}
+
+/// Build a call to the LLVM intrinsic `llvm.{base_name}.{suffix}`.
+fn build_binary_intrinsic(
+    ctx: &mut Context,
+    base_name: &str,
+    lhs: Value,
+    rhs: Value,
+) -> Ptr<Operation> {
+    let value_ty = lhs.get_type(ctx);
+    let suffix = llvm_mangled_ty(ctx, value_ty, Location::Unknown)
+        .expect("Every float and integer type must have an LLVM intrinsic overload");
+    let intrinsic_name: StringAttr = format!("llvm.{base_name}.{suffix}").into();
+    let func_ty = FuncType::get(ctx, value_ty, vec![value_ty, value_ty], false);
+    CallIntrinsicOp::new(ctx, intrinsic_name, func_ty, vec![lhs, rhs]).get_operation()
+}
+
+/// Signedness of integer `elem_ty`, or `None` for a float.
+fn int_signedness(ctx: &Context, elem_ty: TypeHandle) -> Option<Signedness> {
+    let elem_ty_ref = elem_ty.deref(ctx);
+    if type_impls::<dyn FloatTypeInterface>(&*elem_ty_ref) {
+        return None;
+    }
+    let int_ty = elem_ty_ref
+        .downcast_ref::<IntegerType>()
+        .expect("A memref element type must be a float or an integer");
+    Some(int_ty.signedness())
+}
+
+impl ElementWiseBinaryMemrefOpToCF for MaxOp {
+    fn build_llvm_op(
+        &self,
+    ) -> fn(&mut Context, Value, Value, elem_ty: TypeHandle) -> Ptr<Operation> {
+        |ctx, lhs, rhs, elem_ty| {
+            let base_name = match int_signedness(ctx, elem_ty) {
+                None => "maximum",
+                Some(Signedness::Unsigned) => "umax",
+                Some(Signedness::Signed | Signedness::Signless) => "smax",
+            };
+            build_binary_intrinsic(ctx, base_name, lhs, rhs)
+        }
+    }
+}
+
+#[op_interface_impl]
+impl ToCFDialect for MaxOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        <Self as ElementWiseBinaryMemrefOpToCF>::rewrite(self, ctx, rewriter, operands_info)
+    }
+}
+
+impl ElementWiseBinaryMemrefOpToCF for MinOp {
+    fn build_llvm_op(
+        &self,
+    ) -> fn(&mut Context, Value, Value, elem_ty: TypeHandle) -> Ptr<Operation> {
+        |ctx, lhs, rhs, elem_ty| {
+            let base_name = match int_signedness(ctx, elem_ty) {
+                None => "minimum",
+                Some(Signedness::Unsigned) => "umin",
+                Some(Signedness::Signed | Signedness::Signless) => "smin",
+            };
+            build_binary_intrinsic(ctx, base_name, lhs, rhs)
+        }
+    }
+}
+
+#[op_interface_impl]
+impl ToCFDialect for MinOp {
     fn rewrite(
         &self,
         ctx: &mut Context,
@@ -852,6 +952,7 @@ impl ToCFDialect for MemrefMatMulOp {
                     let j = indices[1];
                     let k = indices[2];
                     let elem_ty = state.elem_ty;
+                    let value_ty = signless_type(ctx, elem_ty);
 
                     // Load accumulator: acc = accum[i, j]
                     let load_acc = LoadOp::new(ctx, elem_ty, state.memref_accum, vec![i, j]);
@@ -862,25 +963,23 @@ impl ToCFDialect for MemrefMatMulOp {
                     // Load b = rhs[k, j]
                     let load_b = LoadOp::new(ctx, elem_ty, state.memref_rhs, vec![k, j]);
                     rewriter.append_op(ctx, &load_b);
+                    let acc = bitcast_to(ctx, rewriter, load_acc.get_result(ctx), value_ty);
+                    let a = bitcast_to(ctx, rewriter, load_a.get_result(ctx), value_ty);
+                    let b = bitcast_to(ctx, rewriter, load_b.get_result(ctx), value_ty);
 
                     // mul = a * b
-                    let mul = (state.mul_fn)(
-                        ctx,
-                        load_a.get_result(ctx),
-                        load_b.get_result(ctx),
-                        elem_ty,
-                    );
+                    let mul = (state.mul_fn)(ctx, a, b, value_ty);
                     rewriter.append_operation(ctx, mul);
 
                     // new_acc = acc + mul
                     let mul_result = mul.deref(ctx).get_result(0);
-                    let load_acc_result = load_acc.get_result(ctx);
-                    let add = (state.add_fn)(ctx, load_acc_result, mul_result, elem_ty);
+                    let add = (state.add_fn)(ctx, acc, mul_result, value_ty);
                     rewriter.append_operation(ctx, add);
 
                     // Store accum[i, j] = new_acc
                     let add_result = add.deref(ctx).get_result(0);
-                    let store = StoreOp::new(ctx, add_result, state.memref_accum, vec![i, j]);
+                    let new_acc = bitcast_to(ctx, rewriter, add_result, elem_ty);
+                    let store = StoreOp::new(ctx, new_acc, state.memref_accum, vec![i, j]);
                     rewriter.append_op(ctx, &store);
                 },
                 &mut state,

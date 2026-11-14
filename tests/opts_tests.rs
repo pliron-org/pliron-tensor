@@ -23,7 +23,10 @@ use pliron_tensor::tensor::{interface_impls::MAX_FOLD_ELEMENTS, memory_managemen
 mod common;
 use common::{
     assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module,
-    tensor::{bufferize_module, input_tensor, output_data, output_tensor},
+    tensor::{
+        Operands, arith_f32, arith_i32, arith_ui32, bufferize_module, check_binary_case,
+        input_tensor, max_min_f32, max_min_i32, max_min_ui32, output_data, output_tensor,
+    },
 };
 
 /// Run SCCP and then DCE on the module, and return the optimized IR as text.
@@ -66,6 +69,8 @@ fn test_fold_and_dce() {
     // - @test_no_fold_undefined: the division by zero, the signed division overflow
     //   and the extract out of bounds must stay.
     // - @test_dce: the unused `tensor.add` and `tensor.generate` must be removed.
+    // - @test_fold_max_min_* and @test_fold_arith_* must store only constants, equal
+    //   to the values that the lowering computes.
     let after_opts = optimize_module(ctx, parsed_op);
     expect_file!["resources/test_fold_and_dce.expect.plir"].assert_eq(&after_opts);
     assert_module_round_trips(&after_opts);
@@ -115,6 +120,14 @@ fn test_fold_and_dce() {
     let dce_fn = unsafe { lookup_fn::<extern "C" fn(*const u8, *mut u8) -> ()>(&jit, "test_dce") };
     dce_fn(arg.build_ir_descriptor().as_ptr(), dce_res.as_mut_ptr());
     assert_eq!(unsafe { output_data::<i64>(&dce_res, 2) }, [1, 4, 9, 16]);
+
+    let consts = Operands::Constants;
+    check_binary_case(&jit, "test_fold_max_min_f32", consts, &max_min_f32());
+    check_binary_case(&jit, "test_fold_max_min_i32", consts, &max_min_i32());
+    check_binary_case(&jit, "test_fold_max_min_ui32", consts, &max_min_ui32());
+    check_binary_case(&jit, "test_fold_arith_f32", consts, &arith_f32());
+    check_binary_case(&jit, "test_fold_arith_i32", consts, &arith_i32());
+    check_binary_case(&jit, "test_fold_arith_ui32", consts, &arith_ui32());
 }
 
 /// SCCP must not fold a non-splat result of more than [MAX_FOLD_ELEMENTS] elements.

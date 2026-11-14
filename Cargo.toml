@@ -12,6 +12,7 @@ keywords = ["pliron", "mlir", "tensor", "compiler"]
 pliron = { git = "https://github.com/pliron-org/pliron.git" }
 pliron-llvm = { git = "https://github.com/pliron-org/pliron.git" }
 pliron-common-dialects = { git = "https://github.com/pliron-org/pliron-common-dialects.git" }
+pliron-llvm-intrinsics = { git = "https://github.com/pliron-org/pliron-llvm-intrinsics.git" }
 thiserror = "2"
 log = { version = "0" }
 

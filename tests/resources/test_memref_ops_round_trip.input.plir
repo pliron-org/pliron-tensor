@@ -21,6 +21,8 @@ builtin.module @test_module {
         memref.sub c <- a - b;
         memref.mul c <- a * b;
         memref.div c <- a / b;
+        memref.max c <- max(a, b);
+        memref.min c <- min(a, b);
 
         idx0 = index.constant <index.constant 0> : index.index;
         idx1 = index.constant <index.constant 1> : index.index;

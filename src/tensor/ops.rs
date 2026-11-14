@@ -752,6 +752,84 @@ impl DivOp {
     }
 }
 
+/// Elementwise maximum of two tensors.
+///
+/// - Floats: a NaN operand gives NaN, and `-0.0` is less than `+0.0` (IEEE 754-2019 `maximum`).
+/// - Unsigned integers: unsigned comparison.
+/// - Signed and signless integers: signed comparison.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `lhs` | The left-hand side tensor. |
+/// | `rhs` | The right-hand side tensor. |
+///
+/// ## Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | The resulting tensor, with same shape as the operands. |
+#[pliron_op(
+    name = "tensor.max",
+    format = "operands(CharSpace(`,`)) ` : ` type($0)",
+    interfaces = [
+        OneResultInterface,
+        ElementWiseBinaryTensorOpInterface,
+        NResultsInterface<1>,
+        NOpdsInterface<2>,
+        AllResultsOfType<RankedTensorType>,
+        AllOperandsOfType<RankedTensorType>,
+        CompatibleShapesOp<RankedTensorType>,
+    ],
+    verifier = "succ"
+)]
+pub struct MaxOp;
+
+impl MaxOp {
+    /// Create a new MaxOp with the given operands. The result type is the type of `lhs`.
+    pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
+        Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
+    }
+}
+
+/// Elementwise minimum of two tensors.
+///
+/// - Floats: a NaN operand gives NaN, and `-0.0` is less than `+0.0` (IEEE 754-2019 `minimum`).
+/// - Unsigned integers: unsigned comparison.
+/// - Signed and signless integers: signed comparison.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `lhs` | The left-hand side tensor. |
+/// | `rhs` | The right-hand side tensor. |
+///
+/// ## Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | The resulting tensor, with same shape as the operands. |
+#[pliron_op(
+    name = "tensor.min",
+    format = "operands(CharSpace(`,`)) ` : ` type($0)",
+    interfaces = [
+        OneResultInterface,
+        ElementWiseBinaryTensorOpInterface,
+        NResultsInterface<1>,
+        NOpdsInterface<2>,
+        AllResultsOfType<RankedTensorType>,
+        AllOperandsOfType<RankedTensorType>,
+        CompatibleShapesOp<RankedTensorType>,
+    ],
+    verifier = "succ"
+)]
+pub struct MinOp;
+
+impl MinOp {
+    /// Create a new MinOp with the given operands. The result type is the type of `lhs`.
+    pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
+        Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
+    }
+}
+
 /// Matrix multiplication with accumulation for 2D tensors.
 /// Computes `lhs * rhs + accum`.
 /// `lhs` has shape [M, K], `rhs` has shape [K, N], `accum` has shape [M, N],

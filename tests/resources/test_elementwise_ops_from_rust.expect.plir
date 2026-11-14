@@ -5,30 +5,30 @@ builtin.module @test_module
       [] 
     {
       ^entry_block2v1(i_res_v0: builtin.integer i64, j_res_v1: builtin.integer i64) !0:
-        input1_v40 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !1;
-        memref.generate input1_v40
+        input1_v108 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !1;
+        memref.generate input1_v108
         {
-          ^entry_block8v1(i_1_v41: index.index , j_1_v42: index.index ) !2:
-            i_int_1_v4 = index.to_integer i_1_v41 to builtin.integer i64 !3;
-            j_int_1_v5 = index.to_integer j_1_v42 to builtin.integer i64 !4;
+          ^entry_block15v1(i_1_v109: index.index , j_1_v110: index.index ) !2:
+            i_int_1_v4 = index.to_integer i_1_v109 to builtin.integer i64 !3;
+            j_int_1_v5 = index.to_integer j_1_v110 to builtin.integer i64 !4;
             sum_1_v6 = llvm.add i_int_1_v4, j_int_1_v5 <{nsw=false,nuw=false}>: builtin.integer i64 !5;
             memref.yield sum_1_v6
         };
-        input2_v43 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !6;
-        memref.generate input2_v43
+        input2_v111 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !6;
+        memref.generate input2_v111
         {
-          ^entry_block3v3(i_2_v44: index.index , j_2_v45: index.index ) !7:
-            i_int_2_v10 = index.to_integer i_2_v44 to builtin.integer i64 !8;
-            j_int_2_v11 = index.to_integer j_2_v45 to builtin.integer i64 !9;
+          ^entry_block3v3(i_2_v112: index.index , j_2_v113: index.index ) !7:
+            i_int_2_v10 = index.to_integer i_2_v112 to builtin.integer i64 !8;
+            j_int_2_v11 = index.to_integer j_2_v113 to builtin.integer i64 !9;
             sum_2_v12 = llvm.add i_int_2_v10, j_int_2_v11 <{nsw=false,nuw=false}>: builtin.integer i64 !10;
             memref.yield sum_2_v12
         };
-        res_tensor_v46 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !11;
-        memref.add res_tensor_v46 <- input1_v40 + input2_v43;
+        res_tensor_v114 = memref.alloc  : memref.ranked <16x16 : builtin.integer i64> !11;
+        memref.add res_tensor_v114 <- input1_v108 + input2_v111;
         i_res_index_v15 = index.from_integer i_res_v0 : index.index  !12;
         j_res_index_v16 = index.from_integer j_res_v1 : index.index  !13;
-        res_v47 = memref.load res_tensor_v46[i_res_index_v15, j_res_index_v16] : builtin.integer i64 !14;
-        llvm.return res_v47
+        res_v115 = memref.load res_tensor_v114[i_res_index_v15, j_res_index_v16] : builtin.integer i64 !14;
+        llvm.return res_v115
     };
     llvm.func @test_tensor_add_int: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
       [] 
@@ -36,11 +36,11 @@ builtin.module @test_module
       ^entry_block5v1(arg1_p_v18: llvm.ptr (0), arg2_p_v19: llvm.ptr (0), res_p_v20: llvm.ptr (0)) !15:
         arg1_v21 = llvm.load arg1_p_v18  : memref.ranked <?x4 : builtin.integer i64> !16;
         arg2_v22 = llvm.load arg2_p_v19  : memref.ranked <?x4 : builtin.integer i64> !17;
-        v48 = index.constant <index.constant 0> : index.index ;
-        v49 = memref.dim arg1_v21, v48 : index.index ;
-        res_v50 = memref.alloc v49 : memref.ranked <?x4 : builtin.integer i64> !18;
-        memref.add res_v50 <- arg1_v21 + arg2_v22;
-        llvm.store *res_p_v20 <- res_v50 ;
+        v116 = index.constant <index.constant 0> : index.index ;
+        v117 = memref.dim arg1_v21, v116 : index.index ;
+        res_v118 = memref.alloc v117 : memref.ranked <?x4 : builtin.integer i64> !18;
+        memref.add res_v118 <- arg1_v21 + arg2_v22;
+        llvm.store *res_p_v20 <- res_v118 ;
         llvm.return 
     };
     llvm.func @test_tensor_add_float: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
@@ -49,9 +49,9 @@ builtin.module @test_module
       ^entry_block6v1(arg1_p_v24: llvm.ptr (0), arg2_p_v25: llvm.ptr (0), res_p_v26: llvm.ptr (0)) !19:
         arg1_v27 = llvm.load arg1_p_v24  : memref.ranked <4x4 : builtin.fp64 > !20;
         arg2_v28 = llvm.load arg2_p_v25  : memref.ranked <4x4 : builtin.fp64 > !21;
-        res_v51 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !22;
-        memref.add res_v51 <- arg1_v27 + arg2_v28;
-        llvm.store *res_p_v26 <- res_v51 ;
+        res_v119 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !22;
+        memref.add res_v119 <- arg1_v27 + arg2_v28;
+        llvm.store *res_p_v26 <- res_v119 ;
         llvm.return 
     };
     llvm.func @test_tensor_all_binops_float: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
@@ -60,17 +60,133 @@ builtin.module @test_module
       ^entry_block7v1(arg1_p_v30: llvm.ptr (0), arg2_p_v31: llvm.ptr (0), res_p_v32: llvm.ptr (0)) !23:
         arg1_v33 = llvm.load arg1_p_v30  : memref.ranked <4x4 : builtin.fp64 > !24;
         arg2_v34 = llvm.load arg2_p_v31  : memref.ranked <4x4 : builtin.fp64 > !25;
-        zero_v52 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !26;
-        memref.sub zero_v52 <- arg2_v34 - arg2_v34;
-        sum_v53 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !27;
-        memref.add sum_v53 <- arg1_v33 + arg2_v34;
-        sum_norm_v54 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !28;
-        memref.add sum_norm_v54 <- sum_v53 + zero_v52;
-        prod_v55 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !29;
-        memref.mul prod_v55 <- sum_norm_v54 * arg2_v34;
-        res_v56 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !30;
-        memref.div res_v56 <- prod_v55 / arg1_v33;
-        llvm.store *res_p_v32 <- res_v56 ;
+        zero_v120 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !26;
+        memref.sub zero_v120 <- arg2_v34 - arg2_v34;
+        sum_v121 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !27;
+        memref.add sum_v121 <- arg1_v33 + arg2_v34;
+        sum_norm_v122 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !28;
+        memref.add sum_norm_v122 <- sum_v121 + zero_v120;
+        prod_v123 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !29;
+        memref.mul prod_v123 <- sum_norm_v122 * arg2_v34;
+        res_v124 = memref.alloc  : memref.ranked <4x4 : builtin.fp64 > !30;
+        memref.div res_v124 <- prod_v123 / arg1_v33;
+        llvm.store *res_p_v32 <- res_v124 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_max_min_f32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block8v1(lhs_p_v40: llvm.ptr (0), rhs_p_v41: llvm.ptr (0), max_p_v42: llvm.ptr (0), min_p_v43: llvm.ptr (0)) !31:
+        lhs_v44 = llvm.load lhs_p_v40  : memref.ranked <8 : builtin.fp32 > !32;
+        rhs_v45 = llvm.load rhs_p_v41  : memref.ranked <8 : builtin.fp32 > !33;
+        max_v125 = memref.alloc  : memref.ranked <8 : builtin.fp32 > !34;
+        memref.max max_v125 <- max(lhs_v44, rhs_v45);
+        min_v126 = memref.alloc  : memref.ranked <8 : builtin.fp32 > !35;
+        memref.min min_v126 <- min(lhs_v44, rhs_v45);
+        llvm.store *max_p_v42 <- max_v125 ;
+        llvm.store *min_p_v43 <- min_v126 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_max_min_bf16: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block9v1(lhs_p_v48: llvm.ptr (0), rhs_p_v49: llvm.ptr (0), max_p_v50: llvm.ptr (0), min_p_v51: llvm.ptr (0)) !36:
+        lhs_v52 = llvm.load lhs_p_v48  : memref.ranked <8 : builtin.bf16 > !37;
+        rhs_v53 = llvm.load rhs_p_v49  : memref.ranked <8 : builtin.bf16 > !38;
+        max_v127 = memref.alloc  : memref.ranked <8 : builtin.bf16 > !39;
+        memref.max max_v127 <- max(lhs_v52, rhs_v53);
+        min_v128 = memref.alloc  : memref.ranked <8 : builtin.bf16 > !40;
+        memref.min min_v128 <- min(lhs_v52, rhs_v53);
+        llvm.store *max_p_v50 <- max_v127 ;
+        llvm.store *min_p_v51 <- min_v128 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_max_min_i32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block10v1(lhs_p_v56: llvm.ptr (0), rhs_p_v57: llvm.ptr (0), max_p_v58: llvm.ptr (0), min_p_v59: llvm.ptr (0)) !41:
+        lhs_v60 = llvm.load lhs_p_v56  : memref.ranked <8 : builtin.integer i32> !42;
+        rhs_v61 = llvm.load rhs_p_v57  : memref.ranked <8 : builtin.integer i32> !43;
+        max_v129 = memref.alloc  : memref.ranked <8 : builtin.integer i32> !44;
+        memref.max max_v129 <- max(lhs_v60, rhs_v61);
+        min_v130 = memref.alloc  : memref.ranked <8 : builtin.integer i32> !45;
+        memref.min min_v130 <- min(lhs_v60, rhs_v61);
+        llvm.store *max_p_v58 <- max_v129 ;
+        llvm.store *min_p_v59 <- min_v130 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_max_min_ui32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block11v1(lhs_p_v64: llvm.ptr (0), rhs_p_v65: llvm.ptr (0), max_p_v66: llvm.ptr (0), min_p_v67: llvm.ptr (0)) !46:
+        lhs_v68 = llvm.load lhs_p_v64  : memref.ranked <8 : builtin.integer ui32> !47;
+        rhs_v69 = llvm.load rhs_p_v65  : memref.ranked <8 : builtin.integer ui32> !48;
+        max_v131 = memref.alloc  : memref.ranked <8 : builtin.integer ui32> !49;
+        memref.max max_v131 <- max(lhs_v68, rhs_v69);
+        min_v132 = memref.alloc  : memref.ranked <8 : builtin.integer ui32> !50;
+        memref.min min_v132 <- min(lhs_v68, rhs_v69);
+        llvm.store *max_p_v66 <- max_v131 ;
+        llvm.store *min_p_v67 <- min_v132 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_arith_f32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block12v1(lhs_p_v72: llvm.ptr (0), rhs_p_v73: llvm.ptr (0), add_p_v74: llvm.ptr (0), sub_p_v75: llvm.ptr (0), mul_p_v76: llvm.ptr (0), div_p_v77: llvm.ptr (0)) !51:
+        lhs_v78 = llvm.load lhs_p_v72  : memref.ranked <8 : builtin.fp32 > !52;
+        rhs_v79 = llvm.load rhs_p_v73  : memref.ranked <8 : builtin.fp32 > !53;
+        add_v133 = memref.alloc  : memref.ranked <8 : builtin.fp32 > !54;
+        memref.add add_v133 <- lhs_v78 + rhs_v79;
+        sub_v134 = memref.alloc  : memref.ranked <8 : builtin.fp32 > !55;
+        memref.sub sub_v134 <- lhs_v78 - rhs_v79;
+        mul_v135 = memref.alloc  : memref.ranked <8 : builtin.fp32 > !56;
+        memref.mul mul_v135 <- lhs_v78 * rhs_v79;
+        div_v136 = memref.alloc  : memref.ranked <8 : builtin.fp32 > !57;
+        memref.div div_v136 <- lhs_v78 / rhs_v79;
+        llvm.store *add_p_v74 <- add_v133 ;
+        llvm.store *sub_p_v75 <- sub_v134 ;
+        llvm.store *mul_p_v76 <- mul_v135 ;
+        llvm.store *div_p_v77 <- div_v136 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_arith_i32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block13v1(lhs_p_v84: llvm.ptr (0), rhs_p_v85: llvm.ptr (0), add_p_v86: llvm.ptr (0), sub_p_v87: llvm.ptr (0), mul_p_v88: llvm.ptr (0), div_p_v89: llvm.ptr (0)) !58:
+        lhs_v90 = llvm.load lhs_p_v84  : memref.ranked <8 : builtin.integer i32> !59;
+        rhs_v91 = llvm.load rhs_p_v85  : memref.ranked <8 : builtin.integer i32> !60;
+        add_v137 = memref.alloc  : memref.ranked <8 : builtin.integer i32> !61;
+        memref.add add_v137 <- lhs_v90 + rhs_v91;
+        sub_v138 = memref.alloc  : memref.ranked <8 : builtin.integer i32> !62;
+        memref.sub sub_v138 <- lhs_v90 - rhs_v91;
+        mul_v139 = memref.alloc  : memref.ranked <8 : builtin.integer i32> !63;
+        memref.mul mul_v139 <- lhs_v90 * rhs_v91;
+        div_v140 = memref.alloc  : memref.ranked <8 : builtin.integer i32> !64;
+        memref.div div_v140 <- lhs_v90 / rhs_v91;
+        llvm.store *add_p_v86 <- add_v137 ;
+        llvm.store *sub_p_v87 <- sub_v138 ;
+        llvm.store *mul_p_v88 <- mul_v139 ;
+        llvm.store *div_p_v89 <- div_v140 ;
+        llvm.return 
+    };
+    llvm.func @test_tensor_arith_ui32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block14v1(lhs_p_v96: llvm.ptr (0), rhs_p_v97: llvm.ptr (0), add_p_v98: llvm.ptr (0), sub_p_v99: llvm.ptr (0), mul_p_v100: llvm.ptr (0), div_p_v101: llvm.ptr (0)) !65:
+        lhs_v102 = llvm.load lhs_p_v96  : memref.ranked <8 : builtin.integer ui32> !66;
+        rhs_v103 = llvm.load rhs_p_v97  : memref.ranked <8 : builtin.integer ui32> !67;
+        add_v141 = memref.alloc  : memref.ranked <8 : builtin.integer ui32> !68;
+        memref.add add_v141 <- lhs_v102 + rhs_v103;
+        sub_v142 = memref.alloc  : memref.ranked <8 : builtin.integer ui32> !69;
+        memref.sub sub_v142 <- lhs_v102 - rhs_v103;
+        mul_v143 = memref.alloc  : memref.ranked <8 : builtin.integer ui32> !70;
+        memref.mul mul_v143 <- lhs_v102 * rhs_v103;
+        div_v144 = memref.alloc  : memref.ranked <8 : builtin.integer ui32> !71;
+        memref.div div_v144 <- lhs_v102 / rhs_v103;
+        llvm.store *add_p_v98 <- add_v141 ;
+        llvm.store *sub_p_v99 <- sub_v142 ;
+        llvm.store *mul_p_v100 <- mul_v143 ;
+        llvm.store *div_p_v101 <- div_v144 ;
         llvm.return 
     }
 }
@@ -107,3 +223,44 @@ outlined_attributes:
 !28 = [builtin_given_names = builtin.given_names [sum_norm]]
 !29 = [builtin_given_names = builtin.given_names [prod]]
 !30 = [builtin_given_names = builtin.given_names [res]]
+!31 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, max_p, min_p]]
+!32 = [builtin_given_names = builtin.given_names [lhs]]
+!33 = [builtin_given_names = builtin.given_names [rhs]]
+!34 = [builtin_given_names = builtin.given_names [max]]
+!35 = [builtin_given_names = builtin.given_names [min]]
+!36 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, max_p, min_p]]
+!37 = [builtin_given_names = builtin.given_names [lhs]]
+!38 = [builtin_given_names = builtin.given_names [rhs]]
+!39 = [builtin_given_names = builtin.given_names [max]]
+!40 = [builtin_given_names = builtin.given_names [min]]
+!41 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, max_p, min_p]]
+!42 = [builtin_given_names = builtin.given_names [lhs]]
+!43 = [builtin_given_names = builtin.given_names [rhs]]
+!44 = [builtin_given_names = builtin.given_names [max]]
+!45 = [builtin_given_names = builtin.given_names [min]]
+!46 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, max_p, min_p]]
+!47 = [builtin_given_names = builtin.given_names [lhs]]
+!48 = [builtin_given_names = builtin.given_names [rhs]]
+!49 = [builtin_given_names = builtin.given_names [max]]
+!50 = [builtin_given_names = builtin.given_names [min]]
+!51 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, add_p, sub_p, mul_p, div_p]]
+!52 = [builtin_given_names = builtin.given_names [lhs]]
+!53 = [builtin_given_names = builtin.given_names [rhs]]
+!54 = [builtin_given_names = builtin.given_names [add]]
+!55 = [builtin_given_names = builtin.given_names [sub]]
+!56 = [builtin_given_names = builtin.given_names [mul]]
+!57 = [builtin_given_names = builtin.given_names [div]]
+!58 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, add_p, sub_p, mul_p, div_p]]
+!59 = [builtin_given_names = builtin.given_names [lhs]]
+!60 = [builtin_given_names = builtin.given_names [rhs]]
+!61 = [builtin_given_names = builtin.given_names [add]]
+!62 = [builtin_given_names = builtin.given_names [sub]]
+!63 = [builtin_given_names = builtin.given_names [mul]]
+!64 = [builtin_given_names = builtin.given_names [div]]
+!65 = [builtin_given_names = builtin.given_names [lhs_p, rhs_p, add_p, sub_p, mul_p, div_p]]
+!66 = [builtin_given_names = builtin.given_names [lhs]]
+!67 = [builtin_given_names = builtin.given_names [rhs]]
+!68 = [builtin_given_names = builtin.given_names [add]]
+!69 = [builtin_given_names = builtin.given_names [sub]]
+!70 = [builtin_given_names = builtin.given_names [mul]]
+!71 = [builtin_given_names = builtin.given_names [div]]

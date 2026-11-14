@@ -38,7 +38,8 @@ use crate::{
         conversions::{ScalarCastKind, scalar_cast_kind},
         ops::{
             AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExtractOp,
-            ExtractSliceOp, GenerateOp, InsertSliceOp, MatMulOp, MulOp, ReshapeOp, SplatOp, SubOp,
+            ExtractSliceOp, GenerateOp, InsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp, ReshapeOp,
+            SplatOp, SubOp,
         },
         types::RankedTensorType,
     },
@@ -59,6 +60,8 @@ impl_no_self_side_effects!(
     SubOp,
     MulOp,
     DivOp,
+    MaxOp,
+    MinOp,
     MatMulOp,
     BatchMatMulOp,
     ExtractSliceOp,
@@ -136,6 +139,8 @@ enum BinaryOpKind {
     Sub,
     Mul,
     Div,
+    Max,
+    Min,
 }
 
 /// Compute `lhs <bin_op> rhs` for two scalar constants, as per `bin_op`'s LLVM lowering.
@@ -172,6 +177,18 @@ fn fold_scalar_binary(
                 }
                 lhs_value.sdiv(&rhs_value)
             }
+            BinaryOpKind::Max | BinaryOpKind::Min => {
+                let lhs_is_less = if is_unsigned {
+                    lhs_value.ult(&rhs_value)
+                } else {
+                    lhs_value.slt(&rhs_value)
+                };
+                if lhs_is_less == matches!(bin_op, BinaryOpKind::Max) {
+                    rhs_value
+                } else {
+                    lhs_value
+                }
+            }
         };
         return Some(Box::new(IntegerAttr::new(lhs.get_type(), result)));
     }
@@ -179,12 +196,15 @@ fn fold_scalar_binary(
     let lhs = attr_cast::<dyn FloatAttr>(lhs)?;
     let rhs = attr_cast::<dyn FloatAttr>(rhs)?;
     let result = match bin_op {
-        BinaryOpKind::Add => lhs.add(rhs),
-        BinaryOpKind::Sub => lhs.sub(rhs),
-        BinaryOpKind::Mul => lhs.mul(rhs),
-        BinaryOpKind::Div => lhs.div(rhs),
+        BinaryOpKind::Add => lhs.add(rhs).value,
+        BinaryOpKind::Sub => lhs.sub(rhs).value,
+        BinaryOpKind::Mul => lhs.mul(rhs).value,
+        BinaryOpKind::Div => lhs.div(rhs).value,
+        // IEEE 754-2019 `maximum` and `minimum`, as `llvm.maximum` and `llvm.minimum`.
+        BinaryOpKind::Max => lhs.maximum(rhs),
+        BinaryOpKind::Min => lhs.minimum(rhs),
     };
-    Some(result.value)
+    Some(result)
 }
 
 /// Get `ty` as an [IntegerType], if it is one.
@@ -430,6 +450,8 @@ impl_binary_const_fold!(
     SubOp => BinaryOpKind::Sub,
     MulOp => BinaryOpKind::Mul,
     DivOp => BinaryOpKind::Div,
+    MaxOp => BinaryOpKind::Max,
+    MinOp => BinaryOpKind::Min,
 );
 
 #[op_interface_impl]

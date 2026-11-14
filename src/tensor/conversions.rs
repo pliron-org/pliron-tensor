@@ -71,8 +71,8 @@ use crate::{
         ops::{
             AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExtractOp,
             ExtractSliceOp as TensorExtractSliceOp, GenerateOp,
-            InsertSliceOp as TensorInsertSliceOp, MatMulOp, MulOp, ReshapeOp as TensorReshapeOp,
-            SplatOp, SubOp,
+            InsertSliceOp as TensorInsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp,
+            ReshapeOp as TensorReshapeOp, SplatOp, SubOp,
         },
         types::RankedTensorType,
     },
@@ -776,8 +776,8 @@ impl BufferizableOpInterface for ExtractOp {
     }
 }
 
-/// Shared lowering for `tensor.add`, `tensor.sub`, `tensor.mul`, and
-/// `tensor.div`. Each operation receives a fresh result buffer:
+/// Shared lowering for elementwise binary ops ([ElementWiseBinaryTensorOpInterface]).
+/// Each operation receives a fresh result buffer:
 ///
 /// ```text
 /// %sum = tensor.add %lhs, %rhs : tensor<4x?xf32>
@@ -888,6 +888,30 @@ impl ElementWiseBinaryTensorOpToMemref for DivOp {
     }
 }
 
+impl ElementWiseBinaryTensorOpToMemref for MaxOp {
+    fn build_memref_op(
+        &self,
+        ctx: &mut Context,
+        res: Value,
+        lhs: Value,
+        rhs: Value,
+    ) -> Ptr<Operation> {
+        memref::ops::MaxOp::new(ctx, res, lhs, rhs).get_operation()
+    }
+}
+
+impl ElementWiseBinaryTensorOpToMemref for MinOp {
+    fn build_memref_op(
+        &self,
+        ctx: &mut Context,
+        res: Value,
+        lhs: Value,
+        rhs: Value,
+    ) -> Ptr<Operation> {
+        memref::ops::MinOp::new(ctx, res, lhs, rhs).get_operation()
+    }
+}
+
 macro_rules! impl_non_aliasing_bufferizable {
     ($op_ty:ty) => {
         #[op_interface_impl]
@@ -935,6 +959,8 @@ impl_non_aliasing_bufferizable!(AddOp);
 impl_non_aliasing_bufferizable!(SubOp);
 impl_non_aliasing_bufferizable!(MulOp);
 impl_non_aliasing_bufferizable!(DivOp);
+impl_non_aliasing_bufferizable!(MaxOp);
+impl_non_aliasing_bufferizable!(MinOp);
 
 /// Allow [pliron_llvm::ops::LoadOp] to participate in bufferization when it
 /// loads a tensor value — the rewrite converts the result type to memref.

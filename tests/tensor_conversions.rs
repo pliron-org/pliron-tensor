@@ -23,7 +23,10 @@ use pliron_tensor::tensor::{
 mod common;
 use common::{
     assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module,
-    tensor::{bufferize_module, input_tensor, output_data, output_tensor},
+    tensor::{
+        Bf16, Operands, arith_f32, arith_i32, arith_ui32, bufferize_module, check_binary_case,
+        input_tensor, max_min_f32, max_min_i32, max_min_ui32, output_data, output_tensor,
+    },
 };
 
 /// Run `input_ir` through the full pipeline and return
@@ -219,6 +222,24 @@ fn test_elementwise_ops_from_rust() {
         let expected = ((a + b) * b) / a;
         assert!((c - expected).abs() < 1e-12);
     }
+
+    let args = Operands::Arguments;
+    // A NaN in either operand must give NaN, and -0.0 must be less than +0.0.
+    check_binary_case(&jit, "test_tensor_max_min_f32", args, &max_min_f32());
+    // bf16 must follow the same NaN and signed-zero rules as f32.
+    let bf16_case = max_min_f32().map(Bf16::from_f32);
+    check_binary_case(&jit, "test_tensor_max_min_bf16", args, &bf16_case);
+    // Signless integers must use a signed comparison.
+    check_binary_case(&jit, "test_tensor_max_min_i32", args, &max_min_i32());
+    // Unsigned integers must use an unsigned comparison, so 2^31 and more are large values.
+    check_binary_case(&jit, "test_tensor_max_min_ui32", args, &max_min_ui32());
+    // The results must follow IEEE 754 for NaN, infinity and the sign of zero,
+    // and must be rounded to f32.
+    check_binary_case(&jit, "test_tensor_arith_f32", args, &arith_f32());
+    // The results must wrap, and the division must be signed and round toward zero.
+    check_binary_case(&jit, "test_tensor_arith_i32", args, &arith_i32());
+    // The results must wrap, and the division must be unsigned.
+    check_binary_case(&jit, "test_tensor_arith_ui32", args, &arith_ui32());
 }
 
 /// `tensor.matmul`, with static and with dynamic operand shapes, and
@@ -238,11 +259,13 @@ fn test_matmul_from_rust() {
     let lhs = input_tensor(&[4, 4], &lhs_data);
     let rhs = input_tensor(&[4, 4], &rhs_data);
 
-    // The three matmul functions differ only in how static their operand shapes are.
+    // The first three matmul functions differ only in how static their operand shapes are.
+    // The last one must also lower with unsigned elements.
     for name in [
         "test_matmul_all_static",
         "test_matmul_inner_dynamic",
         "test_matmul_all_dynamic",
+        "test_matmul_unsigned",
     ] {
         let f = unsafe {
             lookup_fn::<extern "C" fn(*const u8, *const u8, *const u8, *mut u8) -> ()>(&jit, name)
