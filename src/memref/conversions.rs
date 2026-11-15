@@ -65,13 +65,15 @@ use pliron_llvm_intrinsics::mangling::llvm_mangled_ty;
 
 use crate::memref::{
     descriptor,
+    layout::permute,
     op_interfaces::{
         DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface, ReshapeOpInterface,
+        TransposeOpInterface,
     },
     ops::{
         AddOp, AllocOp, CopyOp, DeallocOp, DimOp, DivOp, GenerateOp, GetGlobalOp, GlobalOp, LoadOp,
         MatMulOp as MemrefMatMulOp, MaxOp, MemrefCastOp, MinOp, MulOp as MemrefMulOp, ReshapeOp,
-        SliceParam, StoreOp, SubOp, SubviewOp, YieldOp,
+        SliceParam, StoreOp, SubOp, SubviewOp, TransposeOp, YieldOp,
     },
     type_interfaces::{DenseElementTypeHandle, MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
@@ -1190,6 +1192,51 @@ impl ToCFDialect for SubviewOp {
             },
         )?;
 
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![result_descriptor]);
+        Ok(())
+    }
+}
+
+/// Replace [TransposeOp] with a new descriptor over the source storage,
+/// with the sizes and strides permuted.
+///
+/// ```text
+/// %t = memref.transpose %m [1, 0]
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %t = <descriptor {
+///        allocated: <allocated pointer of %m>,
+///        aligned: <aligned pointer of %m>,
+///        offset: <offset of %m>,
+///        sizes: [size1, size0],
+///        strides: [stride1, stride0],
+///      }>
+/// ```
+#[op_interface_impl]
+impl ToCFDialect for TransposeOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let result_ty = TypedHandle::<RankedMemrefType>::from_handle(self.result_type(ctx), ctx)
+            .expect("TransposeOp result must be a RankedMemrefType");
+        let permutation = self.permutation(ctx);
+        let source_descriptor = descriptor::unpack_descriptor(ctx, rewriter, self.source(ctx));
+        let result_descriptor = descriptor::pack_descriptor(
+            ctx,
+            rewriter,
+            result_ty,
+            descriptor::Descriptor {
+                sizes: permute(&source_descriptor.sizes, &permutation),
+                strides: permute(&source_descriptor.strides, &permutation),
+                ..source_descriptor
+            },
+        )?;
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![result_descriptor]);
         Ok(())
     }

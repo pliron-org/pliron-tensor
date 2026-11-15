@@ -1,0 +1,62 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_transpose_2d: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(src_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        src = llvm.load src_p : tensor.ranked<2x3:builtin.integer i64>;
+        transposed = tensor.transpose src [1, 0] : tensor.ranked<3x2:builtin.integer i64>;
+        llvm.store *out_p <- transposed;
+        llvm.return
+    };
+    llvm.func @test_transpose_3d_extract: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64, builtin.integer i64, builtin.integer i64) variadic = false> [] {
+      ^entry(src_p: llvm.ptr(0), i_int: builtin.integer i64, j_int: builtin.integer i64, k_int: builtin.integer i64):
+        src = llvm.load src_p : tensor.ranked<2x3x4:builtin.integer i64>;
+        transposed = tensor.transpose src [2, 0, 1] : tensor.ranked<4x2x3:builtin.integer i64>;
+        i = index.from_integer i_int : index.index;
+        j = index.from_integer j_int : index.index;
+        k = index.from_integer k_int : index.index;
+        res = tensor.extract transposed[i, j, k]: builtin.integer i64;
+        llvm.return res
+    };
+    llvm.func @test_transpose_dynamic: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(src_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        src = llvm.load src_p : tensor.ranked<?x3:builtin.integer i64>;
+        transposed = tensor.transpose src [1, 0] : tensor.ranked<3x?:builtin.integer i64>;
+        llvm.store *out_p <- transposed;
+        llvm.return
+    };
+    llvm.func @test_transpose_add: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(src_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        src = llvm.load src_p : tensor.ranked<3x3:builtin.integer i64>;
+        transposed = tensor.transpose src [1, 0] : tensor.ranked<3x3:builtin.integer i64>;
+        sum = tensor.add src, transposed : tensor.ranked<3x3:builtin.integer i64>;
+        llvm.store *out_p <- sum;
+        llvm.return
+    };
+    llvm.func @test_transpose_twice_reshape: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(src_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        src = llvm.load src_p : tensor.ranked<2x3:builtin.integer i64>;
+        transposed = tensor.transpose src [1, 0] : tensor.ranked<3x2:builtin.integer i64>;
+        restored = tensor.transpose transposed [1, 0] : tensor.ranked<2x3:builtin.integer i64>;
+        flat = tensor.reshape restored : tensor.ranked<6:builtin.integer i64>;
+        llvm.store *out_p <- flat;
+        llvm.return
+    };
+    llvm.func @test_transpose_reshape: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(src_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        src = llvm.load src_p : tensor.ranked<2x3:builtin.integer i64>;
+        transposed = tensor.transpose src [1, 0] : tensor.ranked<3x2:builtin.integer i64>;
+        flat = tensor.reshape transposed : tensor.ranked<6:builtin.integer i64>;
+        llvm.store *out_p <- flat;
+        llvm.return
+    };
+    llvm.func @test_transpose_write_live_source: llvm.func <llvm.void (llvm.ptr(0), builtin.integer i64, llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(src_p: llvm.ptr(0), value: builtin.integer i64, out_src_p: llvm.ptr(0), out_updated_p: llvm.ptr(0)):
+        src = llvm.load src_p : tensor.ranked<2x3:builtin.integer i64>;
+        transposed = tensor.transpose src [1, 0] : tensor.ranked<3x2:builtin.integer i64>;
+        patch = tensor.splat value : tensor.ranked<1x1:builtin.integer i64>;
+        updated = tensor.insert_slice patch into transposed [2, 0] [1, 1] [1, 1] : tensor.ranked<3x2:builtin.integer i64>;
+        llvm.store *out_src_p <- src;
+        llvm.store *out_updated_p <- updated;
+        llvm.return
+    }
+}

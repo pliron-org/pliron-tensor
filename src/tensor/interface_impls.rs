@@ -31,6 +31,8 @@ use pliron_common_dialects::index::attributes::known_constant_index;
 use crate::{
     memref::{
         attributes::ShapedTypeHandle,
+        layout::{identity_strides, permute},
+        op_interfaces::TransposeOpInterface,
         type_interfaces::{DenseElementTypeHandle, Dimension},
     },
     tensor::{
@@ -39,7 +41,7 @@ use crate::{
         ops::{
             AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExtractOp,
             ExtractSliceOp, GenerateOp, InsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp, ReshapeOp,
-            SplatOp, SubOp,
+            SplatOp, SubOp, TransposeOp,
         },
         types::RankedTensorType,
     },
@@ -67,6 +69,7 @@ impl_no_self_side_effects!(
     ExtractSliceOp,
     InsertSliceOp,
     ReshapeOp,
+    TransposeOp,
 );
 
 #[attr_interface_impl]
@@ -585,6 +588,73 @@ impl ConstFoldInterface for ReshapeOp {
             return vec![None];
         }
         vec![Some(Box::new(folded))]
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for TransposeOp {
+    fn check_fold(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Vec<Option<AttrObj>> {
+        let Some(source) = operand_attrs.first().and_then(dense_operand) else {
+            // The source is not a constant.
+            return vec![None];
+        };
+        let Some(result_ty) = static_shaped_type(ctx, self.result_type(ctx)) else {
+            // The result shape is not static.
+            return vec![None];
+        };
+        if source.is_splat(ctx) {
+            // The source is a splat, so the result is the same splat, but with type `result_ty`.
+            let folded =
+                DenseElementsAttr::new_splat(ctx, result_ty, source.raw_data().to_vec()).ok();
+            return vec![folded.map(|folded| Box::new(folded) as AttrObj)];
+        }
+        let Some(num_elements) = source
+            .num_elements(ctx)
+            .filter(|num_elements| *num_elements <= MAX_FOLD_ELEMENTS)
+        else {
+            // The source is too large to copy.
+            return vec![None];
+        };
+        let static_sizes = |shape: &[Dimension]| -> Option<Vec<usize>> {
+            shape
+                .iter()
+                .map(|dim| match dim {
+                    Dimension::Static(size) => Some(*size),
+                    Dimension::Dynamic => None,
+                })
+                .collect()
+        };
+        let permutation = self.permutation(ctx);
+        let (Some(source_strides), Some(result_sizes)) = (
+            static_sizes(&identity_strides(source.ty().deref(ctx).shape())),
+            static_sizes(result_ty.deref(ctx).shape()),
+        ) else {
+            return vec![None];
+        };
+        // The source stride of each result dimension.
+        let strides = permute(&source_strides, &permutation);
+        let mut data = Vec::with_capacity(num_elements * source.element_size(ctx));
+        for result_idx in 0..num_elements {
+            // Convert the row-major result position to a source position.
+            let mut remaining = result_idx;
+            let mut source_idx = 0;
+            for (size, stride) in result_sizes.iter().zip(&strides).rev() {
+                source_idx += (remaining % size) * stride;
+                remaining /= size;
+            }
+            data.extend_from_slice(source.element_data(ctx, source_idx));
+        }
+        let folded = DenseElementsAttr::new(ctx, result_ty, data).ok();
+        vec![folded.map(|folded| Box::new(folded) as AttrObj)]
     }
 
     fn fold_in_place(

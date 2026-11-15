@@ -79,6 +79,15 @@ pub struct SliceParamsAttr {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct DroppedDimsAttr(pub Vec<usize>);
 
+/// Transpose permutation: result dimension `i` is source dimension `self.0[i]`.
+#[pliron_attr(
+    name = "memref.permutation",
+    format = "`[` vec($0, CharSpace(`,`)) `]`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct PermutationAttr(pub Vec<usize>);
+
 #[pliron_attr(name = "memref.const_pointer", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct ConstPointerAttr(pub *const ());

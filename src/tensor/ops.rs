@@ -46,15 +46,19 @@ use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::I
 
 use crate::memref::{
     attributes::ShapedTypeHandle,
+    layout::permute,
     op_interfaces::{
         CompatibleShapesOp, DynamicDimensionOperandsOp, GenerateOpInterface, ReshapeOpInterface,
+        TransposeOpInterface,
     },
     ops::{SliceParam, YieldOp},
     type_interfaces::{MultiDimensionalType, ShapedType},
 };
 
 use super::{
-    attributes::{CastSignednessAttr, DenseElementsAttr, SliceParamAttr, SliceParamsAttr},
+    attributes::{
+        CastSignednessAttr, DenseElementsAttr, PermutationAttr, SliceParamAttr, SliceParamsAttr,
+    },
     op_interfaces::ElementWiseBinaryTensorOpInterface,
     types::{RankedTensorType, can_broadcast_to},
 };
@@ -306,11 +310,6 @@ impl Verify for SplatOp {
 /// | result | description |
 /// |-----|-------|
 /// | `result` | A ranked tensor with the same shape as `input` and the requested element type. |
-///
-/// ### Attributes
-/// | attribute | description |
-/// |-----|-------|
-/// | `tensor_cast_signedness` | The semantic signedness of the input and result element types. |
 #[pliron_op(
     name = "tensor.elementwise_cast",
     format = "$0 ` : ` type($0) ` ` attr($tensor_cast_signedness, $CastSignednessAttr)",
@@ -2170,5 +2169,52 @@ impl ReshapeOp {
         let mut operands = vec![source];
         operands.extend(dynamic_dimensions);
         Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0)
+    }
+}
+
+/// [Permute](crate::memref::layout::permute) the dimensions of a tensor by the given
+/// [permutation](PermutationAttr), so that `result[permute(j, permutation)] = source[j]`.
+///
+/// ### Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `source` | The source ranked tensor. |
+///
+/// ### Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | A ranked tensor with the permuted shape of `source`. |
+#[pliron_op(
+    name = "tensor.transpose",
+    format = "$0 ` ` attr($memref_transpose_permutation, $PermutationAttr) ` : ` type($0)",
+    verifier = "succ",
+    interfaces = [
+        OneOpdInterface,
+        OneResultInterface,
+        OperandNOfType<0, RankedTensorType>,
+        ResultNOfType<0, RankedTensorType>,
+        TransposeOpInterface<RankedTensorType>,
+    ],
+)]
+pub struct TransposeOp;
+
+impl TransposeOp {
+    /// Create a new `TransposeOp` with the result type inferred.
+    pub fn new(ctx: &mut Context, source: Value, permutation: Vec<usize>) -> Self {
+        let (element_type, shape) = {
+            let source_ty = source.get_type(ctx);
+            let source_ty = source_ty.deref(ctx);
+            let source_ty = source_ty
+                .downcast_ref::<RankedTensorType>()
+                .expect("tensor.transpose source must be ranked");
+            (
+                source_ty.element_type(),
+                permute(source_ty.shape(), &permutation),
+            )
+        };
+        let result_type = RankedTensorType::get(ctx, element_type, shape);
+        let op = Operation::new_op::<Self>(ctx, vec![result_type.into()], vec![source], vec![], 0);
+        op.set_permutation(ctx, permutation);
+        op
     }
 }

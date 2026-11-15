@@ -78,6 +78,16 @@ builtin.module @test_module {
         llvm.store *res_p <- product;
         llvm.return
     };
+    llvm.func @test_fold_transpose: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(res_p: llvm.ptr(0), splat_res_p: llvm.ptr(0)):
+        c = tensor.constant !outlined : tensor.ranked<2x3x2:builtin.integer i64> !123;
+        transposed = tensor.transpose c [2, 0, 1] : tensor.ranked<2x2x3:builtin.integer i64>;
+        llvm.store *res_p <- transposed;
+        ones = tensor.constant !outlined : tensor.ranked<2x3:builtin.integer i64> !124;
+        transposed_ones = tensor.transpose ones [1, 0] : tensor.ranked<3x2:builtin.integer i64>;
+        llvm.store *splat_res_p <- transposed_ones;
+        llvm.return
+    };
     llvm.func @test_fold_max_min_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
       ^entry(max_p: llvm.ptr(0), min_p: llvm.ptr(0)):
         lhs = tensor.constant !outlined : tensor.ranked<8:builtin.fp32> !111;
@@ -176,3 +186,5 @@ outlined_attributes:
 !120 = [tensor_constant_value = memref.dense_elements <tensor.ranked<8:builtin.integer i32> = [1, 1, 2, -2, -2, 7, -5, 65536]>]
 !121 = [tensor_constant_value = memref.dense_elements <tensor.ranked<8:builtin.integer ui32> = [0, 4294967295, 2147483650, 2147483648, 7, 100, 65536, 4294967295]>]
 !122 = [tensor_constant_value = memref.dense_elements <tensor.ranked<8:builtin.integer ui32> = [1, 1, 2, 2, 2, 7, 65536, 4294967295]>]
+!123 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3x2:builtin.integer i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]>]
+!124 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.integer i64> = splat 1>]

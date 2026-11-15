@@ -210,11 +210,6 @@ pub enum TrackedMemoryManagerErr {
 /// Similar to [`AllocOp`](crate::memref::ops::AllocOp) but lowers to a call to
 /// [tracked_malloc] instead of `malloc`, recording the allocation in a [TrackedTMM].
 ///
-/// ### Attributes
-/// | attribute | description |
-/// |-----|-------|
-/// | `memref_tmm_ptr_alloc` | [ConstPointerAttr]: opaque pointer to the [TrackedTMM] state |
-///
 /// ### Operands(s)
 /// | operand | description |
 /// |-----|-------|
@@ -405,11 +400,6 @@ impl MemrefAllocOpInterface for TrackedAllocOp {
 ///
 /// Similar to [`DeallocOp`](crate::memref::ops::DeallocOp) but lowers to a call to
 /// [tracked_dealloc] instead of `free`, removing the pointer from the [TrackedTMM] tracker.
-///
-/// ### Attributes
-/// | attribute | description |
-/// |-----|-------|
-/// | `memref_tmm_ptr_dealloc` | [ConstPointerAttr]: opaque pointer to the [TrackedTMM] state |
 ///
 /// ### Operand(s)
 /// | operand | description |

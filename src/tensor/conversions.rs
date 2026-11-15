@@ -53,14 +53,15 @@ use crate::{
     memref::{
         self, ToMemrefType,
         attributes::DenseElementsAttr,
-        layout::{MemrefLayout, subview_layout},
+        layout::{MemrefLayout, subview_layout, transpose_layout},
         op_interfaces::{
             DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface, ReshapeOpInterface,
+            TransposeOpInterface,
         },
         ops::{
             CopyOp as MemrefCopyOp, GetGlobalOp as MemrefGetGlobalOp, GlobalOp as MemrefGlobalOp,
             MatMulOp as MemrefMatMulOp, ReshapeOp as MemrefReshapeOp, SliceParam,
-            SubviewOp as MemrefSubviewOp, YieldOp,
+            SubviewOp as MemrefSubviewOp, TransposeOp as MemrefTransposeOp, YieldOp,
         },
         type_interfaces::{Dimension, MultiDimensionalType, ShapedType},
         types::RankedMemrefType,
@@ -72,7 +73,7 @@ use crate::{
             AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExtractOp,
             ExtractSliceOp as TensorExtractSliceOp, GenerateOp,
             InsertSliceOp as TensorInsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp,
-            ReshapeOp as TensorReshapeOp, SplatOp, SubOp,
+            ReshapeOp as TensorReshapeOp, SplatOp, SubOp, TransposeOp as TensorTransposeOp,
         },
         types::RankedTensorType,
     },
@@ -1712,6 +1713,78 @@ impl BufferizableOpInterface for TensorReshapeOp {
             MemrefReshapeOp::new(ctx, source, self.get_dynamic_dimensions(ctx), result_ty);
         rewriter.append_op(ctx, &memref_reshape);
         rewriter.replace_operation(ctx, self.get_operation(), memref_reshape.get_operation());
+        Ok(())
+    }
+}
+
+/// A tensor transpose gives a memref view over the source buffer
+/// with permuted sizes and strides.
+///
+/// ```text
+/// %t = tensor.transpose %m [1, 0] : tensor<3x2xf32>
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// %t = memref.transpose %m [1, 0] : memref<3x2xf32, strided<[1, 3], offset: 0>>
+/// ```
+#[op_interface_impl]
+impl BufferizableOpInterface for TensorTransposeOp {
+    fn operand_bufferizes_to_memory_read(&self, ctx: &Context, opd: Use<Value>) -> bool {
+        self.get_operation().deref(ctx).get_operand_as_use(0) == opd
+    }
+
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+
+    fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
+        let operand = self.get_operation().deref(ctx).get_operand_as_use(0);
+        vec![Alias {
+            operand,
+            result: self.get_result(ctx),
+            kind: AliasKind::Must,
+            relation: BufferRelation::Equivalent,
+        }]
+    }
+
+    fn get_operand_dynamic_dimensions(
+        &self,
+        _ctx: &Context,
+        _opd: Use<Value>,
+    ) -> Option<Vec<Value>> {
+        None
+    }
+
+    fn result_layout(
+        &self,
+        ctx: &Context,
+        _result: Value,
+        operand_layout: &dyn Fn(Use<Value>) -> MemrefLayout,
+    ) -> MemrefLayout {
+        let source = self.source(ctx).get_type(ctx);
+        let source = source.deref(ctx);
+        let shape = type_cast::<dyn ShapedType>(&*source)
+            .expect("Transpose source must be shaped")
+            .shape();
+        transpose_layout(
+            shape,
+            &operand_layout(self.get_operation().deref(ctx).get_operand_as_use(0)),
+            &self.permutation(ctx),
+        )
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let transpose = MemrefTransposeOp::new(ctx, self.source(ctx), self.permutation(ctx));
+        rewriter.append_op(ctx, &transpose);
+        rewriter.replace_operation(ctx, self.get_operation(), transpose.get_operation());
         Ok(())
     }
 }

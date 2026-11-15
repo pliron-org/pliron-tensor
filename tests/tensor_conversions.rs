@@ -850,6 +850,116 @@ fn test_reshape_layouts() {
     }
 }
 
+/// `tensor.transpose` must lower to a `memref.transpose` view of its source.
+#[test]
+fn test_transpose() {
+    let input = include_str!("resources/test_transpose.input.plir");
+    let ctx = &mut Context::new();
+    let (jit, ir) = compile_and_jit(ctx, &mut MallocFreeTMM, input);
+    assert_module_round_trips(&ir);
+    expect_file!["resources/test_transpose.expect.plir"].assert_eq(&ir);
+
+    let src_2x3: Vec<i64> = (0..6).collect();
+    // The transpose of [[0, 1, 2], [3, 4, 5]].
+    let transposed_2x3 = vec![0, 3, 1, 4, 2, 5];
+    type UnaryFn = extern "C" fn(*const u8, *mut u8);
+
+    // A transposed view must read the source elements in permuted order.
+    // The view of a dynamic source must get its sizes from the source descriptor.
+    for name in ["test_transpose_2d", "test_transpose_dynamic"] {
+        let f = unsafe { lookup_fn::<UnaryFn>(&jit, name) };
+        let mut out = output_tensor::<i64>(&[3, 2]).build_ir_descriptor();
+        f(
+            input_tensor(&[2, 3], &src_2x3)
+                .build_ir_descriptor()
+                .as_ptr(),
+            out.as_mut_ptr(),
+        );
+        assert_eq!(
+            unsafe { output_data::<i64>(&out, 2) },
+            transposed_2x3,
+            "{name}"
+        );
+    }
+
+    // Result element [i, j, k] of permutation [2, 0, 1] must be source element [j, k, i].
+    let src_2x3x4: Vec<i64> = (0..24).collect();
+    let src = input_tensor(&[2, 3, 4], &src_2x3x4).build_ir_descriptor();
+    let extract = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, i64, i64, i64) -> i64>(
+            &jit,
+            "test_transpose_3d_extract",
+        )
+    };
+    for i in 0..4 {
+        for j in 0..2 {
+            for k in 0..3 {
+                assert_eq!(
+                    extract(src.as_ptr(), i, j, k),
+                    j * 12 + k * 4 + i,
+                    "transposed[{i}, {j}, {k}]"
+                );
+            }
+        }
+    }
+
+    // An elementwise op must read its transposed operand through the view strides.
+    let src_3x3: Vec<i64> = (0..9).collect();
+    let add = unsafe { lookup_fn::<UnaryFn>(&jit, "test_transpose_add") };
+    let mut out = output_tensor::<i64>(&[3, 3]).build_ir_descriptor();
+    add(
+        input_tensor(&[3, 3], &src_3x3)
+            .build_ir_descriptor()
+            .as_ptr(),
+        out.as_mut_ptr(),
+    );
+    let expected: Vec<i64> = (0..3)
+        .flat_map(|i| (0..3).map(move |j| (i * 3 + j) + (j * 3 + i)))
+        .collect();
+    assert_eq!(unsafe { output_data::<i64>(&out, 2) }, expected);
+
+    // Two inverse transposes must give an identity view that reshapes with no copy.
+    // A reshape of one transpose must copy the transposed elements to an identity buffer.
+    let cases = [
+        ("test_transpose_twice_reshape", &src_2x3),
+        ("test_transpose_reshape", &transposed_2x3),
+    ];
+    for (name, expected) in cases {
+        let f = unsafe { lookup_fn::<UnaryFn>(&jit, name) };
+        let mut out = output_tensor::<i64>(&[6]).build_ir_descriptor();
+        f(
+            input_tensor(&[2, 3], &src_2x3)
+                .build_ir_descriptor()
+                .as_ptr(),
+            out.as_mut_ptr(),
+        );
+        assert_eq!(unsafe { output_data::<i64>(&out, 1) }, *expected, "{name}");
+    }
+
+    // The source must keep its values after a write through its transposed view.
+    let write = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, i64, *mut u8, *mut u8)>(
+            &jit,
+            "test_transpose_write_live_source",
+        )
+    };
+    let mut out_src = output_tensor::<i64>(&[2, 3]).build_ir_descriptor();
+    let mut out_updated = output_tensor::<i64>(&[3, 2]).build_ir_descriptor();
+    write(
+        input_tensor(&[2, 3], &src_2x3)
+            .build_ir_descriptor()
+            .as_ptr(),
+        99,
+        out_src.as_mut_ptr(),
+        out_updated.as_mut_ptr(),
+    );
+    assert_eq!(unsafe { output_data::<i64>(&out_src, 2) }, src_2x3);
+    assert_eq!(
+        unsafe { output_data::<i64>(&out_updated, 2) },
+        vec![0, 3, 1, 4, 99, 5]
+    );
+}
+
 /// Batch multiplication must read and write the correct elements
 /// through non-identity operand layouts.
 #[test]

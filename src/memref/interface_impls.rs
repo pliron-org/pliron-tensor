@@ -15,7 +15,7 @@ use pliron_common_dialects::index::attributes::{ConstantIndexAttr, known_constan
 
 use crate::memref::{
     attributes::ShapedTypeHandle,
-    ops::{DimOp, GetGlobalOp, MemrefCastOp, ReshapeOp, SubviewOp, YieldOp},
+    ops::{DimOp, GetGlobalOp, MemrefCastOp, ReshapeOp, SubviewOp, TransposeOp, YieldOp},
     type_interfaces::Dimension,
 };
 
@@ -23,6 +23,7 @@ impl_no_self_side_effects!(
     YieldOp,
     DimOp,
     SubviewOp,
+    TransposeOp,
     ReshapeOp,
     MemrefCastOp,
     GetGlobalOp

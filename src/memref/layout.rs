@@ -158,9 +158,82 @@ pub fn subview_layout(
     canonicalize(Some(StridedLayout { offset, strides }), &sizes)
 }
 
+/// Does `permutation` contain each dimension in `0..rank` exactly once?
+pub fn is_valid_permutation(permutation: &[usize], rank: usize) -> bool {
+    let mut seen = vec![false; rank];
+    permutation.len() == rank
+        && permutation
+            .iter()
+            .all(|&dim| dim < rank && !std::mem::replace(&mut seen[dim], true))
+}
+
+/// Reorder `values` by `permutation`: `result[i] = values[permutation[i]]`.
+pub fn permute<T: Clone>(values: &[T], permutation: &[usize]) -> Vec<T> {
+    permutation.iter().map(|&dim| values[dim].clone()).collect()
+}
+
+/// Compute a transposed view's layout from the source layout.
+pub fn transpose_layout(
+    source_shape: &[Dimension],
+    source_layout: &MemrefLayout,
+    permutation: &[usize],
+) -> MemrefLayout {
+    let (offset, strides) = as_strided(source_layout, source_shape);
+    canonicalize(
+        Some(StridedLayout {
+            offset,
+            strides: permute(&strides, permutation),
+        }),
+        &permute(source_shape, permutation),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A permutation must contain each dimension below the rank exactly once.
+    #[test]
+    fn permutations() {
+        assert!(is_valid_permutation(&[], 0));
+        assert!(is_valid_permutation(&[0, 1], 2));
+        assert!(is_valid_permutation(&[2, 0, 1], 3));
+        assert!(!is_valid_permutation(&[0], 2));
+        assert!(!is_valid_permutation(&[0, 0], 2));
+        assert!(!is_valid_permutation(&[0, 2], 2));
+        assert_eq!(permute(&['a', 'b', 'c'], &[2, 0, 1]), vec!['c', 'a', 'b']);
+    }
+
+    /// A transposed view must permute the source strides and keep the source offset.
+    /// A transpose back to the source order must give the source layout.
+    #[test]
+    fn transposed_views() {
+        let shape = [Static(2), Static(3), Static(4)];
+        let transposed = transpose_layout(&shape, &None, &[2, 0, 1]);
+        assert_eq!(
+            transposed,
+            Some(StridedLayout {
+                offset: Static(0),
+                strides: vec![Static(1), Static(12), Static(4)]
+            })
+        );
+        let transposed_shape = permute(&shape, &[2, 0, 1]);
+        assert_eq!(
+            transpose_layout(&transposed_shape, &transposed, &[1, 2, 0]),
+            None
+        );
+        let strided = Some(StridedLayout {
+            offset: Dynamic,
+            strides: vec![Static(8), Dynamic],
+        });
+        assert_eq!(
+            transpose_layout(&[Static(2), Dynamic], &strided, &[1, 0]),
+            Some(StridedLayout {
+                offset: Dynamic,
+                strides: vec![Dynamic, Static(8)]
+            })
+        );
+    }
 
     /// Each identity stride must depend only on the later sizes, and must be dynamic
     /// if a later size is dynamic or the product overflows.

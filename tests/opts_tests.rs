@@ -69,6 +69,7 @@ fn test_fold_and_dce() {
     // - @test_no_fold_undefined: the division by zero, the signed division overflow
     //   and the extract out of bounds must stay.
     // - @test_dce: the unused `tensor.add` and `tensor.generate` must be removed.
+    // - @test_fold_transpose must store only constants, for a dense and a splat source.
     // - @test_fold_max_min_* and @test_fold_arith_* must store only constants, equal
     //   to the values that the lowering computes.
     let after_opts = optimize_module(ctx, parsed_op);
@@ -120,6 +121,21 @@ fn test_fold_and_dce() {
     let dce_fn = unsafe { lookup_fn::<extern "C" fn(*const u8, *mut u8) -> ()>(&jit, "test_dce") };
     dce_fn(arg.build_ir_descriptor().as_ptr(), dce_res.as_mut_ptr());
     assert_eq!(unsafe { output_data::<i64>(&dce_res, 2) }, [1, 4, 9, 16]);
+
+    let transpose =
+        unsafe { lookup_fn::<extern "C" fn(*mut u8, *mut u8) -> ()>(&jit, "test_fold_transpose") };
+    let mut transpose_res = output_tensor::<i64>(&[2, 2, 3]).build_ir_descriptor();
+    let mut transpose_splat_res = output_tensor::<i64>(&[3, 2]).build_ir_descriptor();
+    transpose(transpose_res.as_mut_ptr(), transpose_splat_res.as_mut_ptr());
+    // Element [i, j, k] of the result must be element [j, k, i] of c = [0, 1, ..., 11].
+    assert_eq!(
+        unsafe { output_data::<i64>(&transpose_res, 3) },
+        [0, 2, 4, 6, 8, 10, 1, 3, 5, 7, 9, 11]
+    );
+    assert_eq!(
+        unsafe { output_data::<i64>(&transpose_splat_res, 2) },
+        [1; 6]
+    );
 
     let consts = Operands::Constants;
     check_binary_case(&jit, "test_fold_max_min_f32", consts, &max_min_f32());

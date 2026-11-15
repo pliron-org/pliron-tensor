@@ -6,11 +6,12 @@
 use pliron::{
     builtin::op_interfaces::{
         AllOperandsOfType, AllResultsOfType, NOpdsInterface, NResultsInterface, OneOpdInterface,
-        OperandNOfType, OperandsMNOfType, ResultNImplsTy, ResultNOfType,
+        OneResultInterface, OperandNOfType, OperandsMNOfType, ResultNImplsTy, ResultNOfType,
         SingleBlockRegionInterface,
     },
     context::Context,
     derive::op_interface,
+    dict_key,
     op::{Op, op_cast},
     operation::Operation,
     result::Result,
@@ -21,7 +22,8 @@ use pliron::{
 use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::IndexType};
 
 use crate::memref::{
-    attributes::ShapedTypeHandle,
+    attributes::{PermutationAttr, ShapedTypeHandle},
+    layout::{is_valid_permutation, permute},
     ops::YieldOp,
     type_interfaces::{Dimension, ShapedType},
     types::RankedMemrefType,
@@ -307,6 +309,106 @@ pub trait ReshapeOpInterface<T: ShapedType>:
                     result_count
                 }
             );
+        }
+
+        Ok(())
+    }
+}
+
+dict_key!(
+    /// Attribute key for the [PermutationAttr] of a [TransposeOpInterface] op.
+    ATTR_KEY_TRANSPOSE_PERMUTATION,
+    "memref_transpose_permutation"
+);
+
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum TransposeOpInterfaceVerifyErr {
+    #[error("Transpose: Missing {ATTR_KEY_TRANSPOSE_PERMUTATION} attribute")]
+    MissingPermutationAttr,
+    #[error("Transpose: {permutation:?} is not a permutation of the {rank} source dimensions")]
+    InvalidPermutation {
+        permutation: Vec<usize>,
+        rank: usize,
+    },
+    #[error("Transpose result must have the source element type and the permuted source shape")]
+    ResultTypeMismatch,
+}
+
+/// Tensor and memref ops that permute the dimensions of their source
+/// by a [PermutationAttr], stored at [ATTR_KEY_TRANSPOSE_PERMUTATION].
+///
+/// - Operand 0: The source operand
+/// - The result has
+///   - The element type of the source
+///   - The permuted source shape
+#[op_interface]
+pub trait TransposeOpInterface<T: ShapedType>:
+    OneOpdInterface + OneResultInterface + OperandNOfType<0, T> + ResultNOfType<0, T>
+{
+    /// Get the source operand.
+    fn source(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(0)
+    }
+
+    /// Get the source dimension of each result dimension.
+    fn permutation(&self, ctx: &Context) -> Vec<usize> {
+        self.get_operation()
+            .deref(ctx)
+            .attributes
+            .get::<PermutationAttr>(&ATTR_KEY_TRANSPOSE_PERMUTATION)
+            .expect("Transpose permutation is missing or has an incorrect type")
+            .0
+            .clone()
+    }
+
+    /// Set the source dimension of each result dimension.
+    fn set_permutation(&self, ctx: &Context, permutation: Vec<usize>) {
+        self.get_operation().deref_mut(ctx).attributes.set(
+            ATTR_KEY_TRANSPOSE_PERMUTATION.clone(),
+            PermutationAttr(permutation),
+        );
+    }
+
+    fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let loc = op.loc(ctx);
+        let op_ref = op.get_operation().deref(ctx);
+        let Some(PermutationAttr(permutation)) = op_ref
+            .attributes
+            .get::<PermutationAttr>(&ATTR_KEY_TRANSPOSE_PERMUTATION)
+        else {
+            return verify_err!(loc, TransposeOpInterfaceVerifyErr::MissingPermutationAttr);
+        };
+
+        let src_ty_handle = op_ref.get_operand(0).get_type(ctx);
+        let src_ty_ref = src_ty_handle.deref(ctx);
+        let src_ty = src_ty_ref
+            .downcast_ref::<T>()
+            .expect("OperandNOfType<0, T> ensures the source is of type T");
+
+        let rank = src_ty.rank();
+        if !is_valid_permutation(permutation, rank) {
+            return verify_err!(
+                loc,
+                TransposeOpInterfaceVerifyErr::InvalidPermutation {
+                    permutation: permutation.clone(),
+                    rank
+                }
+            );
+        }
+
+        let result_ty_handle = op_ref.get_result(0).get_type(ctx);
+        let result_ty_ref = result_ty_handle.deref(ctx);
+        let result_ty = result_ty_ref
+            .downcast_ref::<T>()
+            .expect("ResultNOfType<0, T> ensures the result is of type T");
+
+        if result_ty.element_type() != src_ty.element_type()
+            || *result_ty.shape() != permute(src_ty.shape(), permutation)
+        {
+            return verify_err!(loc, TransposeOpInterfaceVerifyErr::ResultTypeMismatch);
         }
 
         Ok(())

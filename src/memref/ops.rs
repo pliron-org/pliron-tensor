@@ -54,12 +54,13 @@ use pliron_common_dialects::{
 
 use crate::memref::{
     attributes::{
-        DenseElementsAttr, DroppedDimsAttr, ShapedTypeHandle, SliceParamAttr, SliceParamsAttr,
+        DenseElementsAttr, DroppedDimsAttr, PermutationAttr, ShapedTypeHandle, SliceParamAttr,
+        SliceParamsAttr,
     },
-    layout::{is_cast_compatible, subview_layout},
+    layout::{is_cast_compatible, permute, subview_layout, transpose_layout},
     op_interfaces::{
         CompatibleShapesOp, DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface,
-        GenerateOpInterface, ReshapeOpInterface,
+        GenerateOpInterface, ReshapeOpInterface, TransposeOpInterface,
     },
     type_interfaces::{MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
@@ -1616,6 +1617,86 @@ impl ReshapeOp {
         let mut operands = vec![source];
         operands.extend(dynamic_dimensions);
         Operation::new_op::<Self>(ctx, vec![result_type.into()], operands, vec![], 0)
+    }
+}
+
+/// [Permute](crate::memref::layout::permute) the dimensions of a memref by the given
+/// [permutation](PermutationAttr), so that `result[permute(j, permutation)] = source[j]`.
+///
+/// See MLIR's [memref.transpose](https://mlir.llvm.org/docs/Dialects/MemRef/#memreftranspose-memreftransposeop).
+///
+/// ### Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `source` | The source ranked memref. |
+///
+/// ### Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | The transposed memref. |
+#[pliron_op(
+    name = "memref.transpose",
+    format = "$0 ` ` attr($memref_transpose_permutation, $PermutationAttr) ` : ` type($0)",
+    interfaces = [
+        OneOpdInterface,
+        OneResultInterface,
+        OperandNOfType<0, RankedMemrefType>,
+        ResultNOfType<0, RankedMemrefType>,
+        TransposeOpInterface<RankedMemrefType>,
+    ],
+)]
+pub struct TransposeOp;
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TransposeOpVerifyErr {
+    #[error("Transpose result layout must be the permuted source layout")]
+    ResultLayoutMismatch,
+}
+
+impl Verify for TransposeOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let source_ty = self.source(ctx).get_type(ctx);
+        let source_ty = source_ty.deref(ctx);
+        let source_ty = source_ty
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Transpose source must be ranked");
+        let result_ty = self.result_type(ctx);
+        let result_ty = result_ty.deref(ctx);
+        let result_ty = result_ty
+            .downcast_ref::<RankedMemrefType>()
+            .expect("Transpose result must be ranked");
+        if *result_ty.layout()
+            != transpose_layout(
+                source_ty.shape(),
+                source_ty.layout(),
+                &self.permutation(ctx),
+            )
+        {
+            return verify_err!(self.loc(ctx), TransposeOpVerifyErr::ResultLayoutMismatch);
+        }
+        Ok(())
+    }
+}
+
+impl TransposeOp {
+    /// Create a new `TransposeOp` with the result type inferred.
+    pub fn new(ctx: &mut Context, source: Value, permutation: Vec<usize>) -> Self {
+        let result_type = {
+            let source_ty = source.get_type(ctx);
+            let source_ty = source_ty.deref(ctx);
+            let source_ty = source_ty
+                .downcast_ref::<RankedMemrefType>()
+                .expect("Transpose source must be ranked");
+            RankedMemrefType::get(
+                ctx,
+                source_ty.element_type(),
+                permute(source_ty.shape(), &permutation),
+                transpose_layout(source_ty.shape(), source_ty.layout(), &permutation),
+            )
+        };
+        let op = Operation::new_op::<Self>(ctx, vec![result_type.into()], vec![source], vec![], 0);
+        op.set_permutation(ctx, permutation);
+        op
     }
 }
 

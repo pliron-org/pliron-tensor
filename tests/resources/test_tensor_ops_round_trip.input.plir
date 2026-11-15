@@ -15,8 +15,9 @@ builtin.module @test_module {
         reshaped = tensor.reshape cast : tensor.ranked<6x4:builtin.fp64>;
         slice = tensor.extract_slice reshaped [0, 0] [2, 4] [1, 1] : tensor.ranked<2x4:builtin.fp64>;
         inserted = tensor.insert_slice slice into reshaped [0, 0] [2, 4] [1, 1] : tensor.ranked<6x4:builtin.fp64>;
+        transposed = tensor.transpose inserted [1, 0] : tensor.ranked<4x6:builtin.fp64>;
         i = index.constant <index.constant 0> : index.index;
-        element = tensor.extract inserted[i, i]: builtin.fp64;
+        element = tensor.extract transposed[i, i]: builtin.fp64;
         llvm.return element
     };
     llvm.func @generate_and_products: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {

@@ -18,5 +18,5 @@ pub struct CastSignednessAttr {
 // These attributes live in the memref dialect since they are shared between
 // memref and tensor ops
 pub use crate::memref::attributes::{
-    DenseElementsAttr, DenseElementsErr, SliceParamAttr, SliceParamsAttr,
+    DenseElementsAttr, DenseElementsErr, PermutationAttr, SliceParamAttr, SliceParamsAttr,
 };
