@@ -1621,7 +1621,8 @@ impl ReshapeOp {
 }
 
 /// [Permute](crate::memref::layout::permute) the dimensions of a memref by the given
-/// [permutation](PermutationAttr), so that `result[permute(j, permutation)] = source[j]`.
+/// [permutation](PermutationAttr), so that for each source index `j`,
+/// `result[permute(j, permutation)] = source[j]`.
 ///
 /// See MLIR's [memref.transpose](https://mlir.llvm.org/docs/Dialects/MemRef/#memreftranspose-memreftransposeop).
 ///

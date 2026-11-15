@@ -2173,7 +2173,8 @@ impl ReshapeOp {
 }
 
 /// [Permute](crate::memref::layout::permute) the dimensions of a tensor by the given
-/// [permutation](PermutationAttr), so that `result[permute(j, permutation)] = source[j]`.
+/// [permutation](PermutationAttr), so that for each source index `j`,
+/// `result[permute(j, permutation)] = source[j]`.
 ///
 /// ### Operand(s)
 /// | operand | description |
