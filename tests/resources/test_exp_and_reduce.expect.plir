@@ -1,0 +1,199 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_exp_f32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(in_p_v0: llvm.ptr (0), out_p_v1: llvm.ptr (0)) !0:
+        input_v2 = llvm.load in_p_v0  : memref.ranked <8 : builtin.fp32 > !1;
+        result_v76 = memref.alloc  : memref.ranked <8 : builtin.fp32 > !2;
+        memref.exp result_v76 <- exp(input_v2);
+        llvm.store *out_p_v1 <- result_v76 ;
+        llvm.return 
+    };
+    llvm.func @test_exp_f64_dynamic: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(in_p_v4: llvm.ptr (0), out_p_v5: llvm.ptr (0)) !3:
+        input_v6 = llvm.load in_p_v4  : memref.ranked <?x2 : builtin.fp64 > !4;
+        v77 = index.constant <index.constant 0> : index.index ;
+        v78 = memref.dim input_v6, v77 : index.index ;
+        result_v79 = memref.alloc v78 : memref.ranked <?x2 : builtin.fp64 > !5;
+        memref.exp result_v79 <- exp(input_v6);
+        llvm.store *out_p_v5 <- result_v79 ;
+        llvm.return 
+    };
+    llvm.func @test_exp_twice_dynamic: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block4v1(in_p_v8: llvm.ptr (0), out_p_v9: llvm.ptr (0)) !6:
+        input_v10 = llvm.load in_p_v8  : memref.ranked <?x2 : builtin.fp64 > !7;
+        v80 = index.constant <index.constant 0> : index.index ;
+        v81 = memref.dim input_v10, v80 : index.index ;
+        first_v82 = memref.alloc v81 : memref.ranked <?x2 : builtin.fp64 > !8;
+        memref.exp first_v82 <- exp(input_v10);
+        result_v83 = memref.alloc v81 : memref.ranked <?x2 : builtin.fp64 > !9;
+        memref.exp result_v83 <- exp(first_v82);
+        llvm.store *out_p_v9 <- result_v83 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_sum_f32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block5v1(in_p_v13: llvm.ptr (0), init_p_v14: llvm.ptr (0), out_p_v15: llvm.ptr (0)) !10:
+        input_v16 = llvm.load in_p_v13  : memref.ranked <2x3x4 : builtin.fp32 > !11;
+        init_v17 = llvm.load init_p_v14  : memref.ranked <2x1x4 : builtin.fp32 > !12;
+        memref.reduce <Sum> [1] input_v16 into init_v17;
+        llvm.store *out_p_v15 <- init_v17 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_max_f32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block6v1(in_p_v19: llvm.ptr (0), init_p_v20: llvm.ptr (0), out_p_v21: llvm.ptr (0)) !13:
+        input_v22 = llvm.load in_p_v19  : memref.ranked <2x3x4 : builtin.fp32 > !14;
+        init_v23 = llvm.load init_p_v20  : memref.ranked <1x3x1 : builtin.fp32 > !15;
+        memref.reduce <Max> [0, 2] input_v22 into init_v23;
+        llvm.store *out_p_v21 <- init_v23 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_min_f32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block7v1(in_p_v25: llvm.ptr (0), init_p_v26: llvm.ptr (0), out_p_v27: llvm.ptr (0)) !16:
+        input_v28 = llvm.load in_p_v25  : memref.ranked <2x3x4 : builtin.fp32 > !17;
+        init_v29 = llvm.load init_p_v26  : memref.ranked <1x1x1 : builtin.fp32 > !18;
+        memref.reduce <Min> [0, 1, 2] input_v28 into init_v29;
+        llvm.store *out_p_v27 <- init_v29 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_prod_f32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block8v1(in_p_v31: llvm.ptr (0), init_p_v32: llvm.ptr (0), out_p_v33: llvm.ptr (0)) !19:
+        input_v34 = llvm.load in_p_v31  : memref.ranked <2x3x4 : builtin.fp32 > !20;
+        init_v35 = llvm.load init_p_v32  : memref.ranked <2x3x4 : builtin.fp32 > !21;
+        memref.reduce <Prod> [] input_v34 into init_v35;
+        llvm.store *out_p_v33 <- init_v35 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_max_i32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block9v1(in_p_v37: llvm.ptr (0), init_p_v38: llvm.ptr (0), out_p_v39: llvm.ptr (0)) !22:
+        input_v40 = llvm.load in_p_v37  : memref.ranked <2x4 : builtin.integer i32> !23;
+        init_v41 = llvm.load init_p_v38  : memref.ranked <2x1 : builtin.integer i32> !24;
+        memref.reduce <Max> [1] input_v40 into init_v41;
+        llvm.store *out_p_v39 <- init_v41 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_max_ui32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block10v1(in_p_v43: llvm.ptr (0), init_p_v44: llvm.ptr (0), out_p_v45: llvm.ptr (0)) !25:
+        input_v46 = llvm.load in_p_v43  : memref.ranked <2x4 : builtin.integer ui32> !26;
+        init_v47 = llvm.load init_p_v44  : memref.ranked <2x1 : builtin.integer ui32> !27;
+        memref.reduce <Max> [1] input_v46 into init_v47;
+        llvm.store *out_p_v45 <- init_v47 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_min_ui32: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block11v1(in_p_v49: llvm.ptr (0), init_p_v50: llvm.ptr (0), out_p_v51: llvm.ptr (0)) !28:
+        input_v52 = llvm.load in_p_v49  : memref.ranked <2x4 : builtin.integer ui32> !29;
+        init_v53 = llvm.load init_p_v50  : memref.ranked <2x1 : builtin.integer ui32> !30;
+        memref.reduce <Min> [1] input_v52 into init_v53;
+        llvm.store *out_p_v51 <- init_v53 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_sum_i64_dynamic: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block12v1(in_p_v55: llvm.ptr (0), init_p_v56: llvm.ptr (0), out_p_v57: llvm.ptr (0)) !31:
+        input_v58 = llvm.load in_p_v55  : memref.ranked <?x3 : builtin.integer i64> !32;
+        init_v59 = llvm.load init_p_v56  : memref.ranked <1x3 : builtin.integer i64> !33;
+        memref.reduce <Sum> [0] input_v58 into init_v59;
+        llvm.store *out_p_v57 <- init_v59 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_init_used_later: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block13v1(in_p_v61: llvm.ptr (0), init_p_v62: llvm.ptr (0), out_p_v63: llvm.ptr (0)) !34:
+        input_v64 = llvm.load in_p_v61  : memref.ranked <2x3 : builtin.fp32 > !35;
+        init_v65 = llvm.load init_p_v62  : memref.ranked <2x1 : builtin.fp32 > !36;
+        reduced_v84 = memref.alloc  : memref.ranked <2x1 : builtin.fp32 > !37;
+        memref.copy reduced_v84 <- init_v65;
+        memref.reduce <Sum> [1] input_v64 into reduced_v84;
+        result_v85 = memref.alloc  : memref.ranked <2x1 : builtin.fp32 > !38;
+        memref.add result_v85 <- reduced_v84 + init_v65;
+        llvm.store *out_p_v63 <- result_v85 ;
+        llvm.return 
+    };
+    llvm.func @test_reduce_dynamic_init_used_later: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block14v1(in_p_v68: llvm.ptr (0), init_p_v69: llvm.ptr (0), out_p_v70: llvm.ptr (0)) !39:
+        input_v71 = llvm.load in_p_v68  : memref.ranked <?x3 : builtin.fp32 > !40;
+        loaded_v72 = llvm.load init_p_v69  : memref.ranked <?x1 : builtin.fp32 > !41;
+        v86 = index.constant <index.constant 0> : index.index ;
+        v87 = memref.dim loaded_v72, v86 : index.index ;
+        init_v88 = memref.alloc v87 : memref.ranked <?x1 : builtin.fp32 > !42;
+        memref.add init_v88 <- loaded_v72 + loaded_v72;
+        reduced_v89 = memref.alloc v87 : memref.ranked <?x1 : builtin.fp32 > !43;
+        memref.copy reduced_v89 <- init_v88;
+        memref.reduce <Sum> [1] input_v71 into reduced_v89;
+        result_v90 = memref.alloc v87 : memref.ranked <?x1 : builtin.fp32 > !44;
+        memref.add result_v90 <- reduced_v89 + init_v88;
+        llvm.store *out_p_v70 <- result_v90 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [in_p, out_p]]
+!1 = [builtin_given_names = builtin.given_names [input]]
+!2 = [builtin_given_names = builtin.given_names [result]]
+!3 = [builtin_given_names = builtin.given_names [in_p, out_p]]
+!4 = [builtin_given_names = builtin.given_names [input]]
+!5 = [builtin_given_names = builtin.given_names [result]]
+!6 = [builtin_given_names = builtin.given_names [in_p, out_p]]
+!7 = [builtin_given_names = builtin.given_names [input]]
+!8 = [builtin_given_names = builtin.given_names [first]]
+!9 = [builtin_given_names = builtin.given_names [result]]
+!10 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!11 = [builtin_given_names = builtin.given_names [input]]
+!12 = [builtin_given_names = builtin.given_names [init]]
+!13 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!14 = [builtin_given_names = builtin.given_names [input]]
+!15 = [builtin_given_names = builtin.given_names [init]]
+!16 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!17 = [builtin_given_names = builtin.given_names [input]]
+!18 = [builtin_given_names = builtin.given_names [init]]
+!19 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!20 = [builtin_given_names = builtin.given_names [input]]
+!21 = [builtin_given_names = builtin.given_names [init]]
+!22 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!23 = [builtin_given_names = builtin.given_names [input]]
+!24 = [builtin_given_names = builtin.given_names [init]]
+!25 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!26 = [builtin_given_names = builtin.given_names [input]]
+!27 = [builtin_given_names = builtin.given_names [init]]
+!28 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!29 = [builtin_given_names = builtin.given_names [input]]
+!30 = [builtin_given_names = builtin.given_names [init]]
+!31 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!32 = [builtin_given_names = builtin.given_names [input]]
+!33 = [builtin_given_names = builtin.given_names [init]]
+!34 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!35 = [builtin_given_names = builtin.given_names [input]]
+!36 = [builtin_given_names = builtin.given_names [init]]
+!37 = [builtin_given_names = builtin.given_names [reduced]]
+!38 = [builtin_given_names = builtin.given_names [result]]
+!39 = [builtin_given_names = builtin.given_names [in_p, init_p, out_p]]
+!40 = [builtin_given_names = builtin.given_names [input]]
+!41 = [builtin_given_names = builtin.given_names [loaded]]
+!42 = [builtin_given_names = builtin.given_names [init]]
+!43 = [builtin_given_names = builtin.given_names [reduced]]
+!44 = [builtin_given_names = builtin.given_names [result]]

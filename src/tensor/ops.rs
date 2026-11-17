@@ -6,11 +6,14 @@
 use std::cell::Ref;
 
 use pliron::{
-    builtin::op_interfaces::{
-        AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, NOpdsInterface,
-        NRegionsInterface, NResultsInterface, OneOpdInterface, OneRegionInterface,
-        OneResultInterface, OperandNOfType, OperandsMNOfType, ResultNImplsTy, ResultNOfType,
-        SingleBlockRegionInterface,
+    builtin::{
+        op_interfaces::{
+            AllOperandsOfType, AllResultsOfType, AtLeastNOpdsInterface, NOpdsInterface,
+            NRegionsInterface, NResultsInterface, OneOpdInterface, OneRegionInterface,
+            OneResultInterface, OperandNOfType, OperandsMNOfType, ResultNImplsTy, ResultNOfType,
+            SingleBlockRegionInterface,
+        },
+        type_interfaces::FloatTypeInterface,
     },
     combine::{
         Parser,
@@ -18,7 +21,7 @@ use pliron::{
     },
     common_traits::Verify,
     context::Context,
-    derive::pliron_op,
+    derive::{op_interface_impl, pliron_op},
     ident,
     identifier::Identifier,
     irbuild::{
@@ -37,7 +40,7 @@ use pliron::{
     parsable::{self, IntoParseResult, Parsable},
     printable::{self, ListSeparator, Printable},
     result::Result,
-    r#type::{TypeHandle, Typed, TypedHandle},
+    r#type::{TypeHandle, Typed, TypedHandle, type_impls},
     value::Value,
     verify_err, verify_error,
 };
@@ -48,8 +51,8 @@ use crate::memref::{
     attributes::ShapedTypeHandle,
     layout::permute,
     op_interfaces::{
-        CompatibleShapesOp, DynamicDimensionOperandsOp, GenerateOpInterface, ReshapeOpInterface,
-        TransposeOpInterface,
+        CompatibleShapesOp, DynamicDimensionOperandsOp, GenerateOpInterface, ReductionOpInterface,
+        ReshapeOpInterface, TransposeOpInterface,
     },
     ops::{SliceParam, YieldOp},
     type_interfaces::{MultiDimensionalType, ShapedType},
@@ -57,9 +60,10 @@ use crate::memref::{
 
 use super::{
     attributes::{
-        CastSignednessAttr, DenseElementsAttr, PermutationAttr, SliceParamAttr, SliceParamsAttr,
+        CastSignednessAttr, DenseElementsAttr, PermutationAttr, ReductionDimsAttr,
+        ReductionKindAttr, SliceParamAttr, SliceParamsAttr,
     },
-    op_interfaces::ElementWiseBinaryTensorOpInterface,
+    op_interfaces::{ElementWiseBinaryTensorOpInterface, ElementWiseUnaryTensorOpInterface},
     types::{RankedTensorType, can_broadcast_to},
 };
 
@@ -169,11 +173,16 @@ impl Verify for ConstantOp {
         ResultNOfType<0, RankedTensorType>,
         OperandNOfType<0, RankedTensorType>,
         ResultNImplsTy<0, dyn ShapedType>,
-        OperandsMNOfType<1, {-1}, IndexType>,
-        DynamicDimensionOperandsOp<1>,
     ],
 )]
 pub struct BroadcastOp;
+
+#[op_interface_impl]
+impl DynamicDimensionOperandsOp for BroadcastOp {
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation().deref(ctx).operands().skip(1).collect()
+    }
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum BroadcastOpVerifyErr {
@@ -247,11 +256,16 @@ impl Verify for BroadcastOp {
         ResultNOfType<0, RankedTensorType>,
         AtLeastNOpdsInterface<1>,
         ResultNImplsTy<0, dyn ShapedType>,
-        OperandsMNOfType<1, {-1}, IndexType>,
-        DynamicDimensionOperandsOp<1>,
     ],
 )]
 pub struct SplatOp;
+
+#[op_interface_impl]
+impl DynamicDimensionOperandsOp for SplatOp {
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation().deref(ctx).operands().skip(1).collect()
+    }
+}
 
 impl SplatOp {
     /// Create a splat tensor of `result_type` filled with `value`.
@@ -622,7 +636,7 @@ impl Verify for ExtractOp {
 /// ## Result(s)
 /// | result | description |
 /// |-----|-------|
-/// | `result` | The resulting tensor, with same shape as the operands. |
+/// | `result` | The resulting tensor, with the same shape as the operands. |
 #[pliron_op(
     name = "tensor.add",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
@@ -657,7 +671,7 @@ impl AddOp {
 /// ## Result(s)
 /// | result | description |
 /// |-----|-------|
-/// | `result` | The resulting tensor, with same shape as the operands. |
+/// | `result` | The resulting tensor, with the same shape as the operands. |
 #[pliron_op(
     name = "tensor.sub",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
@@ -692,7 +706,7 @@ impl SubOp {
 /// ## Result(s)
 /// | result | description |
 /// |-----|-------|
-/// | `result` | The resulting tensor, with same shape as the operands. |
+/// | `result` | The resulting tensor, with the same shape as the operands. |
 #[pliron_op(
     name = "tensor.mul",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
@@ -727,7 +741,7 @@ impl MulOp {
 /// ## Result(s)
 /// | result | description |
 /// |-----|-------|
-/// | `result` | The resulting tensor, with same shape as the operands. |
+/// | `result` | The resulting tensor, with the same shape as the operands. |
 #[pliron_op(
     name = "tensor.div",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
@@ -766,7 +780,7 @@ impl DivOp {
 /// ## Result(s)
 /// | result | description |
 /// |-----|-------|
-/// | `result` | The resulting tensor, with same shape as the operands. |
+/// | `result` | The resulting tensor, with the same shape as the operands. |
 #[pliron_op(
     name = "tensor.max",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
@@ -784,7 +798,7 @@ impl DivOp {
 pub struct MaxOp;
 
 impl MaxOp {
-    /// Create a new MaxOp with the given operands. The result type is the type of `lhs`.
+    /// Create a new MaxOp with the given operands. The result type is set to `lhs`'s type.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
         Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
     }
@@ -805,7 +819,7 @@ impl MaxOp {
 /// ## Result(s)
 /// | result | description |
 /// |-----|-------|
-/// | `result` | The resulting tensor, with same shape as the operands. |
+/// | `result` | The resulting tensor, with the same shape as the operands. |
 #[pliron_op(
     name = "tensor.min",
     format = "operands(CharSpace(`,`)) ` : ` type($0)",
@@ -823,9 +837,125 @@ impl MaxOp {
 pub struct MinOp;
 
 impl MinOp {
-    /// Create a new MinOp with the given operands. The result type is the type of `lhs`.
+    /// Create a new MinOp with the given operands. The result type is set to `lhs`'s type.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
         Operation::new_op::<Self>(ctx, vec![lhs.get_type(ctx)], vec![lhs, rhs], vec![], 0)
+    }
+}
+
+/// Elementwise base-e exponential of a tensor with a float element type.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `input` | The input tensor. |
+///
+/// ## Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | The resulting tensor, with the same type as `input`. |
+#[pliron_op(
+    name = "tensor.exp",
+    format = "$0 ` : ` type($0)",
+    interfaces = [
+        OneResultInterface,
+        ElementWiseUnaryTensorOpInterface,
+        NResultsInterface<1>,
+        OneOpdInterface,
+        AllResultsOfType<RankedTensorType>,
+        AllOperandsOfType<RankedTensorType>,
+        CompatibleShapesOp<RankedTensorType>,
+    ],
+)]
+pub struct ExpOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExpOpVerifyErr {
+    #[error("tensor.exp needs a float element type, but has {0}")]
+    NotFloat(String),
+}
+
+impl Verify for ExpOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let ty = self.operand_type(ctx);
+        let element_ty = ty
+            .deref(ctx)
+            .downcast_ref::<RankedTensorType>()
+            .expect("AllOperandsOfType<RankedTensorType> ensures a ranked tensor")
+            .element_type();
+        if !type_impls::<dyn FloatTypeInterface>(&*element_ty.deref(ctx)) {
+            return verify_err!(
+                self.loc(ctx),
+                ExpOpVerifyErr::NotFloat(element_ty.disp(ctx).to_string())
+            );
+        }
+        Ok(())
+    }
+}
+
+/// [Reduction](ReductionOpInterface) of a tensor into an accumulator tensor.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `input` | The tensor to reduce. |
+/// | `accum` | The initial value of the accumulator. |
+///
+/// ## Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `result` | The final value of the accumulator, with the same type as `accum`. |
+#[pliron_op(
+    name = "tensor.reduce",
+    format = "`<` attr($memref_reduction_kind, $ReductionKindAttr) `> ` attr($memref_reduction_dims, $ReductionDimsAttr) ` ` $0 `, ` $1 ` : ` type($0)",
+    interfaces = [
+        OneResultInterface,
+        NResultsInterface<1>,
+        NOpdsInterface<2>,
+        AllOperandsOfType<RankedTensorType>,
+        ResultNOfType<0, RankedTensorType>,
+        ReductionOpInterface<RankedTensorType>,
+    ],
+)]
+pub struct ReduceOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReduceOpVerifyErr {
+    #[error("tensor.reduce result type {result} must be the accumulator type {accum}")]
+    ResultTypeMismatch { result: String, accum: String },
+}
+
+impl Verify for ReduceOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let result_ty = self.result_type(ctx);
+        let accum_ty = self.accum(ctx).get_type(ctx);
+        if result_ty != accum_ty {
+            return verify_err!(
+                self.loc(ctx),
+                ReduceOpVerifyErr::ResultTypeMismatch {
+                    result: result_ty.disp(ctx).to_string(),
+                    accum: accum_ty.disp(ctx).to_string(),
+                }
+            );
+        }
+        Ok(())
+    }
+}
+
+impl ReduceOp {
+    /// Create a new [ReduceOp] that reduces `dims` of `input` into `accum` with `kind`.
+    /// The result type is set to `accum`'s type.
+    pub fn new(
+        ctx: &mut Context,
+        kind: ReductionKindAttr,
+        dims: Vec<usize>,
+        input: Value,
+        accum: Value,
+    ) -> Self {
+        let result_type = accum.get_type(ctx);
+        let op = Operation::new_op::<Self>(ctx, vec![result_type], vec![input, accum], vec![], 0);
+        op.set_reduction(ctx, kind, dims);
+        op
     }
 }
 
@@ -1714,7 +1844,7 @@ impl ExtractSliceOp {
 /// ### Result(s)
 /// | result | description |
 /// |-----|-------|
-/// | `result` | The resulting tensor after insertion, with same shape as the destination. |
+/// | `result` | The resulting tensor after insertion, with the same shape as the destination. |
 #[pliron_op(
     name = "tensor.insert_slice",
     interfaces = [
@@ -2151,12 +2281,17 @@ impl InsertSliceOp {
         OperandNOfType<0, RankedTensorType>,
         ResultNOfType<0, RankedTensorType>,
         ResultNImplsTy<0, dyn ShapedType>,
-        OperandsMNOfType<1, {-1}, IndexType>,
-        DynamicDimensionOperandsOp<1>,
         ReshapeOpInterface<RankedTensorType>,
     ],
 )]
 pub struct ReshapeOp;
+
+#[op_interface_impl]
+impl DynamicDimensionOperandsOp for ReshapeOp {
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation().deref(ctx).operands().skip(1).collect()
+    }
+}
 
 impl ReshapeOp {
     /// Create a new `ReshapeOp`.

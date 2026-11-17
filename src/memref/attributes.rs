@@ -88,6 +88,29 @@ pub struct DroppedDimsAttr(pub Vec<usize>);
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct PermutationAttr(pub Vec<usize>);
 
+/// Function used by a reduction op to combine elements.
+#[pliron_attr(name = "memref.reduction_kind", format, verifier = "succ")]
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
+pub enum ReductionKindAttr {
+    /// Addition, with wrap-around for integers.
+    Sum,
+    /// Multiplication, with wrap-around for integers.
+    Prod,
+    /// Maximum, as computed by [MaxOp](crate::memref::ops::MaxOp).
+    Max,
+    /// Minimum, as computed by [MinOp](crate::memref::ops::MinOp).
+    Min,
+}
+
+/// Dimensions reduced by a reduction op, in strictly increasing order.
+#[pliron_attr(
+    name = "memref.reduction_dims",
+    format = "`[` vec($0, CharSpace(`,`)) `]`",
+    verifier = "succ"
+)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct ReductionDimsAttr(pub Vec<usize>);
+
 #[pliron_attr(name = "memref.const_pointer", format = "$0", verifier = "succ")]
 #[derive(PartialEq, Eq, Clone, Copy, Debug, Hash)]
 pub struct ConstPointerAttr(pub *const ());

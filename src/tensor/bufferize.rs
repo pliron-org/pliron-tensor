@@ -88,7 +88,7 @@ use pliron::{
     value::{DefiningEntity, Use, Value},
     verify_err_noloc,
 };
-use pliron_common_dialects::index::{ops::IndexConstantOp, types::IndexType};
+use pliron_common_dialects::index::ops::IndexConstantOp;
 use pliron_llvm::ops::{FuncOp, ReturnOp};
 use thiserror::Error;
 
@@ -96,6 +96,7 @@ use crate::{
     memref::{
         ToMemrefType,
         layout::{MemrefLayout, fully_dynamic, is_cast_compatible, merge},
+        op_interfaces::DynamicDimensionOperandsOp,
         ops::{CopyOp, DimOp, MemrefCastOp},
         type_interfaces::{Dimension, MultiDimensionalType, ShapedType},
         types::RankedMemrefType,
@@ -173,12 +174,6 @@ impl Alias {
 pub enum BufferizableOpInterfaceVerifyErr {
     #[error("Invalid alias: the operand and result do not belong to the same op")]
     InvalidAlias,
-    #[error(
-        "Incorrect number of dynamic dimension operands: Must be equal to number of dynamic dimensions in the operand type"
-    )]
-    IncorrectNumDynamicDims,
-    #[error("Invalid dynamic dimension operand type: Must be of type Index")]
-    InvalidDynamicDimOpdType,
     #[error("Operand type is not a shaped type")]
     InvalidOperandType,
 }
@@ -224,11 +219,6 @@ pub trait BufferizableOpInterface {
     /// If after bufferization, the buffer of an operand may alias with the buffer of a result,
     /// then, the returned vector should contain an [Alias] with the appropriate information.
     fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias>;
-
-    /// Get the dynamic dimensions for the given operand.
-    /// On `None`, `memref.dim` will be used (less efficient).
-    /// It will only be called on aliasing operands that have a tensor type.
-    fn get_operand_dynamic_dimensions(&self, ctx: &Context, opd: Use<Value>) -> Option<Vec<Value>>;
 
     /// Return true if `value` can be written to in place.
     ///
@@ -307,25 +297,8 @@ pub trait BufferizableOpInterface {
             alias.verify(ctx)?;
             let opd_ty = alias.operand.get_type(ctx);
             let opd_ty = opd_ty.deref(ctx);
-            let Some(shaped_ty) = type_cast::<dyn ShapedType>(&*opd_ty) else {
+            if type_cast::<dyn ShapedType>(&*opd_ty).is_none() {
                 return verify_err_noloc!(BufferizableOpInterfaceVerifyErr::InvalidOperandType);
-            };
-            let dynamic_dims_opt = op.get_operand_dynamic_dimensions(ctx, alias.operand);
-            let num_dynamic_dims = shaped_ty.num_dynamic_dimensions();
-            if let Some(dynamic_dims) = dynamic_dims_opt {
-                if dynamic_dims.len() != num_dynamic_dims {
-                    return verify_err_noloc!(
-                        BufferizableOpInterfaceVerifyErr::IncorrectNumDynamicDims
-                    );
-                }
-                if !dynamic_dims
-                    .iter()
-                    .all(|dim| dim.get_type(ctx).deref(ctx).is::<IndexType>())
-                {
-                    return verify_err_noloc!(
-                        BufferizableOpInterfaceVerifyErr::InvalidDynamicDimOpdType
-                    );
-                }
             }
         }
         Ok(())
@@ -413,15 +386,8 @@ impl<'a> DialectConversion for Bufferizer<'a> {
             .collect();
 
         for opd in opds_needing_copy {
-            let dynamic_sizes =
-                op_iface_opt.and_then(|iface| iface.get_operand_dynamic_dimensions(ctx, opd));
-            let new_buffer = copy_to_identity_buffer(
-                ctx,
-                rewriter,
-                self.state.tmm,
-                opd.get_def(ctx),
-                dynamic_sizes,
-            )?;
+            let new_buffer =
+                copy_to_identity_buffer(ctx, rewriter, self.state.tmm, opd.get_def(ctx))?;
             // Replace the operand with the new buffer.
             Operation::replace_operand(op, ctx, opd.find_index(ctx), new_buffer);
         }
@@ -796,33 +762,69 @@ pub fn bufferize(
     Ok(status)
 }
 
+/// Get the extent of `value`'s dynamic `dim`:
+/// - from `value`'s defining op, if it implements [DynamicDimensionOperandsOp],
+/// - from a new `memref.dim` on `value` otherwise.
+pub(crate) fn dynamic_extent(
+    ctx: &mut Context,
+    rewriter: &mut DialectConversionRewriter,
+    value: Value,
+    dim: usize,
+) -> Value {
+    /// Get the extent of `value`'s dynamic `dim` from `value`'s defining op,
+    /// if it implements [DynamicDimensionOperandsOp].
+    fn dynamic_extent_operand(ctx: &Context, value: Value, dim: usize) -> Option<Value> {
+        let def_op = value.defining_op()?;
+        if def_op.deref(ctx).get_result(0) != value {
+            // [DynamicDimensionOperandsOp] gives the extents of result 0 only.
+            return None;
+        }
+        let def_op = Operation::get_op_dyn(def_op, ctx);
+        let dynamic_dims =
+            op_cast::<dyn DynamicDimensionOperandsOp>(&*def_op)?.get_dynamic_dimensions(ctx);
+
+        let value_ty = value.get_type(ctx);
+        let value_ty = value_ty.deref(ctx);
+        let shape = type_cast::<dyn ShapedType>(&*value_ty)?.shape();
+        if *shape.get(dim)? != Dimension::Dynamic {
+            return None;
+        }
+        // The dynamic dimension operands are in result-dimension order.
+        let position = shape[..dim]
+            .iter()
+            .filter(|dim| **dim == Dimension::Dynamic)
+            .count();
+        Some(*dynamic_dims.get(position).expect(
+            "DynamicDimensionOperandsOp's verifier ensures one operand per dynamic dimension",
+        ))
+    }
+
+    if let Some(extent) = dynamic_extent_operand(ctx, value, dim) {
+        return extent;
+    }
+    let index = IndexConstantOp::new(ctx, dim);
+    rewriter.append_op(ctx, &index);
+    let dim_op = DimOp::new(ctx, value, index.get_result(ctx));
+    rewriter.append_op(ctx, &dim_op);
+    dim_op.get_result(ctx)
+}
+
 /// Copy a source into a new buffer with identity layout.
 pub(crate) fn copy_to_identity_buffer(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     tmm: &mut dyn TensorMemoryManager,
     source: Value,
-    dynamic_sizes: Option<Vec<Value>>,
 ) -> Result<Value> {
     let source_type = TypedHandle::<RankedMemrefType>::from_handle(source.get_type(ctx), ctx)?;
     let identity_type = source_type.deref(ctx).with_identity_layout(ctx);
-    let dynamic_sizes = match dynamic_sizes {
-        Some(sizes) => sizes,
-        None => {
-            let shape = source_type.deref(ctx).shape().clone();
-            let mut sizes = Vec::new();
-            for (i, dimension) in shape.iter().enumerate() {
-                if matches!(dimension, Dimension::Dynamic) {
-                    let index = IndexConstantOp::new(ctx, i);
-                    rewriter.append_op(ctx, &index);
-                    let dim = DimOp::new(ctx, source, index.get_result(ctx));
-                    rewriter.append_op(ctx, &dim);
-                    sizes.push(dim.get_result(ctx));
-                }
-            }
-            sizes
+    let shape = source_type.deref(ctx).shape().clone();
+    let mut dynamic_sizes = Vec::new();
+    for (i, dimension) in shape.iter().enumerate() {
+        if matches!(dimension, Dimension::Dynamic) {
+            dynamic_sizes.push(dynamic_extent(ctx, rewriter, source, i));
         }
-    };
+    }
     let allocation = tmm.create_memref_alloc(ctx, identity_type, dynamic_sizes)?;
     rewriter.append_operation(ctx, allocation.get_operation());
     let buffer = allocation.get_result(ctx);

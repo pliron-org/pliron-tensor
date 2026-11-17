@@ -24,8 +24,9 @@ mod common;
 use common::{
     assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module,
     tensor::{
-        Bf16, Operands, arith_f32, arith_i32, arith_ui32, bufferize_module, check_binary_case,
-        input_tensor, max_min_f32, max_min_i32, max_min_ui32, output_data, output_tensor,
+        Bf16, Operands, TestElement, arith_f32, arith_i32, arith_ui32, bufferize_module,
+        check_binary_case, input_tensor, max_min_f32, max_min_i32, max_min_ui32, output_data,
+        output_tensor, reduce_reference,
     },
 };
 
@@ -404,6 +405,32 @@ fn test_tracked_tmm_from_rust() {
         }
     }
     assert_eq!(unsafe { output_data::<i64>(&res_ir_descr, 2) }, expected);
+
+    // Two tensor.adds (in sequence) with a dynamic dimension must each make one tracked
+    // allocation, and give the correct values.
+    let num_allocations = tmm.tracked_allocations().len();
+    let mut dynamic_res_ir_descr = output_tensor::<i64>(&[4, 4]).build_ir_descriptor();
+    let add_dynamic = unsafe {
+        lookup_lljit_fn::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            &jit,
+            "test_tensor_add_dynamic_tracked",
+        )
+    };
+    add_dynamic(
+        lhs.build_ir_descriptor().as_ptr(),
+        rhs.build_ir_descriptor().as_ptr(),
+        dynamic_res_ir_descr.as_mut_ptr(),
+    );
+    assert_eq!(tmm.tracked_allocations().len(), num_allocations + 2);
+    let expected: Vec<i64> = lhs_data
+        .iter()
+        .zip(&rhs_data)
+        .map(|(l, r)| 2 * l + r)
+        .collect();
+    assert_eq!(
+        unsafe { output_data::<i64>(&dynamic_res_ir_descr, 2) },
+        expected
+    );
 
     tmm.free_all();
     assert_eq!(tmm.tracked_allocations().len(), 0);
@@ -1000,4 +1027,209 @@ fn test_batch_matmul_strided() {
     };
     f(a.as_ptr(), b.as_ptr(), c.as_ptr(), output.as_mut_ptr());
     assert_eq!(unsafe { output_data::<i64>(&output, 3) }, expected);
+}
+
+/// Call the reduction `name`, which reduces `dims` of `input` (of `shape`)
+/// into `init`, and compare the result with [reduce_reference].
+fn check_reduce<T: TestElement>(
+    jit: &SimpleJIT,
+    name: &str,
+    (shape, input): (&[usize], &[T]),
+    (dims, init): (&[usize], &[T]),
+    combine: impl Fn(T, T) -> T,
+) {
+    let accum_shape: Vec<usize> = (0..shape.len())
+        .map(|dim| if dims.contains(&dim) { 1 } else { shape[dim] })
+        .collect();
+    let expected = reduce_reference(shape, input, dims, init, combine);
+
+    // The reduction may write the initial value in place, so the call gets a copy.
+    let init = init.to_vec();
+    let input_descr = input_tensor(shape, input).build_ir_descriptor();
+    let init_descr = input_tensor(&accum_shape, &init).build_ir_descriptor();
+    let mut output = output_tensor::<T>(&accum_shape).build_ir_descriptor();
+    let f = unsafe { lookup_fn::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(jit, name) };
+    f(
+        input_descr.as_ptr(),
+        init_descr.as_ptr(),
+        output.as_mut_ptr(),
+    );
+
+    let actual = unsafe { output_data::<T>(&output, shape.len()) };
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "{name}: wrong number of elements"
+    );
+    for (index, (a, e)) in actual.iter().zip(&expected).enumerate() {
+        assert!(
+            a.same(*e),
+            "{name}, element {index}: got {a:?}, expected {e:?}"
+        );
+    }
+}
+
+/// `tensor.exp` and `tensor.reduce`, through bufferization and the lowering to LLVM.
+#[test]
+fn test_exp_and_reduce() {
+    let ctx = &mut Context::new();
+    let input_ir = include_str!("resources/test_exp_and_reduce.input.plir");
+    let (jit, after_bufferization) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+    expect_file!["resources/test_exp_and_reduce.expect.plir"].assert_eq(&after_bufferization);
+
+    // tensor.exp must give the same values as the exponential of the Rust library,
+    // also for infinities, NaN and -0.0.
+    let (nan, inf) = (f32::NAN, f32::INFINITY);
+    let exp_input = [0.0f32, 1.0, -1.0, 10.0, -inf, inf, nan, -0.0];
+    let exp_descr = input_tensor(&[8], &exp_input).build_ir_descriptor();
+    let mut exp_output = output_tensor::<f32>(&[8]).build_ir_descriptor();
+    let exp_f32 =
+        unsafe { lookup_fn::<extern "C" fn(*const u8, *mut u8) -> ()>(&jit, "test_exp_f32") };
+    exp_f32(exp_descr.as_ptr(), exp_output.as_mut_ptr());
+    let actual = unsafe { output_data::<f32>(&exp_output, 1) };
+    for (x, a) in exp_input.iter().zip(actual) {
+        assert!(a.same(x.exp()), "exp({x}): got {a}, expected {}", x.exp());
+    }
+
+    // tensor.exp with a dynamic dimension must allocate its result with the input's size.
+    let exp_input = [-2.5f64, -1.0, 0.0, 0.5, 1.5, 3.0];
+    let exp_descr = input_tensor(&[3, 2], &exp_input).build_ir_descriptor();
+    let mut exp_output = output_tensor::<f64>(&[3, 2]).build_ir_descriptor();
+    let exp_f64 = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, *mut u8) -> ()>(&jit, "test_exp_f64_dynamic")
+    };
+    exp_f64(exp_descr.as_ptr(), exp_output.as_mut_ptr());
+    let expected: Vec<f64> = exp_input.iter().map(|x| x.exp()).collect();
+    assert_eq!(unsafe { output_data::<f64>(&exp_output, 2) }, expected);
+
+    // A tensor.exp of a tensor.exp with a dynamic dimension must allocate its result
+    // with the extent operand of the first result's allocation.
+    let mut exp_output = output_tensor::<f64>(&[3, 2]).build_ir_descriptor();
+    let exp_twice = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, *mut u8) -> ()>(&jit, "test_exp_twice_dynamic")
+    };
+    exp_twice(exp_descr.as_ptr(), exp_output.as_mut_ptr());
+    let expected: Vec<f64> = exp_input.iter().map(|x| x.exp().exp()).collect();
+    assert_eq!(unsafe { output_data::<f64>(&exp_output, 2) }, expected);
+
+    // Each reduction kind must combine the initial value and the input elements
+    // that map to each accumulator element.
+    let shape = [2, 3, 4];
+    let input: Vec<f32> = (0..24).map(|i| i as f32 * 0.5 - 5.25).collect();
+    let f32_input = (&shape[..], &input[..]);
+    // One reduced dimension.
+    let init = [10.0f32, 20.0, 30.0, 40.0, -1.0, -2.0, -3.0, -4.0];
+    check_reduce(
+        &jit,
+        "test_reduce_sum_f32",
+        f32_input,
+        (&[1], &init),
+        |a, b| a + b,
+    );
+    // Two dimensions that are not next to each other. An initial value larger
+    // than all input elements must be the result.
+    let init = [-inf, -inf, 100.0];
+    check_reduce(
+        &jit,
+        "test_reduce_max_f32",
+        f32_input,
+        (&[0, 2], &init),
+        f32::max,
+    );
+    // All dimensions.
+    check_reduce(
+        &jit,
+        "test_reduce_min_f32",
+        f32_input,
+        (&[0, 1, 2], &[inf]),
+        f32::min,
+    );
+    // No dimension: each element is combined only with its initial value.
+    let init: Vec<f32> = (0..24).map(|i| (i % 3) as f32 + 1.0).collect();
+    check_reduce(
+        &jit,
+        "test_reduce_prod_f32",
+        f32_input,
+        (&[], &init),
+        |a, b| a * b,
+    );
+
+    // Signless integers must use a signed comparison.
+    let input = [-5i32, -1, -7, -3, 4, -9, 2, 0];
+    let init = [i32::MIN, 3];
+    check_reduce(
+        &jit,
+        "test_reduce_max_i32",
+        (&[2, 4], &input),
+        (&[1], &init),
+        i32::max,
+    );
+
+    // Unsigned integers must use an unsigned comparison, so 2^31 and more are large values.
+    let input = [1u32, 0x8000_0000, 7, u32::MAX, 5, 6, 2, 3];
+    let ui32_input = (&[2, 4][..], &input[..]);
+    check_reduce(
+        &jit,
+        "test_reduce_max_ui32",
+        ui32_input,
+        (&[1], &[0, 0]),
+        u32::max,
+    );
+    let init = [u32::MAX, u32::MAX];
+    check_reduce(
+        &jit,
+        "test_reduce_min_ui32",
+        ui32_input,
+        (&[1], &init),
+        u32::min,
+    );
+
+    // A dynamic input dimension must give the loop bound of the reduction.
+    let input = [1i64, 2, 3, 4, 5, 6, 7, 8, 9];
+    let init = [100i64, 200, 300];
+    let i64_input = (&[3, 3][..], &input[..]);
+    check_reduce(
+        &jit,
+        "test_reduce_sum_i64_dynamic",
+        i64_input,
+        (&[0], &init),
+        |a, b| a + b,
+    );
+
+    // When the initial value is used after the reduction, the reduction must not
+    // write it in place: the result must be the row sums plus two times the initial value.
+    let input = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let init = [10.0f32, 20.0];
+    let input_descr = input_tensor(&[2, 3], &input).build_ir_descriptor();
+    let init_descr = input_tensor(&[2, 1], &init).build_ir_descriptor();
+    let mut output = output_tensor::<f32>(&[2, 1]).build_ir_descriptor();
+    let f = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            &jit,
+            "test_reduce_init_used_later",
+        )
+    };
+    f(
+        input_descr.as_ptr(),
+        init_descr.as_ptr(),
+        output.as_mut_ptr(),
+    );
+    assert_eq!(unsafe { output_data::<f32>(&output, 2) }, [26.0, 55.0]);
+
+    // The copy of a dynamic initial value that is used after the reduction must
+    // take its extent from the allocation of the initial value. The result must
+    // be the row sums plus four times the loaded value.
+    let mut output = output_tensor::<f32>(&[2, 1]).build_ir_descriptor();
+    let f = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, *const u8, *mut u8) -> ()>(
+            &jit,
+            "test_reduce_dynamic_init_used_later",
+        )
+    };
+    f(
+        input_descr.as_ptr(),
+        init_descr.as_ptr(),
+        output.as_mut_ptr(),
+    );
+    assert_eq!(unsafe { output_data::<f32>(&output, 2) }, [46.0, 95.0]);
 }

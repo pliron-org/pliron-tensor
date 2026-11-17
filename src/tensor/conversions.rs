@@ -55,7 +55,8 @@ use crate::{
         attributes::DenseElementsAttr,
         layout::{MemrefLayout, subview_layout, transpose_layout},
         op_interfaces::{
-            DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface, ReshapeOpInterface,
+            DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface,
+            ElementWiseUnaryMemrefOpInterface, ReductionOpInterface, ReshapeOpInterface,
             TransposeOpInterface,
         },
         ops::{
@@ -67,12 +68,15 @@ use crate::{
         types::RankedMemrefType,
     },
     tensor::{
-        bufferize::{Alias, AliasKind, BufferRelation, BufferizableOpInterface, BufferizerState},
-        op_interfaces::ElementWiseBinaryTensorOpInterface,
+        bufferize::{
+            Alias, AliasKind, BufferRelation, BufferizableOpInterface, BufferizerState,
+            dynamic_extent,
+        },
+        op_interfaces::{ElementWiseBinaryTensorOpInterface, ElementWiseUnaryTensorOpInterface},
         ops::{
-            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExtractOp,
-            ExtractSliceOp as TensorExtractSliceOp, GenerateOp,
-            InsertSliceOp as TensorInsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp,
+            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExpOp,
+            ExtractOp, ExtractSliceOp as TensorExtractSliceOp, GenerateOp,
+            InsertSliceOp as TensorInsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp, ReduceOp,
             ReshapeOp as TensorReshapeOp, SplatOp, SubOp, TransposeOp as TensorTransposeOp,
         },
         types::RankedTensorType,
@@ -265,14 +269,6 @@ impl BufferizableOpInterface for ConstantOp {
         vec![]
     }
 
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
-    }
-
     fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
         // Constant storage isn't writable
         false
@@ -340,14 +336,6 @@ impl BufferizableOpInterface for GenerateOp {
 
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
-    }
-
-    fn get_operand_dynamic_dimensions(
-        &self,
-        ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        Some(self.dynamic_dimensions(ctx))
     }
 
     fn rewrite(
@@ -456,13 +444,6 @@ impl BufferizableOpInterface for BroadcastOp {
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
     }
-    fn get_operand_dynamic_dimensions(
-        &self,
-        ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        Some(self.get_dynamic_dimensions(ctx))
-    }
 
     fn rewrite(
         &self,
@@ -559,13 +540,6 @@ impl BufferizableOpInterface for SplatOp {
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
     }
-    fn get_operand_dynamic_dimensions(
-        &self,
-        ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        Some(self.get_dynamic_dimensions(ctx))
-    }
 
     fn rewrite(
         &self,
@@ -622,13 +596,6 @@ impl BufferizableOpInterface for ElementwiseCastOp {
     }
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
-    }
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
     }
 
     fn rewrite(
@@ -750,14 +717,6 @@ impl BufferizableOpInterface for ExtractOp {
         vec![]
     }
 
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
-    }
-
     fn rewrite(
         &self,
         ctx: &mut Context,
@@ -777,8 +736,40 @@ impl BufferizableOpInterface for ExtractOp {
     }
 }
 
+/// Allocate a new buffer for the tensor `result`.
+/// The extents of its dynamic dimensions are taken from `shape_source`.
+fn alloc_result_buffer(
+    ctx: &mut Context,
+    rewriter: &mut DialectConversionRewriter,
+    bufferizer_state: &mut BufferizerState,
+    result: Value,
+    shape_source: Value,
+) -> Result<Ptr<Operation>> {
+    let result_ty = tensor_type_to_memref_type(result.get_type(ctx), ctx)?;
+    let elem_ty = result_ty.deref(ctx).element_type();
+    let result_shape = result_ty.deref(ctx).shape().clone();
+    let dynamic_dim_operands = result_shape
+        .iter()
+        .enumerate()
+        .filter_map(|(i, dim)| {
+            if let Dimension::Dynamic = dim {
+                Some(dynamic_extent(ctx, rewriter, shape_source, i))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let result_ty = RankedMemrefType::get(ctx, elem_ty, result_shape, None);
+
+    let alloc = bufferizer_state
+        .tmm
+        .create_memref_alloc(ctx, result_ty, dynamic_dim_operands)?;
+    rewriter.append_operation(ctx, alloc.get_operation());
+    Ok(alloc.get_operation())
+}
+
 /// Shared lowering for elementwise binary ops ([ElementWiseBinaryTensorOpInterface]).
-/// Each operation receives a fresh result buffer:
+/// A new buffer is allocated for the result:
 ///
 /// ```text
 /// %sum = tensor.add %lhs, %rhs : tensor<4x?xf32>
@@ -800,35 +791,12 @@ trait ElementWiseBinaryTensorOpToMemref: ElementWiseBinaryTensorOpInterface {
     ) -> Result<()> {
         let lhs = self.get_operation().deref(ctx).get_operand(0);
         let rhs = self.get_operation().deref(ctx).get_operand(1);
-
-        let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
-        let elem_ty = result_ty.deref(ctx).element_type();
-        let result_shape = result_ty.deref(ctx).shape().clone();
-        let dynamic_dim_operands = result_shape
-            .iter()
-            .enumerate()
-            .filter_map(|(i, dim)| {
-                if let Dimension::Dynamic = dim {
-                    let index = IndexConstantOp::new(ctx, i);
-                    rewriter.append_op(ctx, &index);
-                    let dim = memref::ops::DimOp::new(ctx, lhs, index.get_result(ctx));
-                    rewriter.append_op(ctx, &dim);
-                    Some(dim.get_result(ctx))
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-        let result_ty = RankedMemrefType::get(ctx, elem_ty, result_shape, None);
-
         let alloc =
-            bufferizer_state
-                .tmm
-                .create_memref_alloc(ctx, result_ty, dynamic_dim_operands)?;
-        rewriter.append_operation(ctx, alloc.get_operation());
-        let add = self.build_memref_op(ctx, alloc.get_result(ctx), lhs, rhs);
-        rewriter.append_operation(ctx, add);
-        rewriter.replace_operation(ctx, self.get_operation(), alloc.get_operation());
+            alloc_result_buffer(ctx, rewriter, bufferizer_state, self.get_result(ctx), lhs)?;
+        let res = alloc.deref(ctx).get_result(0);
+        let op = self.build_memref_op(ctx, res, lhs, rhs);
+        rewriter.append_operation(ctx, op);
+        rewriter.replace_operation(ctx, self.get_operation(), alloc);
         Ok(())
     }
 
@@ -913,8 +881,48 @@ impl ElementWiseBinaryTensorOpToMemref for MinOp {
     }
 }
 
+/// Shared lowering for elementwise unary ops ([ElementWiseUnaryTensorOpInterface]).
+/// A new buffer is allocated for the result:
+///
+/// ```text
+/// %r = tensor.exp %input : tensor<4x?xf32>
+/// ```
+///
+/// becomes approximately:
+///
+/// ```text
+/// %r = memref.alloc(%dynamic_size) : memref<4x?xf32>
+/// memref.exp %r <- exp(%input)
+/// ```
+trait ElementWiseUnaryTensorOpToMemref: ElementWiseUnaryTensorOpInterface {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let input = self.get_operand(ctx);
+        let alloc =
+            alloc_result_buffer(ctx, rewriter, bufferizer_state, self.get_result(ctx), input)?;
+        let res = alloc.deref(ctx).get_result(0);
+        let op = self.build_memref_op(ctx, res, input);
+        rewriter.append_operation(ctx, op);
+        rewriter.replace_operation(ctx, self.get_operation(), alloc);
+        Ok(())
+    }
+
+    fn build_memref_op(&self, ctx: &mut Context, res: Value, input: Value) -> Ptr<Operation>;
+}
+
+impl ElementWiseUnaryTensorOpToMemref for ExpOp {
+    fn build_memref_op(&self, ctx: &mut Context, res: Value, input: Value) -> Ptr<Operation> {
+        memref::ops::ExpOp::new(ctx, res, input).get_operation()
+    }
+}
+
 macro_rules! impl_non_aliasing_bufferizable {
-    ($op_ty:ty) => {
+    ($op_ty:ty, $to_memref:ident) => {
         #[op_interface_impl]
         impl BufferizableOpInterface for $op_ty {
             fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -929,14 +937,6 @@ macro_rules! impl_non_aliasing_bufferizable {
                 vec![]
             }
 
-            fn get_operand_dynamic_dimensions(
-                &self,
-                _ctx: &Context,
-                _opd: Use<Value>,
-            ) -> Option<Vec<Value>> {
-                None
-            }
-
             fn rewrite(
                 &self,
                 ctx: &mut Context,
@@ -944,24 +944,19 @@ macro_rules! impl_non_aliasing_bufferizable {
                 bufferizer_state: &mut BufferizerState,
                 _operands_info: &OperandsInfo,
             ) -> Result<()> {
-                <Self as ElementWiseBinaryTensorOpToMemref>::rewrite(
-                    self,
-                    ctx,
-                    rewriter,
-                    bufferizer_state,
-                    _operands_info,
-                )
+                <Self as $to_memref>::rewrite(self, ctx, rewriter, bufferizer_state, _operands_info)
             }
         }
     };
 }
 
-impl_non_aliasing_bufferizable!(AddOp);
-impl_non_aliasing_bufferizable!(SubOp);
-impl_non_aliasing_bufferizable!(MulOp);
-impl_non_aliasing_bufferizable!(DivOp);
-impl_non_aliasing_bufferizable!(MaxOp);
-impl_non_aliasing_bufferizable!(MinOp);
+impl_non_aliasing_bufferizable!(AddOp, ElementWiseBinaryTensorOpToMemref);
+impl_non_aliasing_bufferizable!(SubOp, ElementWiseBinaryTensorOpToMemref);
+impl_non_aliasing_bufferizable!(MulOp, ElementWiseBinaryTensorOpToMemref);
+impl_non_aliasing_bufferizable!(DivOp, ElementWiseBinaryTensorOpToMemref);
+impl_non_aliasing_bufferizable!(MaxOp, ElementWiseBinaryTensorOpToMemref);
+impl_non_aliasing_bufferizable!(MinOp, ElementWiseBinaryTensorOpToMemref);
+impl_non_aliasing_bufferizable!(ExpOp, ElementWiseUnaryTensorOpToMemref);
 
 /// Allow [pliron_llvm::ops::LoadOp] to participate in bufferization when it
 /// loads a tensor value — the rewrite converts the result type to memref.
@@ -977,14 +972,6 @@ impl BufferizableOpInterface for pliron_llvm::ops::LoadOp {
 
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
-    }
-
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
     }
 
     fn result_layout(
@@ -1049,14 +1036,6 @@ impl BufferizableOpInterface for ForOp {
             .collect()
     }
 
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
-    }
-
     fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
         // Loop-carried block arguments can always be viewed as writable from inside the body
         true
@@ -1109,14 +1088,6 @@ impl BufferizableOpInterface for IfOp {
     // The bufferizer gets that sharing from the region flows of [IfOp].
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
         vec![]
-    }
-
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
     }
 
     fn rewrite(
@@ -1183,14 +1154,6 @@ impl BufferizableOpInterface for MatMulOp {
         }]
     }
 
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
-    }
-
     fn rewrite(
         &self,
         ctx: &mut Context,
@@ -1206,6 +1169,54 @@ impl BufferizableOpInterface for MatMulOp {
         rewriter.append_operation(ctx, matmul.get_operation());
 
         rewriter.replace_operation(ctx, self.get_operation(), matmul.get_operation());
+        Ok(())
+    }
+}
+
+/// Lowers `tensor.reduce` to `memref.reduce`. The result aliases the accumulator,
+/// because the reduction combines directly into that buffer:
+///
+/// ```text
+/// %result = tensor.reduce <Sum> [1] %input, %accum
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// memref.reduce <Sum> [1] %input into %accum
+/// // %result is replaced by %accum
+/// ```
+#[op_interface_impl]
+impl BufferizableOpInterface for ReduceOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        true
+    }
+
+    fn operand_bufferizes_to_memory_write(&self, ctx: &Context, opd: Use<Value>) -> bool {
+        self.get_operation().deref(ctx).get_operand_as_use(1) == opd
+    }
+
+    fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
+        vec![Alias {
+            operand: self.get_operation().deref(ctx).get_operand_as_use(1),
+            result: self.get_result(ctx),
+            kind: AliasKind::Must,
+            relation: BufferRelation::Equivalent,
+        }]
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let (input, accum) = (self.input(ctx), self.accum(ctx));
+        let (kind, dims) = (self.reduction_kind(ctx), self.reduction_dims(ctx));
+        let reduce = memref::ops::ReduceOp::new(ctx, kind, dims, input, accum);
+        rewriter.append_op(ctx, &reduce);
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![accum]);
         Ok(())
     }
 }
@@ -1247,14 +1258,6 @@ impl BufferizableOpInterface for BatchMatMulOp {
             kind: AliasKind::Must,
             relation: BufferRelation::Equivalent,
         }]
-    }
-
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
     }
 
     fn rewrite(
@@ -1441,14 +1444,6 @@ impl BufferizableOpInterface for FuncOp {
         vec![]
     }
 
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
-    }
-
     fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
         true
     }
@@ -1511,14 +1506,6 @@ impl BufferizableOpInterface for TensorExtractSliceOp {
             kind: AliasKind::Must,
             relation: BufferRelation::Contains,
         }]
-    }
-
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
     }
 
     fn result_layout(
@@ -1603,14 +1590,6 @@ impl BufferizableOpInterface for TensorInsertSliceOp {
         }]
     }
 
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
-    }
-
     fn rewrite(
         &self,
         ctx: &mut Context,
@@ -1670,14 +1649,6 @@ impl BufferizableOpInterface for TensorReshapeOp {
         }]
     }
 
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
-    }
-
     fn result_layout(
         &self,
         _ctx: &Context,
@@ -1706,7 +1677,6 @@ impl BufferizableOpInterface for TensorReshapeOp {
                 rewriter,
                 bufferizer_state.tmm,
                 source,
-                None,
             )?
         };
         let memref_reshape =
@@ -1747,14 +1717,6 @@ impl BufferizableOpInterface for TensorTransposeOp {
             kind: AliasKind::Must,
             relation: BufferRelation::Equivalent,
         }]
-    }
-
-    fn get_operand_dynamic_dimensions(
-        &self,
-        _ctx: &Context,
-        _opd: Use<Value>,
-    ) -> Option<Vec<Value>> {
-        None
     }
 
     fn result_layout(

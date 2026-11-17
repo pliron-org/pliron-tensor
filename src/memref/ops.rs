@@ -15,6 +15,7 @@ use pliron::{
             ResultNImplsTy, ResultNOfType, SingleBlockRegionInterface, SymbolOpInterface,
             SymbolUserOpInterface,
         },
+        type_interfaces::FloatTypeInterface,
     },
     combine::{
         Parser, attempt, optional,
@@ -43,7 +44,7 @@ use pliron::{
     printable::{self, ListSeparator, Printable},
     result::Result,
     symbol_table::SymbolTableCollection,
-    r#type::{TypeHandle, Typed, TypedHandle},
+    r#type::{TypeHandle, Typed, TypedHandle, type_impls},
     value::Value,
     verify_err, verify_error,
 };
@@ -54,13 +55,14 @@ use pliron_common_dialects::{
 
 use crate::memref::{
     attributes::{
-        DenseElementsAttr, DroppedDimsAttr, PermutationAttr, ShapedTypeHandle, SliceParamAttr,
-        SliceParamsAttr,
+        DenseElementsAttr, DroppedDimsAttr, PermutationAttr, ReductionDimsAttr, ReductionKindAttr,
+        ShapedTypeHandle, SliceParamAttr, SliceParamsAttr,
     },
     layout::{is_cast_compatible, permute, subview_layout, transpose_layout},
     op_interfaces::{
         CompatibleShapesOp, DynamicDimensionOperandsOp, ElementWiseBinaryMemrefOpInterface,
-        GenerateOpInterface, ReshapeOpInterface, TransposeOpInterface,
+        ElementWiseUnaryMemrefOpInterface, GenerateOpInterface, ReductionOpInterface,
+        ReshapeOpInterface, TransposeOpInterface,
     },
     type_interfaces::{MultiDimensionalType, ShapedType},
     types::RankedMemrefType,
@@ -85,11 +87,16 @@ use crate::memref::{
         ResultNOfType<0, RankedMemrefType>,
         OneResultInterface,
         ResultNImplsTy<0, dyn ShapedType>,
-        OperandsMNOfType<0, {-1}, IndexType>,
-        DynamicDimensionOperandsOp<0>,
     ],
 )]
 pub struct AllocOp;
+
+#[op_interface_impl]
+impl DynamicDimensionOperandsOp for AllocOp {
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation().deref(ctx).operands().collect()
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum AllocOpVerifyErr {
@@ -747,6 +754,86 @@ pub struct MaxOp;
     verifier = "succ"
 )]
 pub struct MinOp;
+
+/// Elementwise base-e exponential of a memref with a float element type.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `res` | The memref where the result will be stored. |
+/// | `input` | The input memref. |
+#[pliron_op(
+    name = "memref.exp",
+    format = "$0 ` <- exp(` $1 `)`",
+    interfaces = [
+        NResultsInterface<0>,
+        NOpdsInterface<2>,
+        AllOperandsOfType<RankedMemrefType>,
+        CompatibleShapesOp<RankedMemrefType>,
+        AllResultsOfType<RankedMemrefType>,
+        ElementWiseUnaryMemrefOpInterface,
+    ],
+)]
+pub struct ExpOp;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ExpOpVerifyErr {
+    #[error("memref.exp needs a float element type, but has {0}")]
+    NotFloat(String),
+}
+
+impl Verify for ExpOp {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        let ty = self.get_input_memref(ctx).get_type(ctx);
+        let element_ty = ty
+            .deref(ctx)
+            .downcast_ref::<RankedMemrefType>()
+            .expect("AllOperandsOfType<RankedMemrefType> ensures a ranked memref")
+            .element_type();
+        if !type_impls::<dyn FloatTypeInterface>(&*element_ty.deref(ctx)) {
+            return verify_err!(
+                self.loc(ctx),
+                ExpOpVerifyErr::NotFloat(element_ty.disp(ctx).to_string())
+            );
+        }
+        Ok(())
+    }
+}
+
+/// [Reduction](ReductionOpInterface) of a memref into an accumulator memref.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `input` | The memref to reduce. |
+/// | `accum` | The accumulator memref, which this op updates. |
+#[pliron_op(
+    name = "memref.reduce",
+    format = "`<` attr($memref_reduction_kind, $ReductionKindAttr) `> ` attr($memref_reduction_dims, $ReductionDimsAttr) ` ` $0 ` into ` $1",
+    interfaces = [
+        NResultsInterface<0>,
+        NOpdsInterface<2>,
+        AllOperandsOfType<RankedMemrefType>,
+        ReductionOpInterface<RankedMemrefType>,
+    ],
+    verifier = "succ"
+)]
+pub struct ReduceOp;
+
+impl ReduceOp {
+    /// Create a new [ReduceOp] that reduces `dims` of `input` into `accum` with `kind`.
+    pub fn new(
+        ctx: &mut Context,
+        kind: ReductionKindAttr,
+        dims: Vec<usize>,
+        input: Value,
+        accum: Value,
+    ) -> Self {
+        let op = Operation::new_op::<Self>(ctx, vec![], vec![input, accum], vec![], 0);
+        op.set_reduction(ctx, kind, dims);
+        op
+    }
+}
 
 /// Matrix multiplication op for memrefs with accumulation.
 /// Computes `result[i,j] = accum[i,j] + sum_k(lhs[i,k] * rhs[k,j])`.
@@ -1564,12 +1651,17 @@ impl SubviewOp {
         OperandNOfType<0, RankedMemrefType>,
         ResultNOfType<0, RankedMemrefType>,
         ResultNImplsTy<0, dyn ShapedType>,
-        OperandsMNOfType<1, {-1}, IndexType>,
-        DynamicDimensionOperandsOp<1>,
         ReshapeOpInterface<RankedMemrefType>,
     ],
 )]
 pub struct ReshapeOp;
+
+#[op_interface_impl]
+impl DynamicDimensionOperandsOp for ReshapeOp {
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation().deref(ctx).operands().skip(1).collect()
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ReshapeOpVerifyErr {

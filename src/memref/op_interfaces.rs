@@ -6,7 +6,7 @@
 use pliron::{
     builtin::op_interfaces::{
         AllOperandsOfType, AllResultsOfType, NOpdsInterface, NResultsInterface, OneOpdInterface,
-        OneResultInterface, OperandNOfType, OperandsMNOfType, ResultNImplsTy, ResultNOfType,
+        OneResultInterface, OperandNOfType, ResultNImplsTy, ResultNOfType,
         SingleBlockRegionInterface,
     },
     context::Context,
@@ -22,7 +22,7 @@ use pliron::{
 use pliron_common_dialects::{cf::op_interfaces::YieldingRegions, index::types::IndexType};
 
 use crate::memref::{
-    attributes::{PermutationAttr, ShapedTypeHandle},
+    attributes::{PermutationAttr, ReductionDimsAttr, ReductionKindAttr, ShapedTypeHandle},
     layout::{is_valid_permutation, permute},
     ops::YieldOp,
     type_interfaces::{Dimension, ShapedType},
@@ -184,54 +184,54 @@ pub trait CompatibleShapesOp<T: ShapedType>: AllResultsOfType<T> + AllOperandsOf
 }
 
 #[derive(thiserror::Error, Debug)]
-#[error(
-    "The number of dynamic dimension operands ({got}) must match \
-    the number of dynamic dimensions in the result type ({expected})"
-)]
-pub struct DynamicDimensionOperandsOpCountErr {
-    pub expected: usize,
-    pub got: usize,
+pub enum DynamicDimensionOperandsOpVerifyErr {
+    #[error(
+        "The number of dynamic dimension operands ({got}) must match \
+        the number of dynamic dimensions in the result type ({expected})"
+    )]
+    CountMismatch { expected: usize, got: usize },
+    #[error("Dynamic dimension operands must be of index type")]
+    NonIndexOperand,
 }
 
 /// Ops with a shaped result whose dynamic dimensions are provided by [Index](IndexType)
 /// operands, one each for every dynamic dimension of the result type.
-///
-/// `FIRST` is the index of the first dynamic dimension operand.
 #[op_interface]
-pub trait DynamicDimensionOperandsOp<const FIRST: u32>:
-    ResultNImplsTy<0, dyn ShapedType> + OperandsMNOfType<FIRST, { -1 }, IndexType>
-{
+pub trait DynamicDimensionOperandsOp: ResultNImplsTy<0, dyn ShapedType> {
     /// Get the dynamic dimension operands, in result-dimension order.
-    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
-        self.get_operation()
-            .deref(ctx)
-            .operands()
-            .skip(FIRST as usize)
-            .collect()
-    }
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value>;
 
     fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
     where
         Self: Sized,
     {
-        let (got, result) = {
-            let op_ref = op.get_operation().deref(ctx);
-            (
-                op_ref.get_num_operands().saturating_sub(FIRST as usize),
-                op_ref.get_result(0),
-            )
-        };
+        let dynamic_dims = op
+            .downcast_ref::<Self>()
+            .expect("Failed to downcast op to Self")
+            .get_dynamic_dimensions(ctx);
 
+        let result = op.get_operation().deref(ctx).get_result(0);
         let result_ty_handle = result.get_type(ctx);
         let result_ty_ref = result_ty_handle.deref(ctx);
         let result_ty = type_cast::<dyn ShapedType>(&*result_ty_ref)
             .expect("ResultNImplsTy<0, dyn ShapedType> ensures the result is a ShapedType");
 
         let expected = result_ty.num_dynamic_dimensions();
+        let got = dynamic_dims.len();
         if got != expected {
             return verify_err!(
                 op.loc(ctx),
-                DynamicDimensionOperandsOpCountErr { expected, got }
+                DynamicDimensionOperandsOpVerifyErr::CountMismatch { expected, got }
+            );
+        }
+
+        if dynamic_dims
+            .iter()
+            .any(|dim| !dim.get_type(ctx).deref(ctx).is::<IndexType>())
+        {
+            return verify_err!(
+                op.loc(ctx),
+                DynamicDimensionOperandsOpVerifyErr::NonIndexOperand
             );
         }
 
@@ -261,7 +261,7 @@ pub enum ReshapeOpInterfaceVerifyErr {
 ///   - Equal number of elements when both their shapes are static
 #[op_interface]
 pub trait ReshapeOpInterface<T: ShapedType>:
-    OperandNOfType<0, T> + ResultNOfType<0, T> + DynamicDimensionOperandsOp<1>
+    OperandNOfType<0, T> + ResultNOfType<0, T> + DynamicDimensionOperandsOp
 {
     /// Get the source operand that is reshaped.
     fn get_source(&self, ctx: &Context) -> Value {
@@ -415,9 +415,7 @@ pub trait TransposeOpInterface<T: ShapedType>:
     }
 }
 
-/// Interface for element-wise binary arithmetic memref ops (e.g., AddOp).
-/// These ops must have exactly 3 operands, with the first operand
-/// being the result and the next two operands being the inputs.
+/// Interface for element-wise binary arithmetic memref ops.
 #[op_interface]
 pub trait ElementWiseBinaryMemrefOpInterface:
     NResultsInterface<0>
@@ -452,6 +450,192 @@ pub trait ElementWiseBinaryMemrefOpInterface:
     where
         Self: Sized,
     {
+        Ok(())
+    }
+}
+
+/// Interface for element-wise unary memref ops.
+#[op_interface]
+pub trait ElementWiseUnaryMemrefOpInterface:
+    NResultsInterface<0>
+    + AllOperandsOfType<RankedMemrefType>
+    + NOpdsInterface<2>
+    + CompatibleShapesOp<RankedMemrefType>
+{
+    /// Create a new instance of the element-wise unary memref op with the specified operands.
+    fn new(ctx: &mut Context, res: Value, input: Value) -> Self
+    where
+        Self: Sized,
+    {
+        Operation::new_op::<Self>(ctx, vec![], vec![res, input], vec![], 0)
+    }
+
+    /// Get the result memref operand.
+    fn get_result_memref(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(0)
+    }
+
+    /// Get the input memref operand.
+    fn get_input_memref(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(1)
+    }
+
+    fn verify(_op: &dyn Op, _ctx: &Context) -> Result<()>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
+}
+
+dict_key!(
+    /// Attribute key for the [ReductionKindAttr] of a [ReductionOpInterface] op.
+    ATTR_KEY_REDUCTION_KIND,
+    "memref_reduction_kind"
+);
+
+dict_key!(
+    /// Attribute key for the [ReductionDimsAttr] of a [ReductionOpInterface] op.
+    ATTR_KEY_REDUCTION_DIMS,
+    "memref_reduction_dims"
+);
+
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+pub enum ReductionOpInterfaceVerifyErr {
+    #[error("Reduction: Missing {ATTR_KEY_REDUCTION_KIND} attribute")]
+    MissingKindAttr,
+    #[error("Reduction: Missing {ATTR_KEY_REDUCTION_DIMS} attribute")]
+    MissingDimsAttr,
+    #[error("Reduction: {dims:?} must be strictly increasing dimensions of the rank {rank} input")]
+    InvalidDims { dims: Vec<usize>, rank: usize },
+    #[error("Reduction: The input and the accumulator must have the same element type")]
+    ElementTypeMismatch,
+    #[error(
+        "Reduction: The accumulator shape must be the input shape with each reduced dimension set to 1"
+    )]
+    AccumShapeMismatch,
+}
+
+/// Compute the accumulator shape when `input_shape` is reduced over `dims`.
+///
+/// Each dimension of `input_shape` that is in `dims` is set to 1.
+pub fn reduced_shape(input_shape: &[Dimension], dims: &[usize]) -> Vec<Dimension> {
+    let mut shape = input_shape.to_vec();
+    for &dim in dims {
+        shape[dim] = Dimension::Static(1);
+    }
+    shape
+}
+
+/// Tensor and memref ops that reduce their input over [ReductionDimsAttr]
+/// with [ReductionKindAttr].
+///
+/// - Operand 0: The input.
+/// - Operand 1: The accumulator, with the element type and [reduced_shape] of the input.
+///
+/// Post reduction, each reduced dimension has extent 1, thus preserving the rank.
+#[op_interface]
+pub trait ReductionOpInterface<T: ShapedType>: NOpdsInterface<2> + AllOperandsOfType<T> {
+    /// Get the input operand.
+    fn input(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(0)
+    }
+
+    /// Get the accumulator operand.
+    fn accum(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(1)
+    }
+
+    /// Get the function used by the reduction to combine the elements.
+    fn reduction_kind(&self, ctx: &Context) -> ReductionKindAttr {
+        *self
+            .get_operation()
+            .deref(ctx)
+            .attributes
+            .get::<ReductionKindAttr>(&ATTR_KEY_REDUCTION_KIND)
+            .expect("Reduction kind is missing or has an incorrect type")
+    }
+
+    /// Get the reduced dimensions.
+    fn reduction_dims(&self, ctx: &Context) -> Vec<usize> {
+        self.get_operation()
+            .deref(ctx)
+            .attributes
+            .get::<ReductionDimsAttr>(&ATTR_KEY_REDUCTION_DIMS)
+            .expect("Reduction dimensions are missing or have an incorrect type")
+            .0
+            .clone()
+    }
+
+    /// Set [ReductionKindAttr] and [ReductionDimsAttr].
+    fn set_reduction(&self, ctx: &Context, kind: ReductionKindAttr, dims: Vec<usize>) {
+        let attributes = &mut self.get_operation().deref_mut(ctx).attributes;
+        attributes.set(ATTR_KEY_REDUCTION_KIND.clone(), kind);
+        attributes.set(ATTR_KEY_REDUCTION_DIMS.clone(), ReductionDimsAttr(dims));
+    }
+
+    fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
+    where
+        Self: Sized,
+    {
+        let loc = op.loc(ctx);
+        let op_ref = op.get_operation().deref(ctx);
+        if op_ref
+            .attributes
+            .get::<ReductionKindAttr>(&ATTR_KEY_REDUCTION_KIND)
+            .is_none()
+        {
+            return verify_err!(loc, ReductionOpInterfaceVerifyErr::MissingKindAttr);
+        }
+        let Some(ReductionDimsAttr(dims)) = op_ref
+            .attributes
+            .get::<ReductionDimsAttr>(&ATTR_KEY_REDUCTION_DIMS)
+        else {
+            return verify_err!(loc, ReductionOpInterfaceVerifyErr::MissingDimsAttr);
+        };
+
+        let input_ty = op_ref.get_operand(0).get_type(ctx);
+        let input_ty = input_ty.deref(ctx);
+        let input_ty = input_ty
+            .downcast_ref::<T>()
+            .expect("AllOperandsOfType<T> ensures the input is of type T");
+        let accum_ty = op_ref.get_operand(1).get_type(ctx);
+        let accum_ty = accum_ty.deref(ctx);
+        let accum_ty = accum_ty
+            .downcast_ref::<T>()
+            .expect("AllOperandsOfType<T> ensures the accumulator is of type T");
+
+        let rank = input_ty.rank();
+        let increasing = dims.windows(2).all(|pair| pair[0] < pair[1]);
+        if !increasing || dims.last().is_some_and(|&last| last >= rank) {
+            return verify_err!(
+                loc,
+                ReductionOpInterfaceVerifyErr::InvalidDims {
+                    dims: dims.clone(),
+                    rank
+                }
+            );
+        }
+
+        if input_ty.element_type() != accum_ty.element_type() {
+            return verify_err!(loc, ReductionOpInterfaceVerifyErr::ElementTypeMismatch);
+        }
+
+        let expected = reduced_shape(input_ty.shape(), dims);
+        let accum_shape = accum_ty.shape();
+        let compatible = expected.len() == accum_shape.len()
+            && expected.iter().zip(accum_shape.iter()).enumerate().all(
+                |(i, (expected, got))| match (expected, got) {
+                    // A reduced dimension must be a static 1.
+                    _ if dims.contains(&i) => *got == Dimension::Static(1),
+                    (Dimension::Static(e), Dimension::Static(g)) => e == g,
+                    _ => true,
+                },
+            );
+        if !compatible {
+            return verify_err!(loc, ReductionOpInterfaceVerifyErr::AccumShapeMismatch);
+        }
+
         Ok(())
     }
 }

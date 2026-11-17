@@ -1,0 +1,108 @@
+builtin.module @test_module {
+  ^entry():
+    llvm.func @test_exp_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<8:builtin.fp32>;
+        result = tensor.exp input : tensor.ranked<8:builtin.fp32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_exp_f64_dynamic: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<?x2:builtin.fp64>;
+        result = tensor.exp input : tensor.ranked<?x2:builtin.fp64>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_exp_twice_dynamic: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<?x2:builtin.fp64>;
+        first = tensor.exp input : tensor.ranked<?x2:builtin.fp64>;
+        result = tensor.exp first : tensor.ranked<?x2:builtin.fp64>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_sum_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x3x4:builtin.fp32>;
+        init = llvm.load init_p : tensor.ranked<2x1x4:builtin.fp32>;
+        result = tensor.reduce <Sum> [1] input, init : tensor.ranked<2x1x4:builtin.fp32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_max_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x3x4:builtin.fp32>;
+        init = llvm.load init_p : tensor.ranked<1x3x1:builtin.fp32>;
+        result = tensor.reduce <Max> [0, 2] input, init : tensor.ranked<1x3x1:builtin.fp32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_min_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x3x4:builtin.fp32>;
+        init = llvm.load init_p : tensor.ranked<1x1x1:builtin.fp32>;
+        result = tensor.reduce <Min> [0, 1, 2] input, init : tensor.ranked<1x1x1:builtin.fp32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_prod_f32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x3x4:builtin.fp32>;
+        init = llvm.load init_p : tensor.ranked<2x3x4:builtin.fp32>;
+        result = tensor.reduce <Prod> [] input, init : tensor.ranked<2x3x4:builtin.fp32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_max_i32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x4:builtin.integer i32>;
+        init = llvm.load init_p : tensor.ranked<2x1:builtin.integer i32>;
+        result = tensor.reduce <Max> [1] input, init : tensor.ranked<2x1:builtin.integer i32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_max_ui32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x4:builtin.integer ui32>;
+        init = llvm.load init_p : tensor.ranked<2x1:builtin.integer ui32>;
+        result = tensor.reduce <Max> [1] input, init : tensor.ranked<2x1:builtin.integer ui32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_min_ui32: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x4:builtin.integer ui32>;
+        init = llvm.load init_p : tensor.ranked<2x1:builtin.integer ui32>;
+        result = tensor.reduce <Min> [1] input, init : tensor.ranked<2x1:builtin.integer ui32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_sum_i64_dynamic: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<?x3:builtin.integer i64>;
+        init = llvm.load init_p : tensor.ranked<1x3:builtin.integer i64>;
+        result = tensor.reduce <Sum> [0] input, init : tensor.ranked<1x3:builtin.integer i64>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_init_used_later: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<2x3:builtin.fp32>;
+        init = llvm.load init_p : tensor.ranked<2x1:builtin.fp32>;
+        reduced = tensor.reduce <Sum> [1] input, init : tensor.ranked<2x1:builtin.fp32>;
+        result = tensor.add reduced, init : tensor.ranked<2x1:builtin.fp32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    };
+    llvm.func @test_reduce_dynamic_init_used_later: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(in_p: llvm.ptr(0), init_p: llvm.ptr(0), out_p: llvm.ptr(0)):
+        input = llvm.load in_p : tensor.ranked<?x3:builtin.fp32>;
+        loaded = llvm.load init_p : tensor.ranked<?x1:builtin.fp32>;
+        init = tensor.add loaded, loaded : tensor.ranked<?x1:builtin.fp32>;
+        reduced = tensor.reduce <Sum> [1] input, init : tensor.ranked<?x1:builtin.fp32>;
+        result = tensor.add reduced, init : tensor.ranked<?x1:builtin.fp32>;
+        llvm.store *out_p <- result;
+        llvm.return
+    }
+}

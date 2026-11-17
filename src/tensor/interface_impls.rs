@@ -22,7 +22,10 @@ use pliron::{
     opts::constants::ConstFoldInterface,
     r#type::TypeHandle,
     utils::{
-        apfloat::{Double, Float, FloatConvert, Half, Round, Single, Status},
+        apfloat::{
+            Double, Float, FloatConvert, Half, Round, Single, Status, double_to_f64, f32_to_single,
+            f64_to_double, single_to_f32,
+        },
         apint::APInt,
     },
 };
@@ -32,16 +35,16 @@ use crate::{
     memref::{
         attributes::ShapedTypeHandle,
         layout::{identity_strides, permute},
-        op_interfaces::TransposeOpInterface,
+        op_interfaces::{ReductionOpInterface, TransposeOpInterface},
         type_interfaces::{DenseElementTypeHandle, Dimension},
     },
     tensor::{
-        attributes::DenseElementsAttr,
+        attributes::{DenseElementsAttr, ReductionKindAttr},
         conversions::{ScalarCastKind, scalar_cast_kind},
         ops::{
-            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExtractOp,
-            ExtractSliceOp, GenerateOp, InsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp, ReshapeOp,
-            SplatOp, SubOp, TransposeOp,
+            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExpOp,
+            ExtractOp, ExtractSliceOp, GenerateOp, InsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp,
+            ReduceOp, ReshapeOp, SplatOp, SubOp, TransposeOp,
         },
         types::RankedTensorType,
     },
@@ -64,6 +67,8 @@ impl_no_self_side_effects!(
     DivOp,
     MaxOp,
     MinOp,
+    ExpOp,
+    ReduceOp,
     MatMulOp,
     BatchMatMulOp,
     ExtractSliceOp,
@@ -456,6 +461,177 @@ impl_binary_const_fold!(
     MaxOp => BinaryOpKind::Max,
     MinOp => BinaryOpKind::Min,
 );
+
+#[op_interface_impl]
+impl ConstFoldInterface for ExpOp {
+    fn check_fold(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Vec<Option<AttrObj>> {
+        let [input] = operand_attrs else {
+            panic!("ExpOp must have one operand");
+        };
+        let Some(input) = dense_operand(input) else {
+            // The input is not a constant.
+            return vec![None];
+        };
+        let Some(result_ty) = static_shaped_type(ctx, self.result_type(ctx)) else {
+            // The result shape is not static.
+            return vec![None];
+        };
+        let folded = fold_elementwise(ctx, result_ty, &[input], |elements| {
+            // Compute `exp` with [f32::exp] or [f64::exp].
+            let element = &*elements[0];
+            if let Some(value) = element.downcast_ref::<FPSingleAttr>() {
+                let result = single_to_f32(value.0).exp();
+                Some(Box::new(FPSingleAttr(f32_to_single(result))) as AttrObj)
+            } else if let Some(value) = element.downcast_ref::<FPDoubleAttr>() {
+                let result = double_to_f64(value.0).exp();
+                Some(Box::new(FPDoubleAttr(f64_to_double(result))) as AttrObj)
+            } else {
+                None
+            }
+        });
+        vec![folded.map(|folded| Box::new(folded) as AttrObj)]
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+/// Fold `reduce` with the constant operands `operand_attrs`.
+///
+/// The elements are combined in the same order as the unfolded op would at run time.
+///
+/// The result is `None` if
+/// - an operand is not a constant, or
+/// - the input or the result has more than [MAX_FOLD_ELEMENTS] elements, or
+/// - an element does not fold.
+fn fold_reduce(
+    ctx: &Context,
+    reduce: &ReduceOp,
+    operand_attrs: &[Option<AttrObj>],
+) -> Option<DenseElementsAttr> {
+    let [input, accum] = operand_attrs else {
+        panic!("ReduceOp must have two operands");
+    };
+    let (input, accum) = (dense_operand(input)?, dense_operand(accum)?);
+    let result_ty = static_shaped_type(ctx, reduce.result_type(ctx))?;
+    let element_ty =
+        DenseElementTypeHandle::from_handle(result_ty.deref(ctx).element_type(), ctx).ok()?;
+    let bin_op = match reduce.reduction_kind(ctx) {
+        ReductionKindAttr::Sum => BinaryOpKind::Add,
+        ReductionKindAttr::Prod => BinaryOpKind::Mul,
+        ReductionKindAttr::Max => BinaryOpKind::Max,
+        ReductionKindAttr::Min => BinaryOpKind::Min,
+    };
+    let dims = reduce.reduction_dims(ctx);
+
+    let input_ty = input.ty();
+    let input_shape: Vec<usize> = input_ty
+        .deref(ctx)
+        .shape()
+        .iter()
+        .map(|dim| match dim {
+            Dimension::Static(extent) => *extent,
+            Dimension::Dynamic => panic!("A constant tensor must have a static shape"),
+        })
+        .collect();
+    let num_input = input_shape.iter().product::<usize>();
+    let num_accum = result_ty.deref(ctx).num_elements()?;
+    if num_input > MAX_FOLD_ELEMENTS || num_accum > MAX_FOLD_ELEMENTS {
+        return None;
+    }
+
+    if input.is_splat(ctx) && accum.is_splat(ctx) {
+        // All accumulator elements combine the same value the same number of times.
+        let element = input.element_attr(ctx, 0);
+        let mut result = accum.element_attr(ctx, 0);
+        for _ in 0..num_input.checked_div(num_accum).unwrap_or(0) {
+            result = fold_scalar_binary(ctx, bin_op, &*result, &*element)?;
+        }
+        let bytes = element_ty.deref(ctx).element_bytes(&*result)?;
+        return DenseElementsAttr::new_splat(ctx, result_ty, bytes).ok();
+    }
+
+    let accum_shape: Vec<usize> = result_ty
+        .deref(ctx)
+        .shape()
+        .iter()
+        .map(|dim| match dim {
+            Dimension::Static(extent) => *extent,
+            Dimension::Dynamic => panic!("A folded result must have a static shape"),
+        })
+        .collect();
+    assert_eq!(
+        input_shape.len(),
+        accum_shape.len(),
+        "The verifier ensures that a reduction does not change the rank"
+    );
+
+    let mut results: Vec<AttrObj> = (0..num_accum)
+        .map(|idx| accum.element_attr(ctx, idx))
+        .collect();
+
+    // The input indices, advanced in row-major order.
+    let mut indices = vec![0; input_shape.len()];
+
+    // Combine each input element into the accumulator element that it maps to.
+    for _ in 0..num_input {
+        // The row-major input position.
+        let input_pos = indices
+            .iter()
+            .zip(&input_shape)
+            .fold(0, |pos, (&index, extent)| pos * extent + index);
+        // The row-major accumulator position. The accumulator indices are derived
+        // from the input indices, by setting the indices of the reduced dimensions to 0.
+        let accum_pos =
+            indices
+                .iter()
+                .zip(&accum_shape)
+                .enumerate()
+                .fold(0, |pos, (dim, (&index, extent))| {
+                    pos * extent + if dims.contains(&dim) { 0 } else { index }
+                });
+        let element = input.element_attr(ctx, input_pos);
+        results[accum_pos] = fold_scalar_binary(ctx, bin_op, &*results[accum_pos], &*element)?;
+
+        // Advance to the next input indices, the way an odometer does.
+        for (index, &extent) in indices.iter_mut().zip(&input_shape).rev() {
+            *index += 1;
+            if *index < extent {
+                break;
+            }
+            *index = 0;
+        }
+    }
+
+    let mut data = Vec::new();
+    for result in &results {
+        data.extend(element_ty.deref(ctx).element_bytes(&**result)?);
+    }
+    DenseElementsAttr::new(ctx, result_ty, data).ok()
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for ReduceOp {
+    fn check_fold(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Vec<Option<AttrObj>> {
+        let folded = fold_reduce(ctx, self, operand_attrs);
+        vec![folded.map(|folded| Box::new(folded) as AttrObj)]
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
 
 #[op_interface_impl]
 impl ConstFoldInterface for SplatOp {

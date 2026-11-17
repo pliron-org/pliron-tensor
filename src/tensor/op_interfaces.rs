@@ -5,7 +5,8 @@
 
 use pliron::{
     builtin::op_interfaces::{
-        AllOperandsOfType, AllResultsOfType, NOpdsInterface, NResultsInterface, OneResultInterface,
+        AllOperandsOfType, AllResultsOfType, NOpdsInterface, NResultsInterface, OneOpdInterface,
+        OneResultInterface,
     },
     context::Context,
     derive::op_interface,
@@ -28,10 +29,7 @@ pub enum ElementWiseBinaryTensorOpErr {
     InvalidResult,
 }
 
-/// Interface for element-wise binary arithmetic tensor ops (e.g., AddOp).
-/// These ops must have exactly 2 operands and 1 result,
-/// and the operand and result types must all be the RankedTensorType
-/// with the same rank, shape (for non-dynamic dimensions) and element type.
+/// Interface for element-wise binary arithmetic tensor ops.
 #[op_interface]
 pub trait ElementWiseBinaryTensorOpInterface:
     OneResultInterface
@@ -56,5 +54,32 @@ pub trait ElementWiseBinaryTensorOpInterface:
         let operands = vec![lhs, rhs];
         let result_types = vec![lhs.get_type(ctx)];
         Operation::new_op::<Self>(ctx, result_types, operands, vec![], 0)
+    }
+}
+
+/// Interface for element-wise unary tensor ops.
+#[op_interface]
+pub trait ElementWiseUnaryTensorOpInterface:
+    OneResultInterface
+    + NResultsInterface<1>
+    + AllResultsOfType<RankedTensorType>
+    + AllOperandsOfType<RankedTensorType>
+    + OneOpdInterface
+    + CompatibleShapesOp<RankedTensorType>
+{
+    fn verify(_op: &dyn Op, _ctx: &Context) -> Result<()>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
+
+    fn new(ctx: &mut Context, input: Value) -> Self
+    where
+        Self: Sized,
+    {
+        use pliron::r#type::Typed;
+        let result_types = vec![input.get_type(ctx)];
+        Operation::new_op::<Self>(ctx, result_types, vec![input], vec![], 0)
     }
 }

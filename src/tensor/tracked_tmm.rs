@@ -16,7 +16,8 @@ use pliron::{
         op_interfaces::{
             AllResultsOfType, AtLeastNOpdsInterface, AtLeastNResultsInterface, CallOpCallable,
             NOpdsInterface, NResultsInterface, OneOpdInterface, OneResultInterface, OperandNOfType,
-            ResultNOfType, SameResultsType, SymbolOpInterface, SymbolTableInterface,
+            ResultNImplsTy, ResultNOfType, SameResultsType, SymbolOpInterface,
+            SymbolTableInterface,
         },
         ops::ConstantOp,
         types::{IntegerType, Signedness},
@@ -34,7 +35,7 @@ use pliron::{
     operation::Operation,
     result::Result,
     symbol_table::{SymbolTableCollection, nearest_symbol_table},
-    r#type::{Typed, TypedHandle},
+    r#type::TypedHandle,
     utils::{apint::APInt, table::ISet},
     value::Value,
     verify_err,
@@ -53,6 +54,7 @@ use crate::{
     memref::{
         attributes::ConstPointerAttr,
         descriptor,
+        op_interfaces::DynamicDimensionOperandsOp,
         type_interfaces::{MultiDimensionalType, ShapedType},
         types::RankedMemrefType,
     },
@@ -190,11 +192,6 @@ fn emit_tmm_state_ptr(ctx: &mut Context, inserter: &mut dyn Inserter, tmm_ptr: *
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrackedMemoryManagerErr {
-    #[error(
-        "TrackedAllocOp: number of dynamic dimension operands ({got}) does not match \
-         the number of dynamic dimensions in the result type ({expected})"
-    )]
-    AllocNumDynamicDimsMismatch { expected: usize, got: usize },
     #[error("Missing self pointer attribute on Op")]
     MissingSelfPointerAttr,
     #[error("Nearest symbol table not found")]
@@ -230,10 +227,18 @@ pub enum TrackedMemoryManagerErr {
         OneResultInterface,
         SameResultsType,
         AllResultsOfType<RankedMemrefType>,
+        ResultNImplsTy<0, dyn ShapedType>,
     ],
     attributes = (memref_tmm_ptr_alloc: ConstPointerAttr),
 )]
 pub struct TrackedAllocOp;
+
+#[op_interface_impl]
+impl DynamicDimensionOperandsOp for TrackedAllocOp {
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation().deref(ctx).operands().collect()
+    }
+}
 
 impl TrackedAllocOp {
     /// Create a new [TrackedAllocOp] with `tmm` as the runtime state pointer.
@@ -248,11 +253,6 @@ impl TrackedAllocOp {
         op.set_attr_memref_tmm_ptr_alloc(ctx, tmm);
         op
     }
-
-    /// Get the dynamic dimension operands.
-    pub fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
-        self.get_operation().deref(ctx).operands().collect()
-    }
 }
 
 impl Verify for TrackedAllocOp {
@@ -261,19 +261,6 @@ impl Verify for TrackedAllocOp {
             return verify_err!(
                 self.loc(ctx),
                 TrackedMemoryManagerErr::MissingSelfPointerAttr
-            );
-        }
-        let result_ty_ptr = self.get_result(ctx).get_type(ctx);
-        let result_ty_ref = result_ty_ptr.deref(ctx);
-        let result_ty = result_ty_ref
-            .downcast_ref::<RankedMemrefType>()
-            .expect("TrackedAllocOp result must be a RankedMemrefType");
-        let expected = result_ty.num_dynamic_dimensions();
-        let got = self.get_operation().deref(ctx).get_num_operands();
-        if got != expected {
-            return verify_err!(
-                self.loc(ctx),
-                TrackedMemoryManagerErr::AllocNumDynamicDimsMismatch { expected, got }
             );
         }
         Ok(())

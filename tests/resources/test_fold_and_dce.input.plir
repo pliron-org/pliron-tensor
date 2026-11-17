@@ -74,6 +74,9 @@ builtin.module @test_module {
             element = tensor.extract arg[gi, gj]: builtin.integer i64;
             memref.yield element
         };
+        dead_reduced = tensor.reduce <Max> [] arg, arg : tensor.ranked<2x2:builtin.integer i64>;
+        dead_float = tensor.elementwise_cast arg : tensor.ranked<2x2:builtin.fp64> {input_is_signed=true,result_is_signed=false};
+        dead_exp = tensor.exp dead_float : tensor.ranked<2x2:builtin.fp64>;
         product = tensor.mul arg, arg : tensor.ranked<2x2:builtin.integer i64>;
         llvm.store *res_p <- product;
         llvm.return
@@ -159,6 +162,39 @@ builtin.module @test_module {
         llvm.store *mul_p <- mul;
         llvm.store *div_p <- div;
         llvm.return
+    };
+    llvm.func @test_fold_exp: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(exp_p: llvm.ptr(0), splat_exp_p: llvm.ptr(0)):
+        c = tensor.constant !outlined : tensor.ranked<8:builtin.fp32> !125;
+        e = tensor.exp c : tensor.ranked<8:builtin.fp32>;
+        llvm.store *exp_p <- e;
+        halves = tensor.constant !outlined : tensor.ranked<3:builtin.fp64> !126;
+        splat_e = tensor.exp halves : tensor.ranked<3:builtin.fp64>;
+        llvm.store *splat_exp_p <- splat_e;
+        llvm.return
+    };
+    llvm.func @test_fold_reduce: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {
+      ^entry(sum_p: llvm.ptr(0), max_p: llvm.ptr(0), splat_sum_p: llvm.ptr(0), int_sum_p: llvm.ptr(0), umax_p: llvm.ptr(0)):
+        input = tensor.constant !outlined : tensor.ranked<2x3x4:builtin.fp32> !127;
+        sum_init = tensor.constant !outlined : tensor.ranked<2x1x4:builtin.fp32> !128;
+        sum = tensor.reduce <Sum> [1] input, sum_init : tensor.ranked<2x1x4:builtin.fp32>;
+        llvm.store *sum_p <- sum;
+        max_init = tensor.constant !outlined : tensor.ranked<1x3x1:builtin.fp32> !129;
+        max = tensor.reduce <Max> [0, 2] input, max_init : tensor.ranked<1x3x1:builtin.fp32>;
+        llvm.store *max_p <- max;
+        tenths = tensor.constant !outlined : tensor.ranked<2x3x4:builtin.fp32> !130;
+        zeros = tensor.constant !outlined : tensor.ranked<2x1x4:builtin.fp32> !131;
+        splat_sum = tensor.reduce <Sum> [1] tenths, zeros : tensor.ranked<2x1x4:builtin.fp32>;
+        llvm.store *splat_sum_p <- splat_sum;
+        int_input = tensor.constant !outlined : tensor.ranked<2x2:builtin.integer i32> !132;
+        int_init = tensor.constant !outlined : tensor.ranked<1x2:builtin.integer i32> !133;
+        int_sum = tensor.reduce <Sum> [0] int_input, int_init : tensor.ranked<1x2:builtin.integer i32>;
+        llvm.store *int_sum_p <- int_sum;
+        uint_input = tensor.constant !outlined : tensor.ranked<2x2:builtin.integer ui32> !134;
+        uint_init = tensor.constant !outlined : tensor.ranked<2x1:builtin.integer ui32> !135;
+        umax = tensor.reduce <Max> [1] uint_input, uint_init : tensor.ranked<2x1:builtin.integer ui32>;
+        llvm.store *umax_p <- umax;
+        llvm.return
     }
 }
 
@@ -188,3 +224,14 @@ outlined_attributes:
 !122 = [tensor_constant_value = memref.dense_elements <tensor.ranked<8:builtin.integer ui32> = [1, 1, 2, 2, 2, 7, 65536, 4294967295]>]
 !123 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3x2:builtin.integer i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]>]
 !124 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3:builtin.integer i64> = splat 1>]
+!125 = [tensor_constant_value = memref.dense_elements <tensor.ranked<8:builtin.fp32> = [0, 1, -1, 10, -Inf, +Inf, NaN, -0]>]
+!126 = [tensor_constant_value = memref.dense_elements <tensor.ranked<3:builtin.fp64> = splat 0.5>]
+!127 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3x4:builtin.fp32> = [-5.25, -4.75, -4.25, -3.75, -3.25, -2.75, -2.25, -1.75, -1.25, -0.75, -0.25, 0.25, 0.75, 1.25, 1.75, 2.25, 2.75, 3.25, 3.75, 4.25, 4.75, 5.25, 5.75, 6.25]>]
+!128 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x1x4:builtin.fp32> = [10, 20, 30, 40, -1, -2, -3, -4]>]
+!129 = [tensor_constant_value = memref.dense_elements <tensor.ranked<1x3x1:builtin.fp32> = [-Inf, -Inf, 100]>]
+!130 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x3x4:builtin.fp32> = splat 0.1>]
+!131 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x1x4:builtin.fp32> = splat 0>]
+!132 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer i32> = [2147483647, 1, 1, 3]>]
+!133 = [tensor_constant_value = memref.dense_elements <tensor.ranked<1x2:builtin.integer i32> = splat 0>]
+!134 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x2:builtin.integer ui32> = [1, 2147483648, 4294967295, 7]>]
+!135 = [tensor_constant_value = memref.dense_elements <tensor.ranked<2x1:builtin.integer ui32> = splat 0>]

@@ -69,6 +69,12 @@ impl TestElement for i32 {
     }
 }
 
+impl TestElement for i64 {
+    fn same(self, other: Self) -> bool {
+        self == other
+    }
+}
+
 impl TestElement for u32 {
     fn same(self, other: Self) -> bool {
         self == other
@@ -284,4 +290,32 @@ pub fn arith_ui32() -> BinaryCase<u32> {
             ("div", [0, u32::MAX, (top >> 1) + 1, top >> 1, 3, 14, 1, 1]),
         ],
     }
+}
+
+/// Reference implementation of `tensor.reduce`.
+///
+/// Reduce the row-major `input` (of `shape`) over `dims` with `combine`,
+/// starting from the accumulator `init`.
+pub fn reduce_reference<T: Copy>(
+    shape: &[usize],
+    input: &[T],
+    dims: &[usize],
+    init: &[T],
+    combine: impl Fn(T, T) -> T,
+) -> Vec<T> {
+    let mut accum = init.to_vec();
+    for (flat_index, &element) in input.iter().enumerate() {
+        // The row-major accumulator index, with each reduced dimension set to 0.
+        let (mut rest, mut accum_index, mut stride) = (flat_index, 0, 1);
+        for dim in (0..shape.len()).rev() {
+            let index = rest % shape[dim];
+            rest /= shape[dim];
+            if !dims.contains(&dim) {
+                accum_index += index * stride;
+                stride *= shape[dim];
+            }
+        }
+        accum[accum_index] = combine(accum[accum_index], element);
+    }
+    accum
 }

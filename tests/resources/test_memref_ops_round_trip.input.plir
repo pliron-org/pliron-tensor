@@ -23,6 +23,11 @@ builtin.module @test_module {
         memref.div c <- a / b;
         memref.max c <- max(a, b);
         memref.min c <- min(a, b);
+        f = memref.alloc : memref.ranked<2 x 3 : builtin.fp32>;
+        g = memref.alloc : memref.ranked<2 x 3 : builtin.fp32>;
+        memref.exp g <- exp(f);
+        row_sums = memref.alloc : memref.ranked<2 x 1 : builtin.integer i64>;
+        memref.reduce <Sum> [1] a into row_sums;
 
         idx0 = index.constant <index.constant 0> : index.index;
         idx1 = index.constant <index.constant 1> : index.index;
@@ -55,6 +60,9 @@ builtin.module @test_module {
         memref.dealloc rhs;
         memref.dealloc accum;
         memref.dealloc scalar;
+        memref.dealloc f;
+        memref.dealloc g;
+        memref.dealloc row_sums;
         llvm.return loaded
     }
 }

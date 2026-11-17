@@ -24,8 +24,9 @@ mod common;
 use common::{
     assert_module_round_trips, lookup_fn, lower_to_llvm_ir, parse_module,
     tensor::{
-        Operands, arith_f32, arith_i32, arith_ui32, bufferize_module, check_binary_case,
-        input_tensor, max_min_f32, max_min_i32, max_min_ui32, output_data, output_tensor,
+        Operands, TestElement, arith_f32, arith_i32, arith_ui32, bufferize_module,
+        check_binary_case, input_tensor, max_min_f32, max_min_i32, max_min_ui32, output_data,
+        output_tensor, reduce_reference,
     },
 };
 
@@ -68,10 +69,10 @@ fn test_fold_and_dce() {
     // - @test_no_fold_dynamic: the splat with a dynamic result shape must stay.
     // - @test_no_fold_undefined: the division by zero, the signed division overflow
     //   and the extract out of bounds must stay.
-    // - @test_dce: the unused `tensor.add` and `tensor.generate` must be removed.
+    // - @test_dce: the unused tensor ops must be removed.
     // - @test_fold_transpose must store only constants, for a dense and a splat source.
-    // - @test_fold_max_min_* and @test_fold_arith_* must store only constants, equal
-    //   to the values that the lowering computes.
+    // - @test_fold_max_min_*, @test_fold_arith_*, @test_fold_exp and @test_fold_reduce
+    //   must store only constants, equal to the values that the lowering computes.
     let after_opts = optimize_module(ctx, parsed_op);
     expect_file!["resources/test_fold_and_dce.expect.plir"].assert_eq(&after_opts);
     assert_module_round_trips(&after_opts);
@@ -144,9 +145,78 @@ fn test_fold_and_dce() {
     check_binary_case(&jit, "test_fold_arith_f32", consts, &arith_f32());
     check_binary_case(&jit, "test_fold_arith_i32", consts, &arith_i32());
     check_binary_case(&jit, "test_fold_arith_ui32", consts, &arith_ui32());
+
+    // The folded exponentials must be the values that the lowering computes,
+    // also for infinities, NaN and -0.0.
+    let exp = unsafe { lookup_fn::<extern "C" fn(*mut u8, *mut u8) -> ()>(&jit, "test_fold_exp") };
+    let mut exp_res = output_tensor::<f32>(&[8]).build_ir_descriptor();
+    let mut splat_exp_res = output_tensor::<f64>(&[3]).build_ir_descriptor();
+    exp(exp_res.as_mut_ptr(), splat_exp_res.as_mut_ptr());
+    let (nan, inf) = (f32::NAN, f32::INFINITY);
+    let exp_input = [0.0f32, 1.0, -1.0, 10.0, -inf, inf, nan, -0.0];
+    for (x, actual) in exp_input
+        .iter()
+        .zip(unsafe { output_data::<f32>(&exp_res, 1) })
+    {
+        assert!(
+            actual.same(x.exp()),
+            "exp({x}): got {actual}, expected {}",
+            x.exp()
+        );
+    }
+    assert_eq!(
+        unsafe { output_data::<f64>(&splat_exp_res, 1) },
+        [0.5f64.exp(); 3]
+    );
+
+    // The folded reductions must be the values that the lowering computes:
+    // - the float elements must be combined in the order of the lowering
+    // - integer sums must wrap
+    // - unsigned integers must use an unsigned comparison.
+    type M = *mut u8;
+    let reduce =
+        unsafe { lookup_fn::<extern "C" fn(M, M, M, M, M) -> ()>(&jit, "test_fold_reduce") };
+    let mut sum_res = output_tensor::<f32>(&[2, 1, 4]).build_ir_descriptor();
+    let mut max_res = output_tensor::<f32>(&[1, 3, 1]).build_ir_descriptor();
+    let mut splat_sum_res = output_tensor::<f32>(&[2, 1, 4]).build_ir_descriptor();
+    let mut int_sum_res = output_tensor::<i32>(&[1, 2]).build_ir_descriptor();
+    let mut umax_res = output_tensor::<u32>(&[2, 1]).build_ir_descriptor();
+    reduce(
+        sum_res.as_mut_ptr(),
+        max_res.as_mut_ptr(),
+        splat_sum_res.as_mut_ptr(),
+        int_sum_res.as_mut_ptr(),
+        umax_res.as_mut_ptr(),
+    );
+    let shape = [2, 3, 4];
+    let input: Vec<f32> = (0..24).map(|i| i as f32 * 0.5 - 5.25).collect();
+    let sum_init = [10.0f32, 20.0, 30.0, 40.0, -1.0, -2.0, -3.0, -4.0];
+    assert_eq!(
+        unsafe { output_data::<f32>(&sum_res, 3) },
+        reduce_reference(&shape, &input, &[1], &sum_init, |a, b| a + b)
+    );
+    let max_init = [-inf, -inf, 100.0];
+    assert_eq!(
+        unsafe { output_data::<f32>(&max_res, 3) },
+        reduce_reference(&shape, &input, &[0, 2], &max_init, f32::max)
+    );
+    let tenths = [0.1f32; 24];
+    assert_eq!(
+        unsafe { output_data::<f32>(&splat_sum_res, 3) },
+        reduce_reference(&shape, &tenths, &[1], &[0.0; 8], |a, b| a + b)
+    );
+    assert_eq!(
+        unsafe { output_data::<i32>(&int_sum_res, 2) },
+        [i32::MIN, 4]
+    );
+    assert_eq!(
+        unsafe { output_data::<u32>(&umax_res, 2) },
+        [0x8000_0000, u32::MAX]
+    );
 }
 
-/// SCCP must not fold a non-splat result of more than [MAX_FOLD_ELEMENTS] elements.
+/// SCCP must not fold a non-splat result of more than [MAX_FOLD_ELEMENTS] elements,
+/// or a reduction of an input of more than [MAX_FOLD_ELEMENTS] elements.
 #[test]
 fn test_fold_size_limit() {
     let num_elements = MAX_FOLD_ELEMENTS + 1;
@@ -156,19 +226,23 @@ fn test_fold_size_limit() {
         .join(", ");
     let ty = format!("tensor.ranked<{num_elements}:builtin.integer i64>");
     let matrix_ty = format!("tensor.ranked<1x{num_elements}:builtin.integer i64>");
+    let total_ty = "tensor.ranked<1:builtin.integer i64>";
     let input_ir = format!(
         r#"builtin.module @test_module {{
         ^entry():
-            llvm.func @test_fold_size_limit: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {{
-            ^entry(sequence_sum_p: llvm.ptr(0), splat_sum_p: llvm.ptr(0), reshaped_p: llvm.ptr(0)):
+            llvm.func @test_fold_size_limit: llvm.func <llvm.void (llvm.ptr(0), llvm.ptr(0), llvm.ptr(0), llvm.ptr(0)) variadic = false> [] {{
+            ^entry(sequence_sum_p: llvm.ptr(0), splat_sum_p: llvm.ptr(0), reshaped_p: llvm.ptr(0), total_p: llvm.ptr(0)):
                 sequence = tensor.constant !outlined : {ty} !100;
                 ones = tensor.constant !outlined : {ty} !101;
                 sequence_sum = tensor.add sequence, ones : {ty};
                 splat_sum = tensor.add ones, ones : {ty};
                 reshaped = tensor.reshape sequence : {matrix_ty};
+                zero = tensor.constant !outlined : {total_ty} !102;
+                total = tensor.reduce <Sum> [0] sequence, zero : {total_ty};
                 llvm.store *sequence_sum_p <- sequence_sum;
                 llvm.store *splat_sum_p <- splat_sum;
                 llvm.store *reshaped_p <- reshaped;
+                llvm.store *total_p <- total;
                 llvm.return
             }}
         }}
@@ -176,6 +250,7 @@ fn test_fold_size_limit() {
         outlined_attributes:
         !100 = [tensor_constant_value = memref.dense_elements <{ty} = [{elements}]>]
         !101 = [tensor_constant_value = memref.dense_elements <{ty} = splat 1>]
+        !102 = [tensor_constant_value = memref.dense_elements <{total_ty} = splat 0>]
         "#
     );
 
@@ -187,6 +262,8 @@ fn test_fold_size_limit() {
     //   and has too many elements.
     // - `reshaped` must stay a `tensor.reshape`, for the same reason.
     // - `splat_sum` must fold to a new `tensor.constant`, because its result is a splat.
+    // - `total` must stay a `tensor.reduce`, because its input has too many elements,
+    //   although its result has only one element.
     expect![[r#"
         [
             "builtin.module",
@@ -196,6 +273,9 @@ fn test_fold_size_limit() {
             "tensor.add",
             "tensor.constant",
             "tensor.reshape",
+            "tensor.constant",
+            "tensor.reduce",
+            "llvm.store",
             "llvm.store",
             "llvm.store",
             "llvm.store",
@@ -210,15 +290,20 @@ fn test_fold_size_limit() {
     let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
 
     let f = unsafe {
-        lookup_fn::<extern "C" fn(*mut u8, *mut u8, *mut u8) -> ()>(&jit, "test_fold_size_limit")
+        lookup_fn::<extern "C" fn(*mut u8, *mut u8, *mut u8, *mut u8) -> ()>(
+            &jit,
+            "test_fold_size_limit",
+        )
     };
     let mut sequence_sum = output_tensor::<i64>(&[num_elements]).build_ir_descriptor();
     let mut splat_sum = output_tensor::<i64>(&[num_elements]).build_ir_descriptor();
     let mut reshaped = output_tensor::<i64>(&[1, num_elements]).build_ir_descriptor();
+    let mut total = output_tensor::<i64>(&[1]).build_ir_descriptor();
     f(
         sequence_sum.as_mut_ptr(),
         splat_sum.as_mut_ptr(),
         reshaped.as_mut_ptr(),
+        total.as_mut_ptr(),
     );
     let expected: Vec<i64> = (1..=num_elements as i64).collect();
     assert_eq!(unsafe { output_data::<i64>(&sequence_sum, 1) }, expected);
@@ -228,6 +313,10 @@ fn test_fold_size_limit() {
     );
     let sequence: Vec<i64> = (0..num_elements as i64).collect();
     assert_eq!(unsafe { output_data::<i64>(&reshaped, 2) }, sequence);
+    assert_eq!(
+        unsafe { output_data::<i64>(&total, 1) },
+        [sequence.iter().sum::<i64>()]
+    );
 }
 
 /// SCCP must fold `memref.dim` of a static dimension with a constant index,
