@@ -821,16 +821,16 @@ impl Verify for ExpOp {
 pub struct ReduceOp;
 
 impl ReduceOp {
-    /// Create a new [ReduceOp] that reduces `dims` of `input` into `accum` with `kind`.
+    /// Create a new [ReduceOp] that reduces `reduced_dims` of `input` into `accum` with `kind`.
     pub fn new(
         ctx: &mut Context,
         kind: ReductionKindAttr,
-        dims: Vec<usize>,
+        reduced_dims: Vec<usize>,
         input: Value,
         accum: Value,
     ) -> Self {
         let op = Operation::new_op::<Self>(ctx, vec![], vec![input, accum], vec![], 0);
-        op.set_reduction(ctx, kind, dims);
+        op.set_reduction(ctx, kind, reduced_dims);
         op
     }
 }

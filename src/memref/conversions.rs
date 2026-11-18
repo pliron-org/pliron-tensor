@@ -1006,7 +1006,7 @@ impl ToCFDialect for ReduceOp {
     ) -> Result<()> {
         let memref_input = self.input(ctx);
         let memref_accum = self.accum(ctx);
-        let dims = self.reduction_dims(ctx);
+        let reduced_dims = self.reduction_dims(ctx);
 
         // Recover the element type from before the memref descriptor conversion.
         let element_ty = operands_info
@@ -1043,7 +1043,7 @@ impl ToCFDialect for ReduceOp {
                 rewriter: ScopedRewriter<'a>,
                 memref_input: Value,
                 memref_accum: Value,
-                dims: Vec<usize>,
+                reduced_dims: Vec<usize>,
                 zero: Value,
                 combine_fn: fn(&mut Context, Value, Value, TypeHandle) -> Ptr<Operation>,
                 elem_ty: TypeHandle,
@@ -1052,7 +1052,7 @@ impl ToCFDialect for ReduceOp {
                 rewriter: scoped_rewriter,
                 memref_input,
                 memref_accum,
-                dims,
+                reduced_dims,
                 zero,
                 combine_fn,
                 elem_ty: element_ty,
@@ -1070,7 +1070,7 @@ impl ToCFDialect for ReduceOp {
                         .iter()
                         .enumerate()
                         .map(|(i, &index)| {
-                            if state.dims.contains(&i) {
+                            if state.reduced_dims.contains(&i) {
                                 state.zero
                             } else {
                                 index

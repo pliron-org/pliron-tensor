@@ -943,18 +943,18 @@ impl Verify for ReduceOp {
 }
 
 impl ReduceOp {
-    /// Create a new [ReduceOp] that reduces `dims` of `input` into `accum` with `kind`.
+    /// Create a new [ReduceOp] that reduces `reduced_dims` of `input` into `accum` with `kind`.
     /// The result type is set to `accum`'s type.
     pub fn new(
         ctx: &mut Context,
         kind: ReductionKindAttr,
-        dims: Vec<usize>,
+        reduced_dims: Vec<usize>,
         input: Value,
         accum: Value,
     ) -> Self {
         let result_type = accum.get_type(ctx);
         let op = Operation::new_op::<Self>(ctx, vec![result_type], vec![input, accum], vec![], 0);
-        op.set_reduction(ctx, kind, dims);
+        op.set_reduction(ctx, kind, reduced_dims);
         op
     }
 }

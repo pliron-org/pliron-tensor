@@ -528,7 +528,7 @@ fn fold_reduce(
         ReductionKindAttr::Max => BinaryOpKind::Max,
         ReductionKindAttr::Min => BinaryOpKind::Min,
     };
-    let dims = reduce.reduction_dims(ctx);
+    let reduced_dims = reduce.reduction_dims(ctx);
 
     let input_ty = input.ty();
     let input_shape: Vec<usize> = input_ty
@@ -594,7 +594,12 @@ fn fold_reduce(
                 .zip(&accum_shape)
                 .enumerate()
                 .fold(0, |pos, (dim, (&index, extent))| {
-                    pos * extent + if dims.contains(&dim) { 0 } else { index }
+                    pos * extent
+                        + if reduced_dims.contains(&dim) {
+                            0
+                        } else {
+                            index
+                        }
                 });
         let element = input.element_attr(ctx, input_pos);
         results[accum_pos] = fold_scalar_binary(ctx, bin_op, &*results[accum_pos], &*element)?;

@@ -516,12 +516,12 @@ pub enum ReductionOpInterfaceVerifyErr {
     AccumShapeMismatch,
 }
 
-/// Compute the accumulator shape when `input_shape` is reduced over `dims`.
+/// Compute the accumulator shape when `input_shape` is reduced over `reduced_dims`.
 ///
-/// Each dimension of `input_shape` that is in `dims` is set to 1.
-pub fn reduced_shape(input_shape: &[Dimension], dims: &[usize]) -> Vec<Dimension> {
+/// Each dimension of `input_shape` that is in `reduced_dims` is set to 1.
+pub fn reduced_shape(input_shape: &[Dimension], reduced_dims: &[usize]) -> Vec<Dimension> {
     let mut shape = input_shape.to_vec();
-    for &dim in dims {
+    for &dim in reduced_dims {
         shape[dim] = Dimension::Static(1);
     }
     shape
@@ -568,10 +568,13 @@ pub trait ReductionOpInterface<T: ShapedType>: NOpdsInterface<2> + AllOperandsOf
     }
 
     /// Set [ReductionKindAttr] and [ReductionDimsAttr].
-    fn set_reduction(&self, ctx: &Context, kind: ReductionKindAttr, dims: Vec<usize>) {
+    fn set_reduction(&self, ctx: &Context, kind: ReductionKindAttr, reduced_dims: Vec<usize>) {
         let attributes = &mut self.get_operation().deref_mut(ctx).attributes;
         attributes.set(ATTR_KEY_REDUCTION_KIND.clone(), kind);
-        attributes.set(ATTR_KEY_REDUCTION_DIMS.clone(), ReductionDimsAttr(dims));
+        attributes.set(
+            ATTR_KEY_REDUCTION_DIMS.clone(),
+            ReductionDimsAttr(reduced_dims),
+        );
     }
 
     fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
@@ -587,7 +590,7 @@ pub trait ReductionOpInterface<T: ShapedType>: NOpdsInterface<2> + AllOperandsOf
         {
             return verify_err!(loc, ReductionOpInterfaceVerifyErr::MissingKindAttr);
         }
-        let Some(ReductionDimsAttr(dims)) = op_ref
+        let Some(ReductionDimsAttr(reduced_dims)) = op_ref
             .attributes
             .get::<ReductionDimsAttr>(&ATTR_KEY_REDUCTION_DIMS)
         else {
@@ -606,12 +609,12 @@ pub trait ReductionOpInterface<T: ShapedType>: NOpdsInterface<2> + AllOperandsOf
             .expect("AllOperandsOfType<T> ensures the accumulator is of type T");
 
         let rank = input_ty.rank();
-        let increasing = dims.windows(2).all(|pair| pair[0] < pair[1]);
-        if !increasing || dims.last().is_some_and(|&last| last >= rank) {
+        let increasing = reduced_dims.windows(2).all(|pair| pair[0] < pair[1]);
+        if !increasing || reduced_dims.last().is_some_and(|&last| last >= rank) {
             return verify_err!(
                 loc,
                 ReductionOpInterfaceVerifyErr::InvalidDims {
-                    dims: dims.clone(),
+                    dims: reduced_dims.clone(),
                     rank
                 }
             );
@@ -621,13 +624,13 @@ pub trait ReductionOpInterface<T: ShapedType>: NOpdsInterface<2> + AllOperandsOf
             return verify_err!(loc, ReductionOpInterfaceVerifyErr::ElementTypeMismatch);
         }
 
-        let expected = reduced_shape(input_ty.shape(), dims);
+        let expected = reduced_shape(input_ty.shape(), reduced_dims);
         let accum_shape = accum_ty.shape();
         let compatible = expected.len() == accum_shape.len()
             && expected.iter().zip(accum_shape.iter()).enumerate().all(
                 |(i, (expected, got))| match (expected, got) {
                     // A reduced dimension must be a static 1.
-                    _ if dims.contains(&i) => *got == Dimension::Static(1),
+                    _ if reduced_dims.contains(&i) => *got == Dimension::Static(1),
                     (Dimension::Static(e), Dimension::Static(g)) => e == g,
                     _ => true,
                 },

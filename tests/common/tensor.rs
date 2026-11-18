@@ -35,14 +35,18 @@ pub fn bufferize_module<TMM: TensorMemoryManager>(
     after_bufferization
 }
 
-/// A descriptor for an input tensor with shape `dims` and elements `data`.
-pub fn input_tensor<T>(dims: &[usize], data: &[T]) -> TensorDesciptor {
-    TensorDesciptor::new(dims.to_vec(), size_of::<T>(), data.as_ptr() as *const u8)
+/// Descriptor of an input tensor of `shape`, with the row-major `elements`.
+pub fn input_tensor<T>(shape: &[usize], elements: &[T]) -> TensorDesciptor {
+    TensorDesciptor::new(
+        shape.to_vec(),
+        size_of::<T>(),
+        elements.as_ptr() as *const u8,
+    )
 }
 
-/// A descriptor for a result tensor with shape `dims`.
-pub fn output_tensor<T>(dims: &[usize]) -> TensorDesciptor {
-    TensorDesciptor::new(dims.to_vec(), size_of::<T>(), std::ptr::null::<u8>())
+/// Descriptor of a result tensor of `shape`.
+pub fn output_tensor<T>(shape: &[usize]) -> TensorDesciptor {
+    TensorDesciptor::new(shape.to_vec(), size_of::<T>(), std::ptr::null::<u8>())
 }
 
 /// Read back the tensor that an executed function wrote into `out_ir_descr`.
@@ -294,12 +298,12 @@ pub fn arith_ui32() -> BinaryCase<u32> {
 
 /// Reference implementation of `tensor.reduce`.
 ///
-/// Reduce the row-major `input` (of `shape`) over `dims` with `combine`,
+/// Reduce the row-major `input` (of `shape`) over `reduced_dims` with `combine`,
 /// starting from the accumulator `init`.
 pub fn reduce_reference<T: Copy>(
     shape: &[usize],
     input: &[T],
-    dims: &[usize],
+    reduced_dims: &[usize],
     init: &[T],
     combine: impl Fn(T, T) -> T,
 ) -> Vec<T> {
@@ -310,7 +314,7 @@ pub fn reduce_reference<T: Copy>(
         for dim in (0..shape.len()).rev() {
             let index = rest % shape[dim];
             rest /= shape[dim];
-            if !dims.contains(&dim) {
+            if !reduced_dims.contains(&dim) {
                 accum_index += index * stride;
                 stride *= shape[dim];
             }

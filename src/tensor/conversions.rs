@@ -1213,8 +1213,8 @@ impl BufferizableOpInterface for ReduceOp {
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
         let (input, accum) = (self.input(ctx), self.accum(ctx));
-        let (kind, dims) = (self.reduction_kind(ctx), self.reduction_dims(ctx));
-        let reduce = memref::ops::ReduceOp::new(ctx, kind, dims, input, accum);
+        let (kind, reduced_dims) = (self.reduction_kind(ctx), self.reduction_dims(ctx));
+        let reduce = memref::ops::ReduceOp::new(ctx, kind, reduced_dims, input, accum);
         rewriter.append_op(ctx, &reduce);
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![accum]);
         Ok(())

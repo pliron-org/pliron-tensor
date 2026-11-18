@@ -1029,19 +1029,25 @@ fn test_batch_matmul_strided() {
     assert_eq!(unsafe { output_data::<i64>(&output, 3) }, expected);
 }
 
-/// Call the reduction `name`, which reduces `dims` of `input` (of `shape`)
+/// Call the reduction `name`, which reduces `reduced_dims` of `input` (of `shape`)
 /// into `init`, and compare the result with [reduce_reference].
 fn check_reduce<T: TestElement>(
     jit: &SimpleJIT,
     name: &str,
     (shape, input): (&[usize], &[T]),
-    (dims, init): (&[usize], &[T]),
+    (reduced_dims, init): (&[usize], &[T]),
     combine: impl Fn(T, T) -> T,
 ) {
     let accum_shape: Vec<usize> = (0..shape.len())
-        .map(|dim| if dims.contains(&dim) { 1 } else { shape[dim] })
+        .map(|dim| {
+            if reduced_dims.contains(&dim) {
+                1
+            } else {
+                shape[dim]
+            }
+        })
         .collect();
-    let expected = reduce_reference(shape, input, dims, init, combine);
+    let expected = reduce_reference(shape, input, reduced_dims, init, combine);
 
     // The reduction may write the initial value in place, so the call gets a copy.
     let init = init.to_vec();
