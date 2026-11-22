@@ -1,0 +1,38 @@
+builtin.module @test_module {
+  ^entry():
+  llvm.func @test_tensor_dim_dynamic_index: llvm.func <builtin.integer i64 (llvm.ptr(0), builtin.integer i64) variadic = false> [] {
+    ^entry(input_p: llvm.ptr(0), dim_arg: builtin.integer i64):
+    input = llvm.load input_p : tensor.ranked<?x4:builtin.fp32>;
+    dim_idx = index.from_integer dim_arg : index.index;
+    dim = tensor.dim input, dim_idx : index.index;
+    dim_int = index.to_integer dim to builtin.integer i64;
+    llvm.return dim_int
+  };
+  llvm.func @test_tensor_dim_const_index: llvm.func <builtin.integer i64 (llvm.ptr(0)) variadic = false> [] {
+    ^entry(input_p: llvm.ptr(0)):
+    input = llvm.load input_p : tensor.ranked<?x4:builtin.fp32>;
+    idx0 = index.constant <index.constant 0> : index.index;
+    idx1 = index.constant <index.constant 1> : index.index;
+    dim0 = tensor.dim input, idx0 : index.index;
+    dim1 = tensor.dim input, idx1 : index.index;
+    dim0_i64 = index.to_integer dim0 to builtin.integer i64;
+    dim1_i64 = index.to_integer dim1 to builtin.integer i64;
+    thousand = builtin.constant <builtin.integer <1000: i64>> : builtin.integer i64;
+    scaled = llvm.mul dim0_i64, thousand <{nsw = false, nuw = false}> : builtin.integer i64;
+    encoded = llvm.add scaled, dim1_i64 <{nsw = false, nuw = false}> : builtin.integer i64;
+    llvm.return encoded
+  };
+  llvm.func @test_tensor_dim_extents: llvm.func <llvm.void (llvm.ptr(0), builtin.fp32, llvm.ptr(0)) variadic = false> [] {
+    ^entry(input_p: llvm.ptr(0), lowest: builtin.fp32, output_p: llvm.ptr(0)):
+    input = llvm.load input_p : tensor.ranked<?x4:builtin.fp32>;
+    idx0 = index.constant <index.constant 0> : index.index;
+    rows = tensor.dim input, idx0 : index.index;
+    init = tensor.splat lowest, rows : tensor.ranked<?x1:builtin.fp32>;
+    row_max = tensor.reduce <Max> [1] input, init : tensor.ranked<?x1:builtin.fp32>;
+    init_rows = tensor.dim init, idx0 : index.index;
+    row_max_wide = tensor.broadcast row_max, init_rows : tensor.ranked<?x4:builtin.fp32>;
+    result = tensor.sub input, row_max_wide : tensor.ranked<?x4:builtin.fp32>;
+    llvm.store *output_p <- result;
+    llvm.return
+  }
+}

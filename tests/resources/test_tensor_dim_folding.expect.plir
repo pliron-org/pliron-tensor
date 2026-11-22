@@ -1,0 +1,68 @@
+builtin.module @test_module 
+{
+  ^entry_block1v1():
+    llvm.func @test_tensor_dim_dynamic_index: llvm.func <builtin.integer i64(llvm.ptr (0), builtin.integer i64) variadic = false>
+      [] 
+    {
+      ^entry_block2v1(input_p_v0: llvm.ptr (0), dim_arg_v1: builtin.integer i64) !0:
+        input_v2 = llvm.load input_p_v0  : tensor.ranked <?x4 : builtin.fp32 > !1;
+        dim_idx_v3 = index.from_integer dim_arg_v1 : index.index  !2;
+        dim_v4 = tensor.dim input_v2, dim_idx_v3 : index.index  !3;
+        dim_int_v5 = index.to_integer dim_v4 to builtin.integer i64 !4;
+        llvm.return dim_int_v5
+    };
+    llvm.func @test_tensor_dim_const_index: llvm.func <builtin.integer i64(llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block3v1(input_p_v6: llvm.ptr (0)) !5:
+        input_v7 = llvm.load input_p_v6  : tensor.ranked <?x4 : builtin.fp32 > !6;
+        idx0_v8 = index.constant <index.constant 0> : index.index  !7;
+        dim0_v10 = tensor.dim input_v7, idx0_v8 : index.index  !8;
+        dim0_i64_v12 = index.to_integer dim0_v10 to builtin.integer i64 !9;
+        dim1_i64_v29 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !10;
+        thousand_v14 = builtin.constant <builtin.integer <1000: i64>> : builtin.integer i64 !11;
+        scaled_v15 = llvm.mul dim0_i64_v12, thousand_v14 <{nsw=false,nuw=false}>: builtin.integer i64 !12;
+        encoded_v16 = llvm.add scaled_v15, dim1_i64_v29 <{nsw=false,nuw=false}>: builtin.integer i64 !13;
+        llvm.return encoded_v16
+    };
+    llvm.func @test_tensor_dim_extents: llvm.func <llvm.void (llvm.ptr (0), builtin.fp32 , llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block4v1(input_p_v17: llvm.ptr (0), lowest_v18: builtin.fp32 , output_p_v19: llvm.ptr (0)) !14:
+        input_v20 = llvm.load input_p_v17  : tensor.ranked <?x4 : builtin.fp32 > !15;
+        idx0_v21 = index.constant <index.constant 0> : index.index  !16;
+        rows_v22 = tensor.dim input_v20, idx0_v21 : index.index  !17;
+        init_v23 = tensor.splat lowest_v18, rows_v22 : tensor.ranked <?x1 : builtin.fp32 > !18;
+        row_max_v24 = tensor.reduce <Max> [1] input_v20, init_v23 : tensor.ranked <?x1 : builtin.fp32 > !19;
+        init_rows_v25 = tensor.dim init_v23, idx0_v21 : index.index  !20;
+        row_max_wide_v26 = tensor.broadcast row_max_v24, init_rows_v25 : tensor.ranked <?x4 : builtin.fp32 > !21;
+        result_v27 = tensor.sub input_v20, row_max_wide_v26 : tensor.ranked <?x4 : builtin.fp32 > !22;
+        llvm.store *output_p_v19 <- result_v27 ;
+        llvm.return 
+    }
+}
+
+outlined_attributes:
+!0 = [builtin_given_names = builtin.given_names [input_p, dim_arg]]
+!1 = [builtin_given_names = builtin.given_names [input]]
+!2 = [builtin_given_names = builtin.given_names [dim_idx]]
+!3 = [builtin_given_names = builtin.given_names [dim]]
+!4 = [builtin_given_names = builtin.given_names [dim_int]]
+!5 = [builtin_given_names = builtin.given_names [input_p]]
+!6 = [builtin_given_names = builtin.given_names [input]]
+!7 = [builtin_given_names = builtin.given_names [idx0]]
+!8 = [builtin_given_names = builtin.given_names [dim0]]
+!9 = [builtin_given_names = builtin.given_names [dim0_i64]]
+!10 = [builtin_given_names = builtin.given_names [dim1_i64]]
+!11 = [builtin_given_names = builtin.given_names [thousand]]
+!12 = [builtin_given_names = builtin.given_names [scaled]]
+!13 = [builtin_given_names = builtin.given_names [encoded]]
+!14 = [builtin_given_names = builtin.given_names [input_p, lowest, output_p]]
+!15 = [builtin_given_names = builtin.given_names [input]]
+!16 = [builtin_given_names = builtin.given_names [idx0]]
+!17 = [builtin_given_names = builtin.given_names [rows]]
+!18 = [builtin_given_names = builtin.given_names [init]]
+!19 = [builtin_given_names = builtin.given_names [row_max]]
+!20 = [builtin_given_names = builtin.given_names [init_rows]]
+!21 = [builtin_given_names = builtin.given_names [row_max_wide]]
+!22 = [builtin_given_names = builtin.given_names [result]]

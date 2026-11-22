@@ -319,6 +319,19 @@ fn test_fold_size_limit() {
     );
 }
 
+/// SCCP must fold `tensor.dim` of a static dimension with a constant index.
+#[test]
+fn test_tensor_dim_folding() {
+    let ctx = &mut Context::new();
+    let input_ir = include_str!("resources/test_tensor_dim.input.plir");
+    let (parsed_op, _) = parse_module(ctx, input_ir);
+
+    // A dynamic index, or a dynamic dimension, must not fold.
+    // The `tensor.dim` of dimension 1 must fold to the constant 4.
+    let after_opts = optimize_module(ctx, parsed_op);
+    expect_file!["resources/test_tensor_dim_folding.expect.plir"].assert_eq(&after_opts);
+}
+
 /// SCCP must fold `memref.dim` of a static dimension with a constant index,
 /// and DCE must then remove the ops whose results are not used.
 #[test]

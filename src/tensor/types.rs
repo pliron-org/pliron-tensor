@@ -10,8 +10,7 @@ use crate::memref::type_interfaces::{Dimension, MultiDimensionalType, ShapedType
 
 /// Compute the broadcast shape of two ranked values using
 /// [NumPy-style rules](https://numpy.org/doc/stable/user/basics.broadcasting.html#general-broadcasting-rules).
-/// Dynamic dimensions are compatible with any dimension and remain dynamic
-/// unless the other dimension is statically one.
+/// A dynamic dimension is compatible with any dimension, and the resulting dimension is dynamic.
 pub fn broadcast_shapes(lhs: &[Dimension], rhs: &[Dimension]) -> Option<Vec<Dimension>> {
     let rank = lhs.len().max(rhs.len());
     let aligned = |shape: &[Dimension], i: usize| {
@@ -37,8 +36,8 @@ pub fn broadcast_shapes(lhs: &[Dimension], rhs: &[Dimension]) -> Option<Vec<Dime
         .collect()
 }
 
-/// Return whether `source` can be broadcast to `result`.
-/// See [NumPy broadcast rules](https://numpy.org/doc/stable/user/basics.broadcasting.html#general-broadcasting-rules).
+/// Can `source` be broadcast to `result`.
+/// See [BroadcastOp](crate::tensor::ops::BroadcastOp) rules.
 pub fn can_broadcast_to(source: &[Dimension], result: &[Dimension]) -> bool {
     source.len() <= result.len()
         && source
@@ -74,7 +73,6 @@ impl MultiDimensionalType for RankedTensorType {
 
 #[type_interface_impl]
 impl ShapedType for RankedTensorType {
-    /// Get the shape of the ranked tensor.
     fn shape(&self) -> &Vec<Dimension> {
         &self.shape
     }

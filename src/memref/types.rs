@@ -96,7 +96,6 @@ impl MultiDimensionalType for RankedMemrefType {
 
 #[type_interface_impl]
 impl ShapedType for RankedMemrefType {
-    /// Get the shape of the ranked memref.
     fn shape(&self) -> &Vec<Dimension> {
         &self.shape
     }

@@ -35,25 +35,10 @@ impl ConstFoldInterface for DimOp {
         let [_memref, dim_index] = operand_attrs else {
             panic!("DimOp must have two operands");
         };
-
-        let Some(dim_index) =
-            known_constant_index(dim_index).and_then(|index| usize::try_from(index).ok())
-        else {
-            // Cannot determine the index statically.
-            return vec![None];
-        };
-
-        let memref_ty = self.get_source_memref(ctx).get_type(ctx);
-        let memref_ty = ShapedTypeHandle::from_handle(memref_ty, ctx)
-            .expect("DimOp's source must be a ranked memref (and hence, shaped) type");
-        let folded = match memref_ty.deref(ctx).shape().get(dim_index) {
-            Some(Dimension::Static(extent)) => Some(Box::new(ConstantIndexAttr {
-                constant_index: *extent,
-            }) as AttrObj),
-            // A dynamic extent, or an index out of range.
-            Some(Dimension::Dynamic) | None => None,
-        };
-        vec![folded]
+        let source_ty =
+            ShapedTypeHandle::from_handle(self.get_source_memref(ctx).get_type(ctx), ctx)
+                .expect("OperandNOfType<0, RankedMemrefType> ensures the source is shaped");
+        vec![fold_dim(ctx, source_ty, dim_index)]
     }
 
     fn fold_in_place(
@@ -63,5 +48,22 @@ impl ConstFoldInterface for DimOp {
         rewriter: &mut dyn Rewriter,
     ) -> IRStatus {
         self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+/// Try to fold the extent of dimension `dim_index` of `source_ty` to a constant.
+pub(crate) fn fold_dim(
+    ctx: &Context,
+    source_ty: ShapedTypeHandle,
+    dim_index: &Option<AttrObj>,
+) -> Option<AttrObj> {
+    let dim_index =
+        known_constant_index(dim_index).and_then(|index| usize::try_from(index).ok())?;
+    match source_ty.deref(ctx).shape().get(dim_index) {
+        Some(Dimension::Static(extent)) => Some(Box::new(ConstantIndexAttr {
+            constant_index: *extent,
+        }) as AttrObj),
+        // A dynamic extent, or an index out of range.
+        Some(Dimension::Dynamic) | None => None,
     }
 }

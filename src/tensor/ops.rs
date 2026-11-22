@@ -150,10 +150,14 @@ impl Verify for ConstantOp {
     }
 }
 
-/// Broadcast a ranked tensor to a compatible result shape using NumPy-style
-/// trailing-dimension rules. The source and result have the same element type.
-/// A missing leading source dimension, or a source dimension of size one, is
-/// replicated across the corresponding result dimension.
+/// Broadcast a ranked tensor to a compatible result shape.
+///
+/// - The source and result must have the same element type.
+/// - Source dimensions are aligned with trailing result dimensions.
+/// - A missing leading source dimension, or a source dimension of static size one,
+///   is replicated across the corresponding result dimension.
+/// - Any other source dimension (including a dynamic dimension) is not replicated.
+///   Its runtime extent must equal the extent of the corresponding result dimension.
 ///
 /// ### Operand(s)
 /// | operand | description |
@@ -194,8 +198,9 @@ pub enum BroadcastOpVerifyErr {
 
 impl BroadcastOp {
     /// Create a broadcast from `source` to `result_type`.
-    /// `dynamic_dimensions` supplies the runtime extents of the dynamic
-    /// dimensions in `result_type`.
+    ///
+    /// The runtime extents of `result_type`'s dynamic dimensions are
+    /// set to `dynamic_dimensions`.
     pub fn new(
         ctx: &mut Context,
         source: Value,
@@ -622,6 +627,58 @@ impl Verify for ExtractOp {
             );
         }
         Ok(())
+    }
+}
+
+/// Op to query the runtime size of a tensor dimension.
+///
+/// An index out of the range of the tensor's rank is undefined behavior.
+///
+/// ## Operand(s)
+/// | operand | description | type |
+/// |-----|-------|----|
+/// | `tensor` | The tensor to query | [RankedTensorType] |
+/// | `index` | The dimension index to query | [Index](IndexType) |
+///
+/// ## Result(s)
+/// | result | description | type |
+/// |-----|-------|----|
+/// | `size` | The size of the queried dimension | [Index](IndexType) |
+#[pliron_op(
+    name = "tensor.dim",
+    interfaces = [
+        OneResultInterface,
+        NResultsInterface<1>,
+        ResultNOfType<0, IndexType>,
+        NOpdsInterface<2>,
+        OperandNOfType<0, RankedTensorType>,
+        OperandNOfType<1, IndexType>,
+    ],
+    format = "$0 `, ` $1 ` : ` type($0)",
+    verifier = "succ"
+)]
+pub struct DimOp;
+
+impl DimOp {
+    /// Create a new `DimOp` that gets the extent of dimension `dim_index` of `tensor`.
+    pub fn new(ctx: &mut Context, tensor: Value, dim_index: Value) -> Self {
+        Operation::new_op::<Self>(
+            ctx,
+            vec![IndexType::get(ctx).into()],
+            vec![tensor, dim_index],
+            vec![],
+            0,
+        )
+    }
+
+    /// Get the tensor operand.
+    pub fn get_source_tensor(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(0)
+    }
+
+    /// Get the dimension index operand.
+    pub fn get_dimension_index(&self, ctx: &Context) -> Value {
+        self.get_operation().deref(ctx).get_operand(1)
     }
 }
 

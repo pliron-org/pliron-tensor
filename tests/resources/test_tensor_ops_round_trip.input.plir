@@ -21,6 +21,7 @@ builtin.module @test_module {
         transposed = tensor.transpose inserted [1, 0] : tensor.ranked<4x6:builtin.fp64>;
         i = index.constant <index.constant 0> : index.index;
         element = tensor.extract transposed[i, i]: builtin.fp64;
+        rows = tensor.dim transposed, i : index.index;
         llvm.return element
     };
     llvm.func @generate_and_products: llvm.func <llvm.void (llvm.ptr(0)) variadic = false> [] {

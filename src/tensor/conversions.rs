@@ -74,7 +74,7 @@ use crate::{
         },
         op_interfaces::{ElementWiseBinaryTensorOpInterface, ElementWiseUnaryTensorOpInterface},
         ops::{
-            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExpOp,
+            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DimOp, DivOp, ElementwiseCastOp, ExpOp,
             ExtractOp, ExtractSliceOp as TensorExtractSliceOp, GenerateOp,
             InsertSliceOp as TensorInsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp, ReduceOp,
             ReshapeOp as TensorReshapeOp, SplatOp, SubOp, TransposeOp as TensorTransposeOp,
@@ -409,27 +409,25 @@ impl BufferizableOpInterface for GenerateOp {
     }
 }
 
-#[derive(thiserror::Error, Debug)]
-pub enum BroadcastOpConversionErr {
-    #[error("broadcasting a dynamic source dimension requires runtime shape selection")]
-    AmbiguousDynamicSourceDimension,
-}
-
 /// Lowers a broadcast to a new buffer filled by indexed loads from the source.
-/// Dimensions of size one are read at index zero; added leading dimensions are
-/// ignored when forming the source index.
+///
+/// The source index omits added leading dimensions and is set to zero in
+/// dimensions of static size one.
+///
+/// A dynamic source dimension is read at the result index (`tensor.broadcast`
+/// requires the extent of that dimension to be equal to the result extent).
 ///
 /// ```text
-/// %result = tensor.broadcast %source : tensor<1x3xf32> to tensor<4x3xf32>
+/// %result = tensor.broadcast %source, %rows : tensor<?x1xf32> to tensor<?x4xf32>
 /// ```
 ///
 /// becomes approximately:
 ///
 /// ```text
-/// %result = memref.alloc() : memref<4x3xf32>
+/// %result = memref.alloc(%rows) : memref<?x4xf32>
 /// memref.generate %result {
 ///   ^bb0(%i, %j):
-///     %value = memref.load %source[0, %j]
+///     %value = memref.load %source[%i, 0]
 ///     memref.yield %value
 /// }
 /// ```
@@ -458,16 +456,6 @@ impl BufferizableOpInterface for BroadcastOp {
         let result_ty = tensor_type_to_memref_type(self.get_result(ctx).get_type(ctx), ctx)?;
         let result_shape = result_ty.deref(ctx).shape().clone();
         let rank_offset = result_shape.len() - source_shape.len();
-        if source_shape.iter().enumerate().any(|(i, dim)| {
-            matches!(dim, Dimension::Dynamic)
-                && !matches!(result_shape[i + rank_offset], Dimension::Static(1))
-        }) {
-            return Err(pliron::input_error!(
-                self.loc(ctx),
-                BroadcastOpConversionErr::AmbiguousDynamicSourceDimension
-            ));
-        }
-
         let alloc = bufferizer_state.tmm.create_memref_alloc(
             ctx,
             result_ty,
@@ -732,6 +720,50 @@ impl BufferizableOpInterface for ExtractOp {
         let load_op = memref::ops::LoadOp::new(ctx, result_ty, operand, indices.clone());
         rewriter.append_op(ctx, &load_op);
         rewriter.replace_operation(ctx, self.get_operation(), load_op.get_operation());
+        Ok(())
+    }
+}
+
+/// Lowers `tensor.dim` to `memref.dim` of the tensor's buffer:
+///
+/// ```text
+/// %extent = tensor.dim %t, %i : index.index
+/// ```
+///
+/// becomes:
+///
+/// ```text
+/// %extent = memref.dim %t_buffer, %i : index.index
+/// ```
+#[op_interface_impl]
+impl BufferizableOpInterface for DimOp {
+    fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        // A dimension query reads the shape of the buffer, but not its elements.
+        false
+    }
+
+    fn operand_bufferizes_to_memory_write(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
+        false
+    }
+
+    fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        vec![]
+    }
+
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _bufferizer_state: &mut BufferizerState,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let dim_op = memref::ops::DimOp::new(
+            ctx,
+            self.get_source_tensor(ctx),
+            self.get_dimension_index(ctx),
+        );
+        rewriter.append_op(ctx, &dim_op);
+        rewriter.replace_operation(ctx, self.get_operation(), dim_op.get_operation());
         Ok(())
     }
 }
@@ -1021,8 +1053,8 @@ impl BufferizableOpInterface for ForOp {
         true
     }
 
-    // The i-th `iter_args_init` operand aliases the op's i-th result.
     fn get_operand_result_aliases(&self, ctx: &Context) -> Vec<Alias> {
+        // The i-th `iter_args_init` operand aliases the op's i-th result.
         let op = self.get_operation().deref(ctx);
         let iter_args_start = self.segment_size(ctx, 0) as usize;
         let num_iter_args = self.get_num_iter_arg_inits(ctx) as usize;
@@ -1084,9 +1116,9 @@ impl BufferizableOpInterface for IfOp {
         false
     }
 
-    // The results get the buffers of the yielded values, which are not operands of this op.
-    // The bufferizer gets that sharing from the region flows of [IfOp].
     fn get_operand_result_aliases(&self, _ctx: &Context) -> Vec<Alias> {
+        // The results get the buffers of the yielded values, which are not operands of this op.
+        // The bufferizer gets that sharing from the region flows of `IfOp`.
         vec![]
     }
 

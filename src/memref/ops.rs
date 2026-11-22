@@ -258,7 +258,6 @@ impl GenerateOp {
 }
 
 impl GenerateOpInterface for GenerateOp {
-    /// Get the shape of the destination memref.
     fn get_generated_shape(&self, ctx: &Context) -> ShapedTypeHandle {
         self.get_destination_memref_type(ctx).into()
     }
@@ -559,14 +558,18 @@ impl LoadOp {
 
 /// Op to query the runtime size of a memref dimension.
 ///
+/// An index out of the range of the memref's rank is undefined behavior.
+///
 /// ## Operand(s)
 /// | operand | description | type |
 /// |-----|-------|----|
 /// | `memref` | The memref to query | [RankedMemrefType] |
-/// | `index` | The dimension index to query | [Index](IndexType). |
+/// | `index` | The dimension index to query | [Index](IndexType) |
 ///
 /// ## Result(s)
-/// | result | The size of the queried dimension, as [Index](IndexType). |
+/// | result | description | type |
+/// |-----|-------|----|
+/// | `size` | The size of the queried dimension | [Index](IndexType) |
 #[pliron_op(
     name = "memref.dim",
     interfaces = [

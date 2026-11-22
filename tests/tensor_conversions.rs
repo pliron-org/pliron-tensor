@@ -1075,6 +1075,54 @@ fn check_reduce<T: TestElement>(
     }
 }
 
+/// `tensor.dim` with a constant and a dynamic index, and as the source of the
+/// dynamic extents of `tensor.splat` and `tensor.broadcast`.
+#[test]
+fn test_tensor_dim() {
+    let ctx = &mut Context::new();
+    let input_ir = include_str!("resources/test_tensor_dim.input.plir");
+    let (jit, after_bufferization) = compile_and_jit(ctx, &mut MallocFreeTMM, input_ir);
+
+    // Each `tensor.dim` must become a `memref.dim` of the tensor's buffer.
+    expect_file!["resources/test_tensor_dim.expect.plir"].assert_eq(&after_bufferization);
+
+    let input_data: Vec<f32> = (0..12).map(|i| ((i * 7) % 12) as f32).collect();
+    let input = input_tensor(&[3, 4], &input_data).build_ir_descriptor();
+
+    let dynamic_index = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, i64) -> i64>(&jit, "test_tensor_dim_dynamic_index")
+    };
+    // A `tensor.dim` with an index that is not a constant must return the runtime extent.
+    assert_eq!(dynamic_index(input.as_ptr(), 0), 3);
+    assert_eq!(dynamic_index(input.as_ptr(), 1), 4);
+
+    // `tensor.dim` with constant indices must return the dynamic extent 3
+    // and the static extent 4, encoded as `dim0 * 1000 + dim1`.
+    let const_index = unsafe {
+        lookup_fn::<extern "C" fn(*const u8) -> i64>(&jit, "test_tensor_dim_const_index")
+    };
+    assert_eq!(const_index(input.as_ptr()), 3004);
+
+    // Extents from `tensor.dim` must size the splat and broadcast results so that
+    // `result[i][j] = input[i][j] - max_k input[i][k]` holds for any number of rows.
+    let extents = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, f32, *mut u8) -> ()>(&jit, "test_tensor_dim_extents")
+    };
+    for rows in [1, 3] {
+        let input = input_tensor(&[rows, 4], &input_data[..rows * 4]).build_ir_descriptor();
+        let mut output = output_tensor::<f32>(&[rows, 4]).build_ir_descriptor();
+        extents(input.as_ptr(), f32::NEG_INFINITY, output.as_mut_ptr());
+        let expected: Vec<f32> = input_data[..rows * 4]
+            .chunks(4)
+            .flat_map(|row| {
+                let max = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                row.iter().map(move |x| x - max)
+            })
+            .collect();
+        assert_eq!(unsafe { output_data::<f32>(&output, 2) }, expected);
+    }
+}
+
 /// `tensor.exp` and `tensor.reduce`, through bufferization and the lowering to LLVM.
 #[test]
 fn test_exp_and_reduce() {

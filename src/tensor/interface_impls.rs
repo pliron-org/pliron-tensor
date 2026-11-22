@@ -20,7 +20,7 @@ use pliron::{
     op::Op,
     operation::Operation,
     opts::constants::ConstFoldInterface,
-    r#type::TypeHandle,
+    r#type::{TypeHandle, Typed},
     utils::{
         apfloat::{
             Double, Float, FloatConvert, Half, Round, Single, Status, double_to_f64, f32_to_single,
@@ -34,6 +34,7 @@ use pliron_common_dialects::index::attributes::known_constant_index;
 use crate::{
     memref::{
         attributes::ShapedTypeHandle,
+        interface_impls::fold_dim,
         layout::{identity_strides, permute},
         op_interfaces::{ReductionOpInterface, TransposeOpInterface},
         type_interfaces::{DenseElementTypeHandle, Dimension},
@@ -42,7 +43,7 @@ use crate::{
         attributes::{DenseElementsAttr, ReductionKindAttr},
         conversions::{ScalarCastKind, scalar_cast_kind},
         ops::{
-            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DivOp, ElementwiseCastOp, ExpOp,
+            AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DimOp, DivOp, ElementwiseCastOp, ExpOp,
             ExtractOp, ExtractSliceOp, GenerateOp, InsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp,
             ReduceOp, ReshapeOp, SplatOp, SubOp, TransposeOp,
         },
@@ -61,6 +62,7 @@ impl_no_self_side_effects!(
     ElementwiseCastOp,
     GenerateOp,
     ExtractOp,
+    DimOp,
     AddOp,
     SubOp,
     MulOp,
@@ -76,6 +78,28 @@ impl_no_self_side_effects!(
     ReshapeOp,
     TransposeOp,
 );
+
+#[op_interface_impl]
+impl ConstFoldInterface for DimOp {
+    fn check_fold(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Vec<Option<AttrObj>> {
+        let [_tensor, dim_index] = operand_attrs else {
+            panic!("DimOp must have two operands");
+        };
+        let source_ty =
+            ShapedTypeHandle::from_handle(self.get_source_tensor(ctx).get_type(ctx), ctx)
+                .expect("OperandNOfType<0, RankedTensorType> ensures the source is shaped");
+        vec![fold_dim(ctx, source_ty, dim_index)]
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
 
 #[attr_interface_impl]
 impl MaterializableAttr for DenseElementsAttr {

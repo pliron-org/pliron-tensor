@@ -403,9 +403,15 @@ impl ToCFDialect for LoadOp {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum DimOpConversionErr {
+    #[error("Missing operand info for memref.dim source operand")]
+    MissingSourceOperandInfo,
+}
+
 /// Replace [DimOp] with a read of a size field of the memref descriptor:
-/// * a constant dimension index reads the field directly
-/// * a dynamic dimension index selects the field at runtime
+/// * a constant dimension index in range reads the field directly
+/// * any other dimension index selects the field at runtime
 ///
 /// ```text
 /// %d = memref.dim %m, %c1
@@ -422,22 +428,28 @@ impl ToCFDialect for DimOp {
         &self,
         ctx: &mut Context,
         rewriter: &mut DialectConversionRewriter,
-        _operands_info: &OperandsInfo,
+        operands_info: &OperandsInfo,
     ) -> Result<()> {
         let memref = self.get_source_memref(ctx);
         let dim_idx = self.get_dimension_index(ctx);
+        let rank = operands_info
+            .lookup_most_recent_of_type::<RankedMemrefType>(ctx, memref)
+            .ok_or_else(|| {
+                input_error!(self.loc(ctx), DimOpConversionErr::MissingSourceOperandInfo)
+            })?
+            .rank();
 
-        let dim_size = match dim_idx.defining_entity() {
-            // If the dimension index is a constant, it's more efficient to use `unpack_size`.
-            DefiningEntity::Op(op)
-                if let Some(index_const_op) = Operation::get_op::<IndexConstantOp>(op, ctx) =>
-            {
-                let dim = index_const_op
-                    .get_attr_constant_index(ctx)
-                    .unwrap()
-                    .constant_index;
-                descriptor::unpack_size(ctx, rewriter, memref, dim)
-            }
+        let constant_dim = match dim_idx.defining_entity() {
+            DefiningEntity::Op(op) => Operation::get_op::<IndexConstantOp>(op, ctx).map(|op| {
+                op.get_attr_constant_index(ctx)
+                    .expect("index.constant must have a constant index attribute")
+                    .constant_index
+            }),
+            _ => None,
+        };
+        let dim_size = match constant_dim {
+            Some(dim) if dim < rank => descriptor::unpack_size(ctx, rewriter, memref, dim),
+            // A dynamic index or an out-of-range constant index (the latter is undefined behavior).
             _ => descriptor::unpack_size_dynamic_dim_idx(ctx, rewriter, memref, dim_idx),
         };
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![dim_size]);
