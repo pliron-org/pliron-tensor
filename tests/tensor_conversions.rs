@@ -1076,7 +1076,7 @@ fn check_reduce<T: TestElement>(
 }
 
 /// `tensor.dim` with a constant and a dynamic index, and as the source of the
-/// dynamic extents of `tensor.splat` and `tensor.broadcast`.
+/// dynamic dimension sizes of `tensor.splat` and `tensor.broadcast`.
 #[test]
 fn test_tensor_dim() {
     let ctx = &mut Context::new();
@@ -1092,26 +1092,26 @@ fn test_tensor_dim() {
     let dynamic_index = unsafe {
         lookup_fn::<extern "C" fn(*const u8, i64) -> i64>(&jit, "test_tensor_dim_dynamic_index")
     };
-    // A `tensor.dim` with an index that is not a constant must return the runtime extent.
+    // A `tensor.dim` with an index that is not a constant must return the runtime dimension size.
     assert_eq!(dynamic_index(input.as_ptr(), 0), 3);
     assert_eq!(dynamic_index(input.as_ptr(), 1), 4);
 
-    // `tensor.dim` with constant indices must return the dynamic extent 3
-    // and the static extent 4, encoded as `dim0 * 1000 + dim1`.
+    // `tensor.dim` with constant indices must return the dynamic dimension size 3
+    // and the static size 4, encoded as `dim0 * 1000 + dim1`.
     let const_index = unsafe {
         lookup_fn::<extern "C" fn(*const u8) -> i64>(&jit, "test_tensor_dim_const_index")
     };
     assert_eq!(const_index(input.as_ptr()), 3004);
 
-    // Extents from `tensor.dim` must size the splat and broadcast results so that
+    // Dimension sizes from `tensor.dim` must shape the splat and broadcast results so that
     // `result[i][j] = input[i][j] - max_k input[i][k]` holds for any number of rows.
-    let extents = unsafe {
-        lookup_fn::<extern "C" fn(*const u8, f32, *mut u8) -> ()>(&jit, "test_tensor_dim_extents")
+    let dim_sizes = unsafe {
+        lookup_fn::<extern "C" fn(*const u8, f32, *mut u8) -> ()>(&jit, "test_tensor_dim_sizes")
     };
     for rows in [1, 3] {
         let input = input_tensor(&[rows, 4], &input_data[..rows * 4]).build_ir_descriptor();
         let mut output = output_tensor::<f32>(&[rows, 4]).build_ir_descriptor();
-        extents(input.as_ptr(), f32::NEG_INFINITY, output.as_mut_ptr());
+        dim_sizes(input.as_ptr(), f32::NEG_INFINITY, output.as_mut_ptr());
         let expected: Vec<f32> = input_data[..rows * 4]
             .chunks(4)
             .flat_map(|row| {
@@ -1157,7 +1157,7 @@ fn test_exp_and_reduce() {
     assert_eq!(unsafe { output_data::<f64>(&exp_output, 2) }, expected);
 
     // A tensor.exp of a tensor.exp with a dynamic dimension must allocate its result
-    // with the extent operand of the first result's allocation.
+    // with the dimension size operand of the first result's allocation.
     let mut exp_output = output_tensor::<f64>(&[3, 2]).build_ir_descriptor();
     let exp_twice = unsafe {
         lookup_fn::<extern "C" fn(*const u8, *mut u8) -> ()>(&jit, "test_exp_twice_dynamic")
@@ -1271,7 +1271,7 @@ fn test_exp_and_reduce() {
     assert_eq!(unsafe { output_data::<f32>(&output, 2) }, [26.0, 55.0]);
 
     // The copy of a dynamic initial value that is used after the reduction must
-    // take its extent from the allocation of the initial value. The result must
+    // take its dimension size from the allocation of the initial value. The result must
     // be the row sums plus four times the loaded value.
     let mut output = output_tensor::<f32>(&[2, 1]).build_ir_descriptor();
     let f = unsafe {

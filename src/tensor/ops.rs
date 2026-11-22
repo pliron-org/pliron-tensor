@@ -157,7 +157,7 @@ impl Verify for ConstantOp {
 /// - A missing leading source dimension, or a source dimension of static size one,
 ///   is replicated across the corresponding result dimension.
 /// - Any other source dimension (including a dynamic dimension) is not replicated.
-///   Its runtime extent must equal the extent of the corresponding result dimension.
+///   Its runtime size must equal the size of the corresponding result dimension.
 ///
 /// ### Operand(s)
 /// | operand | description |
@@ -199,7 +199,7 @@ pub enum BroadcastOpVerifyErr {
 impl BroadcastOp {
     /// Create a broadcast from `source` to `result_type`.
     ///
-    /// The runtime extents of `result_type`'s dynamic dimensions are
+    /// The runtime sizes of `result_type`'s dynamic dimensions are
     /// set to `dynamic_dimensions`.
     pub fn new(
         ctx: &mut Context,
@@ -274,7 +274,7 @@ impl DynamicDimensionOperandsOp for SplatOp {
 
 impl SplatOp {
     /// Create a splat tensor of `result_type` filled with `value`.
-    /// `dynamic_dimensions` supplies the runtime extents of the dynamic
+    /// `dynamic_dimensions` supplies the runtime sizes of the dynamic
     /// dimensions in `result_type`.
     pub fn new(
         ctx: &mut Context,
@@ -381,7 +381,7 @@ impl Verify for ElementwiseCastOp {
 /// ### Operands(s)
 /// | operand | description |
 /// |-----|-------|
-/// | `dynamic_dimensions` | One [Index](IndexType) operand per dynamic dimension, to indicate the extent of that dimension |
+/// | `dynamic_dimensions` | One [Index](IndexType) operand per dynamic dimension, to indicate the size of that dimension |
 ///
 /// ### Result(s)
 /// | result | description |
@@ -660,7 +660,7 @@ impl Verify for ExtractOp {
 pub struct DimOp;
 
 impl DimOp {
-    /// Create a new `DimOp` that gets the extent of dimension `dim_index` of `tensor`.
+    /// Create a new `DimOp` that gets the size of dimension `dim_index` of `tensor`.
     pub fn new(ctx: &mut Context, tensor: Value, dim_index: Value) -> Self {
         Operation::new_op::<Self>(
             ctx,

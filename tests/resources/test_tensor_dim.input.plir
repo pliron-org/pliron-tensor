@@ -22,7 +22,7 @@ builtin.module @test_module {
     encoded = llvm.add scaled, dim1_i64 <{nsw = false, nuw = false}> : builtin.integer i64;
     llvm.return encoded
   };
-  llvm.func @test_tensor_dim_extents: llvm.func <llvm.void (llvm.ptr(0), builtin.fp32, llvm.ptr(0)) variadic = false> [] {
+  llvm.func @test_tensor_dim_sizes: llvm.func <llvm.void (llvm.ptr(0), builtin.fp32, llvm.ptr(0)) variadic = false> [] {
     ^entry(input_p: llvm.ptr(0), lowest: builtin.fp32, output_p: llvm.ptr(0)):
     input = llvm.load input_p : tensor.ranked<?x4:builtin.fp32>;
     idx0 = index.constant <index.constant 0> : index.index;

@@ -74,7 +74,7 @@ use crate::memref::{
 /// ### Operands(s)
 /// | operand | description |
 /// |-----|-------|
-/// | `dynamic_dimensions` | One [Index](IndexType) operand per dynamic dimension, to indicate the extent of that dimension |
+/// | `dynamic_dimensions` | One [Index](IndexType) operand per dynamic dimension, to indicate the size of that dimension |
 ///
 /// ### Result(s)
 /// | result | description |

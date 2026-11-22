@@ -70,7 +70,7 @@ use crate::{
     tensor::{
         bufferize::{
             Alias, AliasKind, BufferRelation, BufferizableOpInterface, BufferizerState,
-            dynamic_extent,
+            dynamic_dim_size,
         },
         op_interfaces::{ElementWiseBinaryTensorOpInterface, ElementWiseUnaryTensorOpInterface},
         ops::{
@@ -187,10 +187,10 @@ fn constant_global_name(ctx: &Context, value: &DenseElementsAttr) -> Identifier 
     let shaped_ty = value.ty();
     let shaped_ty = shaped_ty.deref(ctx);
     for dim in shaped_ty.shape() {
-        let Dimension::Static(extent) = dim else {
+        let Dimension::Static(size) = dim else {
             panic!("A constant global must have a fully static shape");
         };
-        let _ = write!(name, "{extent}x");
+        let _ = write!(name, "{size}x");
     }
     let element_ty = shaped_ty.element_type();
     let element_name = Identifier::from(element_ty.deref(ctx).get_type_id().name.clone());
@@ -415,7 +415,7 @@ impl BufferizableOpInterface for GenerateOp {
 /// dimensions of static size one.
 ///
 /// A dynamic source dimension is read at the result index (`tensor.broadcast`
-/// requires the extent of that dimension to be equal to the result extent).
+/// requires that dimension to have the same size as the result dimension).
 ///
 /// ```text
 /// %result = tensor.broadcast %source, %rows : tensor<?x1xf32> to tensor<?x4xf32>
@@ -727,13 +727,13 @@ impl BufferizableOpInterface for ExtractOp {
 /// Lowers `tensor.dim` to `memref.dim` of the tensor's buffer:
 ///
 /// ```text
-/// %extent = tensor.dim %t, %i : index.index
+/// %dim_size = tensor.dim %t, %i : index.index
 /// ```
 ///
 /// becomes:
 ///
 /// ```text
-/// %extent = memref.dim %t_buffer, %i : index.index
+/// %dim_size = memref.dim %t_buffer, %i : index.index
 /// ```
 #[op_interface_impl]
 impl BufferizableOpInterface for DimOp {
@@ -769,7 +769,7 @@ impl BufferizableOpInterface for DimOp {
 }
 
 /// Allocate a new buffer for the tensor `result`.
-/// The extents of its dynamic dimensions are taken from `shape_source`.
+/// The sizes of its dynamic dimensions are taken from `shape_source`.
 fn alloc_result_buffer(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
@@ -785,7 +785,7 @@ fn alloc_result_buffer(
         .enumerate()
         .filter_map(|(i, dim)| {
             if let Dimension::Dynamic = dim {
-                Some(dynamic_extent(ctx, rewriter, shape_source, i))
+                Some(dynamic_dim_size(ctx, rewriter, shape_source, i))
             } else {
                 None
             }

@@ -25,7 +25,7 @@ builtin.module @test_module
         encoded_v16 = llvm.add scaled_v15, dim1_i64_v29 <{nsw=false,nuw=false}>: builtin.integer i64 !13;
         llvm.return encoded_v16
     };
-    llvm.func @test_tensor_dim_extents: llvm.func <llvm.void (llvm.ptr (0), builtin.fp32 , llvm.ptr (0)) variadic = false>
+    llvm.func @test_tensor_dim_sizes: llvm.func <llvm.void (llvm.ptr (0), builtin.fp32 , llvm.ptr (0)) variadic = false>
       [] 
     {
       ^entry_block4v1(input_p_v17: llvm.ptr (0), lowest_v18: builtin.fp32 , output_p_v19: llvm.ptr (0)) !14:

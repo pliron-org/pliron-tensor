@@ -410,14 +410,14 @@ impl ConstFoldInterface for ExtractOp {
                 // The index is not a constant.
                 return vec![None];
             };
-            let Dimension::Static(extent) = *dim else {
+            let Dimension::Static(size) = *dim else {
                 panic!("A constant tensor must have a static shape");
             };
-            if index >= extent {
+            if index >= size {
                 // The index is out of bounds.
                 return vec![None];
             }
-            linear_idx = linear_idx * extent + index;
+            linear_idx = linear_idx * size + index;
         }
         vec![Some(tensor.element_attr(ctx, linear_idx))]
     }
@@ -560,7 +560,7 @@ fn fold_reduce(
         .shape()
         .iter()
         .map(|dim| match dim {
-            Dimension::Static(extent) => *extent,
+            Dimension::Static(size) => *size,
             Dimension::Dynamic => panic!("A constant tensor must have a static shape"),
         })
         .collect();
@@ -586,7 +586,7 @@ fn fold_reduce(
         .shape()
         .iter()
         .map(|dim| match dim {
-            Dimension::Static(extent) => *extent,
+            Dimension::Static(size) => *size,
             Dimension::Dynamic => panic!("A folded result must have a static shape"),
         })
         .collect();
@@ -609,7 +609,7 @@ fn fold_reduce(
         let input_pos = indices
             .iter()
             .zip(&input_shape)
-            .fold(0, |pos, (&index, extent)| pos * extent + index);
+            .fold(0, |pos, (&index, size)| pos * size + index);
         // The row-major accumulator position. The accumulator indices are derived
         // from the input indices, by setting the indices of the reduced dimensions to 0.
         let accum_pos =
@@ -617,8 +617,8 @@ fn fold_reduce(
                 .iter()
                 .zip(&accum_shape)
                 .enumerate()
-                .fold(0, |pos, (dim, (&index, extent))| {
-                    pos * extent
+                .fold(0, |pos, (dim, (&index, size))| {
+                    pos * size
                         + if reduced_dims.contains(&dim) {
                             0
                         } else {
@@ -629,9 +629,9 @@ fn fold_reduce(
         results[accum_pos] = fold_scalar_binary(ctx, bin_op, &*results[accum_pos], &*element)?;
 
         // Advance to the next input indices, the way an odometer does.
-        for (index, &extent) in indices.iter_mut().zip(&input_shape).rev() {
+        for (index, &size) in indices.iter_mut().zip(&input_shape).rev() {
             *index += 1;
-            if *index < extent {
+            if *index < size {
                 break;
             }
             *index = 0;

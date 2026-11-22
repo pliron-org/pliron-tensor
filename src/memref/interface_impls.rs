@@ -51,7 +51,7 @@ impl ConstFoldInterface for DimOp {
     }
 }
 
-/// Try to fold the extent of dimension `dim_index` of `source_ty` to a constant.
+/// Try to fold the size of dimension `dim_index` of `source_ty` to a constant.
 pub(crate) fn fold_dim(
     ctx: &Context,
     source_ty: ShapedTypeHandle,
@@ -60,10 +60,10 @@ pub(crate) fn fold_dim(
     let dim_index =
         known_constant_index(dim_index).and_then(|index| usize::try_from(index).ok())?;
     match source_ty.deref(ctx).shape().get(dim_index) {
-        Some(Dimension::Static(extent)) => Some(Box::new(ConstantIndexAttr {
-            constant_index: *extent,
+        Some(Dimension::Static(size)) => Some(Box::new(ConstantIndexAttr {
+            constant_index: *size,
         }) as AttrObj),
-        // A dynamic extent, or an index out of range.
+        // A dynamic dimension, or an index out of range.
         Some(Dimension::Dynamic) | None => None,
     }
 }

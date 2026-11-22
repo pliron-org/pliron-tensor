@@ -106,14 +106,14 @@ pub trait ShapedType: MultiDimensionalType {
         self.shape().len()
     }
 
-    /// Number of elements: the product of the extents of all dimensions.
+    /// Number of elements: the product of the sizes of all dimensions.
     ///
     /// The result is `None` if any dimension is dynamic.
     fn num_elements(&self) -> Option<usize> {
         self.shape()
             .iter()
             .map(|dim| match dim {
-                Dimension::Static(extent) => Some(*extent),
+                Dimension::Static(size) => Some(*size),
                 Dimension::Dynamic => None,
             })
             .product()

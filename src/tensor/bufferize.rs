@@ -762,21 +762,21 @@ pub fn bufferize(
     Ok(status)
 }
 
-/// Get the extent of `value`'s dynamic `dim`:
+/// Get the size of `value`'s dynamic dimension `dim`:
 /// - from `value`'s defining op, if it implements [DynamicDimensionOperandsOp],
 /// - from a new `memref.dim` on `value` otherwise.
-pub(crate) fn dynamic_extent(
+pub(crate) fn dynamic_dim_size(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     value: Value,
     dim: usize,
 ) -> Value {
-    /// Get the extent of `value`'s dynamic `dim` from `value`'s defining op,
+    /// Get the size of `value`'s dynamic dimension `dim` from `value`'s defining op,
     /// if it implements [DynamicDimensionOperandsOp].
-    fn dynamic_extent_operand(ctx: &Context, value: Value, dim: usize) -> Option<Value> {
+    fn dynamic_dim_size_operand(ctx: &Context, value: Value, dim: usize) -> Option<Value> {
         let def_op = value.defining_op()?;
         if def_op.deref(ctx).get_result(0) != value {
-            // [DynamicDimensionOperandsOp] gives the extents of result 0 only.
+            // [DynamicDimensionOperandsOp] gives the dimension sizes of result 0 only.
             return None;
         }
         let def_op = Operation::get_op_dyn(def_op, ctx);
@@ -799,8 +799,8 @@ pub(crate) fn dynamic_extent(
         ))
     }
 
-    if let Some(extent) = dynamic_extent_operand(ctx, value, dim) {
-        return extent;
+    if let Some(size) = dynamic_dim_size_operand(ctx, value, dim) {
+        return size;
     }
     let index = IndexConstantOp::new(ctx, dim);
     rewriter.append_op(ctx, &index);
@@ -822,7 +822,7 @@ pub(crate) fn copy_to_identity_buffer(
     let mut dynamic_sizes = Vec::new();
     for (i, dimension) in shape.iter().enumerate() {
         if matches!(dimension, Dimension::Dynamic) {
-            dynamic_sizes.push(dynamic_extent(ctx, rewriter, source, i));
+            dynamic_sizes.push(dynamic_dim_size(ctx, rewriter, source, i));
         }
     }
     let allocation = tmm.create_memref_alloc(ctx, identity_type, dynamic_sizes)?;

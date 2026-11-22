@@ -533,7 +533,7 @@ pub fn reduced_shape(input_shape: &[Dimension], reduced_dims: &[usize]) -> Vec<D
 /// - Operand 0: The input.
 /// - Operand 1: The accumulator, with the element type and [reduced_shape] of the input.
 ///
-/// Post reduction, each reduced dimension has extent 1, thus preserving the rank.
+/// Post reduction, each reduced dimension has size 1, thus preserving the rank.
 #[op_interface]
 pub trait ReductionOpInterface<T: ShapedType>: NOpdsInterface<2> + AllOperandsOfType<T> {
     /// Get the input operand.
