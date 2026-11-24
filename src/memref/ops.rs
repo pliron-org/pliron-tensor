@@ -1630,10 +1630,12 @@ impl SubviewOp {
 }
 
 /// Reshape a memref to a new shape by creating a new descriptor view over
-/// the same underlying storage.
+/// the same underlying storage. This operation does not copy elements.
 ///
-/// This operation does not copy elements. The source and result must both have
-/// identity layouts and the same element type and total element count.
+/// The source and result must both have:
+/// - identity [layouts](crate::memref::layout::MemrefLayout),
+/// - the same element type,
+/// - the same total element count.
 ///
 /// ### Operand(s)
 /// | operand | description |
