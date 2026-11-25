@@ -11,7 +11,7 @@ use pliron::{
             OneOpdInterface, OneResultInterface, OperandSegmentInterface,
             SingleBlockRegionInterface,
         },
-        ops::{FuncOp, ReturnOp},
+        ops::FuncOp,
         type_interfaces::FloatTypeInterface,
         type_interfaces::FunctionTypeInterface,
         types::{FunctionType, IntegerType},
@@ -1137,6 +1137,7 @@ impl BufferizableOpInterface for IfOp {
             }
             let layout = bufferizer_state
                 .layouts
+                .values
                 .get(&result)
                 .cloned()
                 .expect("A tensor result must have an inferred layout");
@@ -1494,35 +1495,12 @@ impl BufferizableOpInterface for FuncOp {
         bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
-        // Each result gets the merged layout of the values returned at its position.
-        let returns = {
-            let region = self.get_operation().deref(ctx).get_region(0);
-            let region = region.deref(ctx);
-            region
-                .iter(ctx)
-                .filter_map(|block| block.deref(ctx).get_terminator(ctx))
-                .filter(|&op| Operation::get_op::<ReturnOp>(op, ctx).is_some())
-                .collect::<Vec<_>>()
-        };
-        let result_layouts = self
-            .get_type(ctx)
-            .deref(ctx)
-            .res_types()
-            .into_iter()
-            .enumerate()
-            .map(|(index, result_ty)| {
-                let shape = type_cast::<dyn ShapedType>(&*result_ty.deref(ctx))
-                    .map(|ty| ty.shape().clone())
-                    .unwrap_or_default();
-                returns
-                    .iter()
-                    .map(|ret| ret.deref(ctx).get_operand(index))
-                    .filter_map(|value| bufferizer_state.layouts.get(&value).cloned())
-                    .reduce(|a, b| memref::layout::merge(&a, &b, &shape))
-                    .unwrap_or(None)
-            })
-            .collect::<Vec<_>>();
-        bufferize_func_signature(self, ctx, &result_layouts)
+        let result_layouts = bufferizer_state
+            .layouts
+            .func_results
+            .get(self)
+            .expect("A function must have inferred result layouts");
+        bufferize_func_signature(self, ctx, result_layouts)
     }
 }
 

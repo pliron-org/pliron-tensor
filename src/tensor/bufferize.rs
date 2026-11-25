@@ -353,8 +353,8 @@ pub struct BufferizerState<'a> {
     pub tmm: &'a mut dyn TensorMemoryManager,
     /// A counter for new names generated, helps with uniquing.
     pub name_counter: u64,
-    /// Inferred layouts of tensor values.
-    pub layouts: IMap<Value, MemrefLayout>,
+    /// Inferred [MemrefLayout]s of tensor values and function results.
+    pub layouts: InferredLayouts,
 }
 
 impl<'a> DialectConversion for Bufferizer<'a> {
@@ -446,7 +446,7 @@ impl<'a> DialectConversion for Bufferizer<'a> {
 ///    This step walks the ops in program order and rebuilds the classes of step 2 as soon
 ///    as a decision invalidates them, so a copy decided for one op can let a later op
 ///    stay in place.
-/// 4. Infer layouts to a fixed point and set tensor block argument types.
+/// 4. Infer layouts of tensor values to a fixed point and set tensor block argument types.
 ///    Dialect conversion cannot correctly set block argument types, because it converts
 ///    from the type only and cannot access the layouts of the incoming values.
 /// 5. Rewrite the IR with [BufferizableOpInterface::rewrite].
@@ -748,7 +748,7 @@ pub fn bufferize(
         &analysis.out_of_place_operands,
         &analysis.successor_operands_needing_copy,
     );
-    set_block_argument_types(ctx, &layouts);
+    set_block_argument_types(ctx, &layouts.values);
     let mut bufferizer = Bufferizer {
         state: BufferizerState {
             tmm,
@@ -919,14 +919,22 @@ fn operand_flows(ctx: &Context, op: Ptr<Operation>) -> Vec<(Value, Use<Value>)> 
     flows
 }
 
-/// Infer layouts to a fixed point.
+/// Inferred [MemrefLayout]s before bufferization rewrites the IR.
+pub struct InferredLayouts {
+    /// Layouts of tensor values.
+    pub values: IMap<Value, MemrefLayout>,
+    /// Layouts of [FuncOp] results.
+    pub func_results: IMap<FuncOp, Vec<MemrefLayout>>,
+}
+
+/// Infer [MemrefLayout]s of tensor values and [FuncOp] results.
 fn infer_layouts(
     ctx: &Context,
     root: Ptr<Operation>,
     ops: &[Ptr<Operation>],
     out_of_place: &HSet<Use<Value>>,
     successor_copies: &HSet<Use<Value>>,
-) -> IMap<Value, MemrefLayout> {
+) -> InferredLayouts {
     let mut arguments = Vec::new();
     walkers::uninterruptible::immutable::walk_op(
         ctx,
@@ -1004,6 +1012,9 @@ fn infer_layouts(
         }
         layouts.get(&value).cloned()
     };
+    // Propagate layouts to a fixed point.
+    // - A value without a layout is considered unknown (⊤).
+    // - Each update merges (⊓) into the current layout.
     loop {
         let mut changed = false;
         let mut update =
@@ -1071,7 +1082,45 @@ fn infer_layouts(
             .entry(value)
             .or_insert_with(|| fully_dynamic(shape(value).len()));
     }
-    layouts
+
+    // A function result gets the merged layout of the values returned at its position.
+    let mut func_result_layouts = IMap::default();
+    for &op in ops {
+        let Some(func) = Operation::get_op::<FuncOp>(op, ctx) else {
+            continue;
+        };
+        let region = op.deref(ctx).get_region(0);
+        let returns = region
+            .deref(ctx)
+            .iter(ctx)
+            .filter_map(|block| block.deref(ctx).get_terminator(ctx))
+            .filter(|&ret| Operation::get_op::<ReturnOp>(ret, ctx).is_some())
+            .collect::<Vec<_>>();
+        let result_layouts = func
+            .get_type(ctx)
+            .deref(ctx)
+            .res_types()
+            .into_iter()
+            .enumerate()
+            .map(|(index, result_ty)| {
+                let shape = type_cast::<dyn ShapedType>(&*result_ty.deref(ctx))
+                    .map(|ty| ty.shape().clone())
+                    .unwrap_or_default();
+                returns
+                    .iter()
+                    .filter_map(|ret| {
+                        get_layout(ret.deref(ctx).get_operand_as_use(index), &layouts)
+                    })
+                    .reduce(|a, b| merge(&a, &b, &shape))
+                    .unwrap_or(None)
+            })
+            .collect();
+        func_result_layouts.insert(func, result_layouts);
+    }
+    InferredLayouts {
+        values: layouts,
+        func_results: func_result_layouts,
+    }
 }
 
 /// Convert tensor block arguments to memrefs with their inferred layouts.
