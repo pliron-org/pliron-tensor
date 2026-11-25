@@ -148,20 +148,20 @@ builtin.module @test_module {
         value = tensor.extract flat[index] : builtin.integer i64;
         llvm.return value
     };
-    llvm.func @reshape_entry: llvm.func <builtin.integer i64 (tensor.ranked<2x2:builtin.integer i64>, builtin.integer i64) variadic = false> [] {
+    builtin.func @reshape_entry: builtin.function <(tensor.ranked<2x2:builtin.integer i64>, builtin.integer i64) -> (builtin.integer i64)> {
       ^entry(source: tensor.ranked<2x2:builtin.integer i64>, position: builtin.integer i64):
         flat = tensor.reshape source : tensor.ranked<4:builtin.integer i64>;
         index = index.from_integer position : index.index;
         value = tensor.extract flat[index] : builtin.integer i64;
-        llvm.return value
+        builtin.return value
     };
-    llvm.func @return_slice: llvm.func <tensor.ranked<2x2:builtin.integer i64> (llvm.ptr(0)) variadic = false> [] {
+    builtin.func @return_slice: builtin.function <(llvm.ptr(0)) -> (tensor.ranked<2x2:builtin.integer i64>)> {
       ^entry(source_p: llvm.ptr(0)):
         source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
         selected = tensor.extract_slice source [0, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
-        llvm.return selected
+        builtin.return selected
     };
-    llvm.func @return_merged: llvm.func <tensor.ranked<2x2:builtin.integer i64> (llvm.ptr(0), builtin.integer i64) variadic = false> [] {
+    builtin.func @return_merged: builtin.function <(llvm.ptr(0), builtin.integer i64) -> (tensor.ranked<2x2:builtin.integer i64>)> {
       ^entry(source_p: llvm.ptr(0), control: builtin.integer i64):
         source = llvm.load source_p : tensor.ranked<3x4:builtin.integer i64>;
         zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
@@ -169,9 +169,9 @@ builtin.module @test_module {
         llvm.cond_br if condition ^first() else ^second()
       ^first():
         first_slice = tensor.extract_slice source [0, 0] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
-        llvm.return first_slice
+        builtin.return first_slice
       ^second():
         second_slice = tensor.extract_slice source [1, 1] [2, 2] [1, 1] : tensor.ranked<2x2:builtin.integer i64>;
-        llvm.return second_slice
+        builtin.return second_slice
     }
 }

@@ -7,13 +7,13 @@ use pliron::{
     attribute::AttrObj,
     basic_block::BasicBlock,
     builtin::{
-        attributes::{StringAttr, TypeAttr},
+        attributes::StringAttr,
         op_interfaces::{
             CallOpCallable, OneOpdInterface, OneResultInterface, RegionBranchOpInterface,
             SingleBlockRegionInterface, SymbolOpInterface,
         },
         ops::ModuleOp,
-        type_interfaces::{FloatTypeInterface, FunctionTypeInterface},
+        type_interfaces::FloatTypeInterface,
         types::{IntegerType, Signedness},
     },
     context::{Context, Ptr},
@@ -56,9 +56,7 @@ use pliron_llvm::{
         AlignableOpInterface, BinArithOp, CastOpInterface, FloatBinArithOpWithFastMathFlags,
         IntBinArithOpWithOverflowFlag,
     },
-    ops::{
-        AddressOfOp, BitcastOp, CallIntrinsicOp, CallOp, FuncOp, GlobalOp as LlvmGlobalOp, MulOp,
-    },
+    ops::{AddressOfOp, BitcastOp, CallIntrinsicOp, CallOp, GlobalOp as LlvmGlobalOp, MulOp},
     types::{ArrayType, FuncType, StructLayout},
 };
 use pliron_llvm_intrinsics::mangling::llvm_mangled_ty;
@@ -1546,65 +1544,6 @@ impl ToLLVMType for RankedMemrefType {
     }
 }
 
-/// Convert the memref types in the signature and entry block arguments of `func_op`
-/// to their LLVM descriptor struct types.
-///
-/// ```text
-/// llvm.func @map(%arg: memref<?xf32>) -> memref<?xf32>
-/// ```
-///
-/// becomes approximately:
-///
-/// ```text
-/// llvm.func @map(%arg: llvm.struct <(llvm.ptr, llvm.ptr, i64, [1 x i64], [1 x i64])>)
-///     -> llvm.struct <(llvm.ptr, llvm.ptr, i64, [1 x i64], [1 x i64])>
-/// ```
-fn lower_func_op_to_llvm(func_op: &FuncOp, ctx: &mut Context) -> Result<()> {
-    // update the function type to convert any tensor types in the signature to LLVM types.
-    let func_ty = func_op.get_type(ctx);
-    let res_ty = func_ty.deref(ctx).result_type();
-    let res_ty_ref = &*res_ty.deref(ctx);
-    let res_ty_converter = type_cast::<dyn ToLLVMType>(res_ty_ref);
-    let res_ty = if let Some(res_ty_converter) = res_ty_converter {
-        res_ty_converter.convert(ctx)?
-    } else {
-        res_ty
-    };
-    let arg_tys = func_ty.deref(ctx).arg_types();
-    let arg_tys = arg_tys
-        .iter()
-        .map(|arg_ty| {
-            let arg_ty_ref = &*arg_ty.deref(ctx);
-            let arg_ty_converter = type_cast::<dyn ToLLVMType>(arg_ty_ref);
-            if let Some(arg_ty_converter) = arg_ty_converter {
-                arg_ty_converter.convert(ctx)
-            } else {
-                Ok(*arg_ty)
-            }
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let new_func_ty = pliron_llvm::types::FuncType::get(ctx, res_ty, arg_tys, false);
-    func_op.set_attr_llvm_func_type(ctx, TypeAttr::new(new_func_ty.into()));
-
-    // Update the argument types in the entry block as well.
-    let entry_block = func_op
-        .get_entry_block(ctx)
-        .expect("FuncOp must have an entry block");
-    let args = entry_block.deref(ctx).arguments().collect::<Vec<_>>();
-    for arg in args {
-        let arg_ty = arg.get_type(ctx);
-        let arg_ty_ref = &*arg_ty.deref(ctx);
-        let arg_ty_converter = type_cast::<dyn ToLLVMType>(arg_ty_ref);
-        let arg_ty = if let Some(arg_ty_converter) = arg_ty_converter {
-            arg_ty_converter.convert(ctx)?
-        } else {
-            arg_ty
-        };
-        arg.set_type(ctx, arg_ty);
-    }
-    Ok(())
-}
-
 fn lower_llvm_load_op_to_llvm(
     load_op: &pliron_llvm::ops::LoadOp,
     ctx: &mut Context,
@@ -1851,7 +1790,6 @@ impl DialectConversion for MemrefToCF {
     fn can_convert_op(&self, ctx: &Context, op: Ptr<Operation>) -> bool {
         op_impls::<dyn ToCFDialect>(&*Operation::get_op_dyn(op, ctx))
             || op_impls::<dyn RegionBranchOpInterface>(&*Operation::get_op_dyn(op, ctx))
-            || Operation::get_op::<FuncOp>(op, ctx).is_some()
             || Operation::get_op::<pliron_llvm::ops::LoadOp>(op, ctx).is_some()
     }
 
@@ -1888,9 +1826,6 @@ impl DialectConversion for MemrefToCF {
                 rewriter.set_value_type(ctx, result, converted);
             }
             return Ok(());
-        }
-        if let Some(func_op) = Operation::get_op::<FuncOp>(op, ctx) {
-            return lower_func_op_to_llvm(&func_op, ctx);
         }
         if let Some(load_op) = Operation::get_op::<pliron_llvm::ops::LoadOp>(op, ctx) {
             return lower_llvm_load_op_to_llvm(&load_op, ctx, rewriter);

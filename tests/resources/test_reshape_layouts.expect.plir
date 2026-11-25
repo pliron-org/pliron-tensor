@@ -238,25 +238,22 @@ builtin.module @test_module
         value_v180 = memref.load flat_v179[index_v109] : builtin.integer i64 !93;
         llvm.return value_v180
     };
-    llvm.func @reshape_entry: llvm.func <builtin.integer i64(memref.ranked <2x2 : builtin.integer i64>, builtin.integer i64) variadic = false>
-      [] 
+    builtin.func @reshape_entry: builtin.function <(memref.ranked <2x2 : builtin.integer i64>, builtin.integer i64) -> (builtin.integer i64)> 
     {
       ^entry_block27v1(source_v111: memref.ranked <2x2 : builtin.integer i64>, position_v112: builtin.integer i64) !94:
         flat_v181 = memref.reshape source_v111 : memref.ranked <4 : builtin.integer i64> !95;
         index_v114 = index.from_integer position_v112 : index.index  !96;
         value_v182 = memref.load flat_v181[index_v114] : builtin.integer i64 !97;
-        llvm.return value_v182
+        builtin.return value_v182
     };
-    llvm.func @return_slice: llvm.func <memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>>(llvm.ptr (0)) variadic = false>
-      [] 
+    builtin.func @return_slice: builtin.function <(llvm.ptr (0)) -> (memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>>)> 
     {
       ^entry_block28v1(source_p_v116: llvm.ptr (0)) !98:
         source_v117 = llvm.load source_p_v116  : memref.ranked <3x4 : builtin.integer i64> !99;
         selected_v183 = memref.subview source_v117 [0, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 1>> !100;
-        llvm.return selected_v183
+        builtin.return selected_v183
     };
-    llvm.func @return_merged: llvm.func <memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>(llvm.ptr (0), builtin.integer i64) variadic = false>
-      [] 
+    builtin.func @return_merged: builtin.function <(llvm.ptr (0), builtin.integer i64) -> (memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>)> 
     {
       ^entry_block29v1(source_p_v119: llvm.ptr (0), control_v120: builtin.integer i64) !101:
         source_v121 = llvm.load source_p_v119  : memref.ranked <3x4 : builtin.integer i64> !102;
@@ -267,12 +264,12 @@ builtin.module @test_module
       ^first_block32v1():
         first_slice_v184 = memref.subview source_v121 [0, 0] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 0>> !105;
         v195 = memref.cast first_slice_v184 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
-        llvm.return v195
+        builtin.return v195
 
       ^second_block30v3():
         second_slice_v185 = memref.subview source_v121 [1, 1] [2, 2] [1, 1] : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: 5>> !106;
         v196 = memref.cast second_slice_v185 : memref.ranked <2x2 : builtin.integer i64, strided<[4, 1], offset: ?>>;
-        llvm.return v196
+        builtin.return v196
     }
 }
 

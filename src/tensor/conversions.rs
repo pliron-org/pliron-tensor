@@ -11,9 +11,10 @@ use pliron::{
             OneOpdInterface, OneResultInterface, OperandSegmentInterface,
             SingleBlockRegionInterface,
         },
+        ops::{FuncOp, ReturnOp},
         type_interfaces::FloatTypeInterface,
         type_interfaces::FunctionTypeInterface,
-        types::IntegerType,
+        types::{FunctionType, IntegerType},
     },
     context::{Context, Ptr},
     derive::{op_interface_impl, type_interface_impl},
@@ -41,8 +42,7 @@ use pliron_common_dialects::{
     index::ops::IndexConstantOp,
 };
 use pliron_llvm::ops::{
-    FPExtOp, FPToSIOp, FPToUIOp, FPTruncOp, FuncOp, ReturnOp, SExtOp, SIToFPOp, TruncOp, UIToFPOp,
-    ZExtOp,
+    FPExtOp, FPToSIOp, FPToUIOp, FPTruncOp, SExtOp, SIToFPOp, TruncOp, UIToFPOp, ZExtOp,
 };
 use pliron_llvm::{
     attributes::FastmathFlagsAttr,
@@ -1406,45 +1406,55 @@ impl BufferizableOpInterface for BatchMatMulOp {
 }
 
 /// Update a [FuncOp]'s type signature and entry block argument types,
-/// converting any tensor types to their memref equivalents.
-/// Arguments are assumed to have the identity layout. A tensor result gets `result_layout`.
+/// converting tensor types to their memref equivalents.
+///
+/// Arguments are assumed to have the [identity layout](MemrefLayout).
+/// The tensor result at index `i` is converted to a memref with `result_layouts[i]`.
 ///
 /// ```text
-/// llvm.func @map(%arg: tensor<?xf32>) -> tensor<?xf32>
+/// builtin.func @map(%arg: tensor<?xf32>) -> tensor<?xf32>
 /// ```
 ///
 /// becomes:
 ///
 /// ```text
-/// llvm.func @map(%arg: memref<?xf32>) -> memref<?xf32>
+/// builtin.func @map(%arg: memref<?xf32>) -> memref<?xf32>
 /// ```
-pub fn lower_func_op_to_llvm(
+pub fn bufferize_func_signature(
     func_op: &FuncOp,
     ctx: &mut Context,
-    result_layout: MemrefLayout,
+    result_layouts: &[MemrefLayout],
 ) -> Result<()> {
     // update the function type to convert any tensor types in the signature to memref types.
     let func_ty = func_op.get_type(ctx);
-    let res_ty = func_ty.deref(ctx).result_type();
-    let res_ty = memref::to_memref_type(res_ty, ctx)?;
-    let res_ty = match res_ty.deref(ctx).downcast_ref::<RankedMemrefType>() {
-        Some(ty) => {
-            RankedMemrefType::get(ctx, ty.element_type(), ty.shape().clone(), result_layout).into()
-        }
-        None => res_ty,
-    };
+    let res_tys = func_ty.deref(ctx).res_types();
+    let res_tys = res_tys
+        .into_iter()
+        .zip(result_layouts)
+        .map(|(res_ty, layout)| {
+            let res_ty = memref::to_memref_type(res_ty, ctx)?;
+            Ok(match res_ty.deref(ctx).downcast_ref::<RankedMemrefType>() {
+                Some(ty) => RankedMemrefType::get(
+                    ctx,
+                    ty.element_type(),
+                    ty.shape().clone(),
+                    layout.clone(),
+                )
+                .into(),
+                None => res_ty,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let arg_tys = func_ty.deref(ctx).arg_types();
     let arg_tys = arg_tys
         .iter()
         .map(|arg_ty| memref::to_memref_type(*arg_ty, ctx))
         .collect::<Result<Vec<_>>>()?;
-    let new_func_ty = pliron_llvm::types::FuncType::get(ctx, res_ty, arg_tys, false);
-    func_op.set_attr_llvm_func_type(ctx, TypeAttr::new(new_func_ty.into()));
+    let new_func_ty = FunctionType::get(ctx, arg_tys, res_tys);
+    func_op.set_attr_builtin_func_type(ctx, TypeAttr::new(new_func_ty.into()));
 
     // Update all arguments in the entry block to use the new memref types.
-    let entry_block = func_op
-        .get_entry_block(ctx)
-        .expect("FuncOp must have an entry block");
+    let entry_block = func_op.get_entry_block(ctx);
 
     let args = entry_block.deref(ctx).arguments().collect::<Vec<_>>();
     for arg in args {
@@ -1455,13 +1465,6 @@ pub fn lower_func_op_to_llvm(
     Ok(())
 }
 
-/// Allow [FuncOp] to participate in bufferization. `FuncOp` itself has no operands
-/// or results, so the only thing of interest here is [Self::is_writable] on its
-/// (entry-block) arguments (the function's parameters).
-///
-/// Function arguments are writable by default. It is up to the caller (i.e. whatever
-/// bufferizes a call to this function) to insert a copy if it still needs the
-/// original tensor after the call.
 #[op_interface_impl]
 impl BufferizableOpInterface for FuncOp {
     fn operand_bufferizes_to_memory_read(&self, _ctx: &Context, _opd: Use<Value>) -> bool {
@@ -1477,6 +1480,10 @@ impl BufferizableOpInterface for FuncOp {
     }
 
     fn is_writable(&self, _ctx: &Context, _value: Value) -> bool {
+        // `FuncOp` has no operands or results.
+        // Its (entry-block) arguments are writable.
+        // The caller (i.e., whatever bufferizes a call to this function)
+        // must insert a copy if it needs the original tensor after the call.
         true
     }
 
@@ -1487,24 +1494,35 @@ impl BufferizableOpInterface for FuncOp {
         bufferizer_state: &mut BufferizerState,
         _operands_info: &OperandsInfo,
     ) -> Result<()> {
-        // The result gets the merged layout of the returned values.
-        let result_ty = self.get_type(ctx).deref(ctx).result_type();
-        let shape = type_cast::<dyn ShapedType>(&*result_ty.deref(ctx))
-            .map(|ty| ty.shape().clone())
-            .unwrap_or_default();
-        let result_layout = {
+        // Each result gets the merged layout of the values returned at its position.
+        let returns = {
             let region = self.get_operation().deref(ctx).get_region(0);
             let region = region.deref(ctx);
             region
                 .iter(ctx)
                 .filter_map(|block| block.deref(ctx).get_terminator(ctx))
-                .filter_map(|op| Operation::get_op::<ReturnOp>(op, ctx))
-                .filter_map(|ret| ret.retval(ctx))
-                .filter_map(|value| bufferizer_state.layouts.get(&value).cloned())
-                .reduce(|a, b| memref::layout::merge(&a, &b, &shape))
-                .unwrap_or(None)
+                .filter(|&op| Operation::get_op::<ReturnOp>(op, ctx).is_some())
+                .collect::<Vec<_>>()
         };
-        lower_func_op_to_llvm(self, ctx, result_layout)
+        let result_layouts = self
+            .get_type(ctx)
+            .deref(ctx)
+            .res_types()
+            .into_iter()
+            .enumerate()
+            .map(|(index, result_ty)| {
+                let shape = type_cast::<dyn ShapedType>(&*result_ty.deref(ctx))
+                    .map(|ty| ty.shape().clone())
+                    .unwrap_or_default();
+                returns
+                    .iter()
+                    .map(|ret| ret.deref(ctx).get_operand(index))
+                    .filter_map(|value| bufferizer_state.layouts.get(&value).cloned())
+                    .reduce(|a, b| memref::layout::merge(&a, &b, &shape))
+                    .unwrap_or(None)
+            })
+            .collect::<Vec<_>>();
+        bufferize_func_signature(self, ctx, &result_layouts)
     }
 }
 

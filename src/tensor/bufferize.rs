@@ -59,7 +59,11 @@
 use crate::tensor::types::RankedTensorType;
 use pliron::{
     analyses::liveness::{Liveness, LivenessTq},
-    builtin::op_interfaces::{BranchOpInterface, OneResultInterface, RegionBranchOpInterface},
+    builtin::{
+        op_interfaces::{BranchOpInterface, OneResultInterface, RegionBranchOpInterface},
+        ops::{FuncOp, ReturnOp},
+        type_interfaces::FunctionTypeInterface,
+    },
     common_traits::Verify,
     context::{Context, Ptr},
     derive::op_interface,
@@ -89,7 +93,6 @@ use pliron::{
     verify_err_noloc,
 };
 use pliron_common_dialects::index::ops::IndexConstantOp;
-use pliron_llvm::ops::{FuncOp, ReturnOp};
 use thiserror::Error;
 
 use crate::{
@@ -1145,14 +1148,12 @@ fn cast_to_receiver_types(ctx: &mut Context, root: Ptr<Operation>) {
     }
 }
 
-/// Cast each value returned from a function to the result type of that function.
+/// Cast each value returned from a function to the corresponding result type of that function.
 fn cast_to_function_result_types(ctx: &mut Context, root: Ptr<Operation>) {
     for op in collect_ops(ctx, root) {
-        let Some(value) =
-            Operation::get_op::<ReturnOp>(op, ctx).and_then(|ret_op| ret_op.retval(ctx))
-        else {
+        if Operation::get_op::<ReturnOp>(op, ctx).is_none() {
             continue;
-        };
+        }
         let Some(func) = op
             .deref(ctx)
             .get_parent_op(ctx)
@@ -1160,10 +1161,13 @@ fn cast_to_function_result_types(ctx: &mut Context, root: Ptr<Operation>) {
         else {
             continue;
         };
-        let result_type = func.get_type(ctx).deref(ctx).result_type();
-        let casted = cast_to_type(ctx, op, value, result_type);
-        if casted != value {
-            Operation::replace_operand(op, ctx, 0, casted);
+        let result_types = func.get_type(ctx).deref(ctx).res_types();
+        let values = op.deref(ctx).operands().collect::<Vec<_>>();
+        for (index, (value, result_type)) in values.into_iter().zip(result_types).enumerate() {
+            let casted = cast_to_type(ctx, op, value, result_type);
+            if casted != value {
+                Operation::replace_operand(op, ctx, index, casted);
+            }
         }
     }
 }

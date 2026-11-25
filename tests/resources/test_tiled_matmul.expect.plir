@@ -1,8 +1,7 @@
 builtin.module @test_module 
 {
   ^entry_block1v1():
-    llvm.func @test_tiled_matmul_cf: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
-      [] 
+    builtin.func @test_tiled_matmul_cf: builtin.function <(llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) -> ()> 
     {
       ^entry_block2v1(a_p_v0: llvm.ptr (0), b_p_v1: llvm.ptr (0), c_p_v2: llvm.ptr (0), out_p_v3: llvm.ptr (0)) !0:
         a_v4 = llvm.load a_p_v0  : memref.ranked <4x4 : builtin.integer i64> !1;
@@ -47,10 +46,9 @@ builtin.module @test_module
 
       ^done_block8v3(result_v36: memref.ranked <4x4 : builtin.integer i64>) !25:
         llvm.store *out_p_v3 <- result_v36 ;
-        llvm.return 
+        builtin.return 
     };
-    llvm.func @test_tiled_matmul_scf: llvm.func <llvm.void (llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) variadic = false>
-      [] 
+    builtin.func @test_tiled_matmul_scf: builtin.function <(llvm.ptr (0), llvm.ptr (0), llvm.ptr (0), llvm.ptr (0)) -> ()> 
     {
       ^entry_block5v3(a_p_v37: llvm.ptr (0), b_p_v38: llvm.ptr (0), c_p_v39: llvm.ptr (0), out_p_v40: llvm.ptr (0)) !26:
         a_v41 = llvm.load a_p_v37  : memref.ranked <4x4 : builtin.integer i64> !27;
@@ -80,7 +78,7 @@ builtin.module @test_module
         }
  !40;
         llvm.store *out_p_v40 <- result_v47 ;
-        llvm.return 
+        builtin.return 
     }
 }
 
