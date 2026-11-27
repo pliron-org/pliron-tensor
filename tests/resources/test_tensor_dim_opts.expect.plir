@@ -19,10 +19,10 @@ builtin.module @test_module
         idx0_v8 = index.constant <index.constant 0> : index.index  !7;
         dim0_v10 = tensor.dim input_v7, idx0_v8 : index.index  !8;
         dim0_i64_v12 = index.to_integer dim0_v10 to builtin.integer i64 !9;
-        dim1_i64_v29 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !10;
+        dim1_i64_v42 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !10;
         thousand_v14 = builtin.constant <builtin.integer <1000: i64>> : builtin.integer i64 !11;
         scaled_v15 = llvm.mul dim0_i64_v12, thousand_v14 <{nsw=false,nuw=false}>: builtin.integer i64 !12;
-        encoded_v16 = llvm.add scaled_v15, dim1_i64_v29 <{nsw=false,nuw=false}>: builtin.integer i64 !13;
+        encoded_v16 = llvm.add scaled_v15, dim1_i64_v42 <{nsw=false,nuw=false}>: builtin.integer i64 !13;
         llvm.return encoded_v16
     };
     llvm.func @test_tensor_dim_sizes: llvm.func <llvm.void (llvm.ptr (0), builtin.fp32 , llvm.ptr (0)) variadic = false>
@@ -34,11 +34,20 @@ builtin.module @test_module
         rows_v22 = tensor.dim input_v20, idx0_v21 : index.index  !17;
         init_v23 = tensor.splat lowest_v18, rows_v22 : tensor.ranked <?x1 : builtin.fp32 > !18;
         row_max_v24 = tensor.reduce <Max> [1] input_v20, init_v23 : tensor.ranked <?x1 : builtin.fp32 > !19;
-        init_rows_v25 = tensor.dim init_v23, idx0_v21 : index.index  !20;
-        row_max_wide_v26 = tensor.broadcast row_max_v24, init_rows_v25 : tensor.ranked <?x4 : builtin.fp32 > !21;
-        result_v27 = tensor.sub input_v20, row_max_wide_v26 : tensor.ranked <?x4 : builtin.fp32 > !22;
+        row_max_wide_v26 = tensor.broadcast row_max_v24, rows_v22 : tensor.ranked <?x4 : builtin.fp32 > !20;
+        result_v27 = tensor.sub input_v20, row_max_wide_v26 : tensor.ranked <?x4 : builtin.fp32 > !21;
         llvm.store *output_p_v19 <- result_v27 ;
         llvm.return 
+    };
+    llvm.func @test_tensor_dim_through_ops: llvm.func <builtin.integer i64(llvm.ptr (0)) variadic = false>
+      [] 
+    {
+      ^entry_block5v1(input_p_v28: llvm.ptr (0)) !22:
+        input_v29 = llvm.load input_p_v28  : tensor.ranked <?x4 : builtin.fp32 > !23;
+        idx0_v30 = index.constant <index.constant 0> : index.index  !24;
+        rows_v34 = tensor.dim input_v29, idx0_v30 : index.index  !25;
+        generated_rows_i64_v40 = index.to_integer rows_v34 to builtin.integer i64 !26;
+        llvm.return generated_rows_i64_v40
     }
 }
 
@@ -63,6 +72,10 @@ outlined_attributes:
 !17 = [builtin_given_names = builtin.given_names [rows]]
 !18 = [builtin_given_names = builtin.given_names [init]]
 !19 = [builtin_given_names = builtin.given_names [row_max]]
-!20 = [builtin_given_names = builtin.given_names [init_rows]]
-!21 = [builtin_given_names = builtin.given_names [row_max_wide]]
-!22 = [builtin_given_names = builtin.given_names [result]]
+!20 = [builtin_given_names = builtin.given_names [row_max_wide]]
+!21 = [builtin_given_names = builtin.given_names [result]]
+!22 = [builtin_given_names = builtin.given_names [input_p]]
+!23 = [builtin_given_names = builtin.given_names [input]]
+!24 = [builtin_given_names = builtin.given_names [idx0]]
+!25 = [builtin_given_names = builtin.given_names [rows]]
+!26 = [builtin_given_names = builtin.given_names [generated_rows_i64]]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) The pliron-tensor contributors
 
-//! Test pliron's optimizations (SCCP and DCE) on tensor and memref IR.
+//! Test pliron's optimizations (canonicalization, SCCP and DCE) on tensor and memref IR.
 //! The optimized IR is then lowered and executed in a JIT.
 
 use expect_test::{expect, expect_file};
@@ -11,7 +11,7 @@ use pliron::{
     location::erase_locations,
     op::verify_op,
     operation::Operation,
-    opts::{constants::sccp::sccp, dce::dce},
+    opts::{canonicalize::canonicalize, constants::sccp::sccp, dce::dce},
     printable::Printable,
     result::ExpectOk,
 };
@@ -30,8 +30,9 @@ use common::{
     },
 };
 
-/// Run SCCP and then DCE on the module, and return the optimized IR as text.
+/// Run canonicalization, SCCP and then DCE on the module, and return the optimized IR as text.
 fn optimize_module(ctx: &mut Context, parsed_op: Ptr<Operation>) -> String {
+    canonicalize(parsed_op, ctx).expect_ok(ctx);
     sccp(parsed_op, ctx).expect_ok(ctx);
     dce(parsed_op, ctx).expect_ok(ctx);
     verify_op(Operation::get_op_dyn(parsed_op, ctx).as_ref(), ctx).expect_ok(ctx);
@@ -319,23 +320,28 @@ fn test_fold_size_limit() {
     );
 }
 
-/// SCCP must fold `tensor.dim` of a static dimension with a constant index.
+/// SCCP and canonicalization of `tensor.dim`.
 #[test]
-fn test_tensor_dim_folding() {
+fn test_tensor_dim_opts() {
     let ctx = &mut Context::new();
     let input_ir = include_str!("resources/test_tensor_dim.input.plir");
     let (parsed_op, _) = parse_module(ctx, input_ir);
 
-    // A dynamic index, or a dynamic dimension, must not fold.
-    // The `tensor.dim` of dimension 1 must fold to the constant 4.
+    // - `tensor.dim %input, %dim_idx` (dynamic index) and `tensor.dim %input, 0`
+    //   (dynamic dimension) must not be transformed.
+    // - `tensor.dim %input, 1` must fold to `4`.
+    // - `tensor.dim %init, 0`, where `%init = tensor.splat %lowest, %rows`, must become `%rows`.
+    // - In @test_tensor_dim_through_ops, `tensor.dim %generated, 0`, where
+    //   `%generated = tensor.generate %rows` and
+    //   `%rows = tensor.dim (tensor.add (tensor.elementwise_cast (tensor.exp %input))), 0`,
+    //   must become `tensor.dim %input, 0`.
     let after_opts = optimize_module(ctx, parsed_op);
-    expect_file!["resources/test_tensor_dim_folding.expect.plir"].assert_eq(&after_opts);
+    expect_file!["resources/test_tensor_dim_opts.expect.plir"].assert_eq(&after_opts);
 }
 
-/// SCCP must fold `memref.dim` of a static dimension with a constant index,
-/// and DCE must then remove the ops whose results are not used.
+/// SCCP and canonicalization of `memref.dim`.
 #[test]
-fn test_memref_dim_folding() {
+fn test_memref_dim_opts() {
     let ctx = &mut Context::new();
 
     let input_ir = include_str!("resources/test_memref_dim.input.plir");
@@ -343,9 +349,11 @@ fn test_memref_dim_folding() {
     let (parsed_op, module_op) = parse_module(ctx, input_ir);
     let after_opts = optimize_module(ctx, parsed_op);
 
-    // A dynamic index must stay a `memref.dim`. With constant indices, the
-    // function must return the constant 16032.
-    expect_file!["resources/test_memref_dim_folding.expect.plir"].assert_eq(&after_opts);
+    // - `memref.dim %memref, %dim_idx` (dynamic index) must not be transformed.
+    // - With constant indices, @test_memref_dim_const_index must return the constant 16032.
+    // - `memref.dim %memref, 0`, where `%memref = memref.alloc %rows`, must become `%rows`.
+    // - DCE must then remove the ops whose results are not used.
+    expect_file!["resources/test_memref_dim_opts.expect.plir"].assert_eq(&after_opts);
 
     let llvm_ctx = LLVMContext::default();
     let llvm_ir = lower_to_llvm_ir(ctx, parsed_op, module_op, &llvm_ctx);
@@ -358,4 +366,8 @@ fn test_memref_dim_folding() {
 
     let const_index = unsafe { lookup_fn::<fn() -> i64>(&jit, "test_memref_dim_const_index") };
     assert_eq!(const_index(), 16032);
+
+    let dynamic_alloc =
+        unsafe { lookup_fn::<fn(i64) -> i64>(&jit, "test_memref_dim_dynamic_alloc") };
+    assert_eq!(dynamic_alloc(7), 7);
 }

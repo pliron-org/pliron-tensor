@@ -1103,6 +1103,13 @@ fn test_tensor_dim() {
     };
     assert_eq!(const_index(input.as_ptr()), 3004);
 
+    // `tensor.dim` of the results of elementwise ops and `tensor.generate` must
+    // return the number of rows of the input.
+    let through_ops = unsafe {
+        lookup_fn::<extern "C" fn(*const u8) -> i64>(&jit, "test_tensor_dim_through_ops")
+    };
+    assert_eq!(through_ops(input.as_ptr()), 3);
+
     // Dimension sizes from `tensor.dim` must shape the splat and broadcast results so that
     // `result[i][j] = input[i][j] - max_k input[i][k]` holds for any number of rows.
     let dim_sizes = unsafe {

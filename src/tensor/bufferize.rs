@@ -99,7 +99,7 @@ use crate::{
     memref::{
         ToMemrefType,
         layout::{MemrefLayout, fully_dynamic, is_cast_compatible, merge},
-        op_interfaces::DynamicDimensionOperandsOp,
+        op_interfaces::dynamic_dim_size,
         ops::{CopyOp, DimOp, MemrefCastOp},
         type_interfaces::{Dimension, MultiDimensionalType, ShapedType},
         types::RankedMemrefType,
@@ -765,44 +765,18 @@ pub fn bufferize(
     Ok(status)
 }
 
-/// Get the size of `value`'s dynamic dimension `dim`:
+/// Materialize the size of `value`'s dynamic dimension `dim`:
 /// - from `value`'s defining op, if it implements [DynamicDimensionOperandsOp],
 /// - from a new `memref.dim` on `value` otherwise.
-pub(crate) fn dynamic_dim_size(
+///
+/// [DynamicDimensionOperandsOp]: crate::memref::op_interfaces::DynamicDimensionOperandsOp
+pub(crate) fn materialize_dynamic_dim_size(
     ctx: &mut Context,
     rewriter: &mut DialectConversionRewriter,
     value: Value,
     dim: usize,
 ) -> Value {
-    /// Get the size of `value`'s dynamic dimension `dim` from `value`'s defining op,
-    /// if it implements [DynamicDimensionOperandsOp].
-    fn dynamic_dim_size_operand(ctx: &Context, value: Value, dim: usize) -> Option<Value> {
-        let def_op = value.defining_op()?;
-        if def_op.deref(ctx).get_result(0) != value {
-            // [DynamicDimensionOperandsOp] gives the dimension sizes of result 0 only.
-            return None;
-        }
-        let def_op = Operation::get_op_dyn(def_op, ctx);
-        let dynamic_dims =
-            op_cast::<dyn DynamicDimensionOperandsOp>(&*def_op)?.get_dynamic_dimensions(ctx);
-
-        let value_ty = value.get_type(ctx);
-        let value_ty = value_ty.deref(ctx);
-        let shape = type_cast::<dyn ShapedType>(&*value_ty)?.shape();
-        if *shape.get(dim)? != Dimension::Dynamic {
-            return None;
-        }
-        // The dynamic dimension operands are in result-dimension order.
-        let position = shape[..dim]
-            .iter()
-            .filter(|dim| **dim == Dimension::Dynamic)
-            .count();
-        Some(*dynamic_dims.get(position).expect(
-            "DynamicDimensionOperandsOp's verifier ensures one operand per dynamic dimension",
-        ))
-    }
-
-    if let Some(size) = dynamic_dim_size_operand(ctx, value, dim) {
+    if let Some(size) = dynamic_dim_size(ctx, value, dim) {
         return size;
     }
     let index = IndexConstantOp::new(ctx, dim);
@@ -825,7 +799,7 @@ pub(crate) fn copy_to_identity_buffer(
     let mut dynamic_sizes = Vec::new();
     for (i, dimension) in shape.iter().enumerate() {
         if matches!(dimension, Dimension::Dynamic) {
-            dynamic_sizes.push(dynamic_dim_size(ctx, rewriter, source, i));
+            dynamic_sizes.push(materialize_dynamic_dim_size(ctx, rewriter, source, i));
         }
     }
     let allocation = tmm.create_memref_alloc(ctx, identity_type, dynamic_sizes)?;

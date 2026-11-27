@@ -21,5 +21,14 @@ builtin.module @test_module {
     scaled = llvm.mul dim0_i64, thousand <{nsw = false, nuw = false}> : builtin.integer i64;
     encoded = llvm.add scaled, dim1_i64 <{nsw = false, nuw = false}> : builtin.integer i64;
     llvm.return encoded
+  };
+  llvm.func @test_memref_dim_dynamic_alloc: llvm.func <builtin.integer i64 (builtin.integer i64) variadic = false> [] {
+    ^entry(rows_arg: builtin.integer i64):
+    rows = index.from_integer rows_arg : index.index;
+    memref = memref.alloc rows : memref.ranked<? x 32 : builtin.integer i64>;
+    idx0 = index.constant <index.constant 0> : index.index;
+    dim = memref.dim memref, idx0 : index.index;
+    dim_int = index.to_integer dim to builtin.integer i64;
+    llvm.return dim_int
   }
 }

@@ -33,12 +33,12 @@ use pliron::{
     result::Result,
     symbol_table::{SymbolTableCollection, nearest_symbol_table},
     r#type::{TypeHandle, Typed, TypedHandle, type_cast, type_impls},
-    value::{DefiningEntity, Value},
+    value::Value,
 };
 use pliron_common_dialects::{
     cf::{ToCFDialect, op_interfaces::YieldingRegions, ops::NDForOp},
     index::{
-        ops::{IndexAddOp, IndexConstantOp, IndexMulOp},
+        ops::{IndexAddOp, IndexConstantOp, IndexMulOp, try_match_constant_index},
         types::IndexType,
     },
 };
@@ -437,14 +437,8 @@ impl ToCFDialect for DimOp {
             })?
             .rank();
 
-        let constant_dim = match dim_idx.defining_entity() {
-            DefiningEntity::Op(op) => Operation::get_op::<IndexConstantOp>(op, ctx).map(|op| {
-                op.get_attr_constant_index(ctx)
-                    .expect("index.constant must have a constant index attribute")
-                    .constant_index
-            }),
-            _ => None,
-        };
+        let constant_dim =
+            try_match_constant_index(ctx, dim_idx).and_then(|dim| usize::try_from(dim).ok());
         let dim_size = match constant_dim {
             Some(dim) if dim < rank => descriptor::unpack_size(ctx, rewriter, memref, dim),
             // A dynamic index or an out-of-range constant index (the latter is undefined behavior).

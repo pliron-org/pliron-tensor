@@ -5,16 +5,23 @@
 
 use pliron::{
     attribute::AttrObj,
-    context::Context,
+    context::{Context, Ptr},
     derive::op_interface_impl,
     irbuild::{IRStatus, rewriter::Rewriter},
-    opts::constants::ConstFoldInterface,
+    op::Op,
+    operation::Operation,
+    opts::{canonicalize::CanonicalizeInterface, constants::ConstFoldInterface},
     r#type::Typed,
+    value::Value,
 };
-use pliron_common_dialects::index::attributes::{ConstantIndexAttr, known_constant_index};
+use pliron_common_dialects::index::{
+    attributes::{ConstantIndexAttr, known_constant_index},
+    ops::try_match_constant_index,
+};
 
 use crate::memref::{
     attributes::ShapedTypeHandle,
+    op_interfaces::dynamic_dim_size,
     ops::{DimOp, GetGlobalOp, MemrefCastOp, ReshapeOp, SubviewOp, TransposeOp, YieldOp},
     type_interfaces::Dimension,
 };
@@ -66,4 +73,39 @@ pub(crate) fn fold_dim(
         // A dynamic dimension, or an index out of range.
         Some(Dimension::Dynamic) | None => None,
     }
+}
+
+/// `memref.dim %m, %c` with a constant `%c` simplifies to the size obtained from `%m`'s
+/// [DynamicDimensionOperandsOp] impl.
+///
+/// [DynamicDimensionOperandsOp]: crate::memref::op_interfaces::DynamicDimensionOperandsOp
+#[op_interface_impl]
+impl CanonicalizeInterface for DimOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let source = self.get_source_memref(ctx);
+        let dim_index = self.get_dimension_index(ctx);
+        forward_dim_size(ctx, rewriter, self.get_operation(), source, dim_index)
+    }
+}
+
+/// Try to canonicalize `dim_op` by forwarding the size of `dim` from `source`'s
+/// [DynamicDimensionOperandsOp] impl.
+///
+/// [DynamicDimensionOperandsOp]: crate::memref::op_interfaces::DynamicDimensionOperandsOp
+pub(crate) fn forward_dim_size(
+    ctx: &mut Context,
+    rewriter: &mut dyn Rewriter,
+    dim_op: Ptr<Operation>,
+    source: Value,
+    dim: Value,
+) -> IRStatus {
+    let Some(dim) = try_match_constant_index(ctx, dim).and_then(|dim| usize::try_from(dim).ok())
+    else {
+        return IRStatus::Unchanged;
+    };
+    let Some(size) = dynamic_dim_size(ctx, source, dim) else {
+        return IRStatus::Unchanged;
+    };
+    rewriter.replace_operation_with_values(ctx, dim_op, vec![size]);
+    IRStatus::Changed
 }

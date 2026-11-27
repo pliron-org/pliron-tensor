@@ -34,5 +34,22 @@ builtin.module @test_module {
     result = tensor.sub input, row_max_wide : tensor.ranked<?x4:builtin.fp32>;
     llvm.store *output_p <- result;
     llvm.return
+  };
+  llvm.func @test_tensor_dim_through_ops: llvm.func <builtin.integer i64 (llvm.ptr(0)) variadic = false> [] {
+    ^entry(input_p: llvm.ptr(0)):
+    input = llvm.load input_p : tensor.ranked<?x4:builtin.fp32>;
+    idx0 = index.constant <index.constant 0> : index.index;
+    exp = tensor.exp input : tensor.ranked<?x4:builtin.fp32>;
+    cast = tensor.elementwise_cast exp : tensor.ranked<?x4:builtin.fp64> {input_is_signed=false,result_is_signed=false};
+    sum = tensor.add cast, cast : tensor.ranked<?x4:builtin.fp64>;
+    rows = tensor.dim sum, idx0 : index.index;
+    generated = tensor.generate rows : tensor.ranked<?x2:builtin.integer i64> {
+      ^entry(i : index.index, j : index.index):
+        i_int = index.to_integer i to builtin.integer i64;
+        memref.yield i_int
+    };
+    generated_rows = tensor.dim generated, idx0 : index.index;
+    generated_rows_i64 = index.to_integer generated_rows to builtin.integer i64;
+    llvm.return generated_rows_i64
   }
 }

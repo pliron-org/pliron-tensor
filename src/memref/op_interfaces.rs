@@ -239,6 +239,36 @@ pub trait DynamicDimensionOperandsOp: ResultNImplsTy<0, dyn ShapedType> {
     }
 }
 
+/// Try to get `value`'s dynamic `dim` size from
+/// its defining op's [DynamicDimensionOperandsOp] impl.
+pub fn dynamic_dim_size(ctx: &Context, value: Value, dim: usize) -> Option<Value> {
+    let def_op = value.defining_op()?;
+    if def_op.deref(ctx).get_result(0) != value {
+        // [DynamicDimensionOperandsOp] gives the dimension sizes of result 0 only.
+        return None;
+    }
+    let def_op = Operation::get_op_dyn(def_op, ctx);
+    let dynamic_dims =
+        op_cast::<dyn DynamicDimensionOperandsOp>(&*def_op)?.get_dynamic_dimensions(ctx);
+
+    let value_ty = value.get_type(ctx);
+    let value_ty = value_ty.deref(ctx);
+    let shape = type_cast::<dyn ShapedType>(&*value_ty)?.shape();
+    if *shape.get(dim)? != Dimension::Dynamic {
+        return None;
+    }
+    // The dynamic dimension operands are in result-dimension order.
+    let position = shape[..dim]
+        .iter()
+        .filter(|dim| **dim == Dimension::Dynamic)
+        .count();
+    Some(
+        *dynamic_dims.get(position).expect(
+            "DynamicDimensionOperandsOp's verifier ensures one operand per dynamic dimension",
+        ),
+    )
+}
+
 #[derive(thiserror::Error, Debug)]
 pub enum ReshapeOpInterfaceVerifyErr {
     #[error("Reshape source and result element types must match")]

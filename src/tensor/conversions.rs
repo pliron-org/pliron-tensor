@@ -70,7 +70,7 @@ use crate::{
     tensor::{
         bufferize::{
             Alias, AliasKind, BufferRelation, BufferizableOpInterface, BufferizerState,
-            dynamic_dim_size,
+            materialize_dynamic_dim_size,
         },
         op_interfaces::{ElementWiseBinaryTensorOpInterface, ElementWiseUnaryTensorOpInterface},
         ops::{
@@ -785,7 +785,7 @@ fn alloc_result_buffer(
         .enumerate()
         .filter_map(|(i, dim)| {
             if let Dimension::Dynamic = dim {
-                Some(dynamic_dim_size(ctx, rewriter, shape_source, i))
+                Some(materialize_dynamic_dim_size(ctx, rewriter, shape_source, i))
             } else {
                 None
             }

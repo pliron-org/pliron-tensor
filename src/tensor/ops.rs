@@ -405,40 +405,16 @@ impl Verify for ElementwiseCastOp {
         YieldingRegions<YieldOp>,
         AllResultsOfType<RankedTensorType>,
         AllOperandsOfType<IndexType>,
+        ResultNImplsTy<0, dyn ShapedType>,
     ],
+    verifier = "succ"
 )]
 pub struct GenerateOp;
 
-#[derive(thiserror::Error, Debug)]
-pub enum GenerateOpVerifyErr {
-    #[error(
-        "GenerateOp number of operands {expected} does not match number of dynamic dimensions {got}"
-    )]
-    NumOperandsMismatch { expected: usize, got: usize },
-}
-
-impl Verify for GenerateOp {
-    fn verify(&self, ctx: &Context) -> Result<()> {
-        let loc = self.loc(ctx);
-        let result_shape = self.get_generated_shape(ctx);
-        let num_dynamic_dims = result_shape.deref(ctx).num_dynamic_dimensions();
-
-        let dynamic_dim_operands = self
-            .get_operation()
-            .deref(ctx)
-            .operands()
-            .collect::<Vec<_>>();
-        let num_operands = dynamic_dim_operands.len();
-        if num_operands != num_dynamic_dims {
-            return verify_err!(
-                loc,
-                GenerateOpVerifyErr::NumOperandsMismatch {
-                    expected: num_dynamic_dims,
-                    got: num_operands
-                }
-            );
-        }
-        Ok(())
+#[op_interface_impl]
+impl DynamicDimensionOperandsOp for GenerateOp {
+    fn get_dynamic_dimensions(&self, ctx: &Context) -> Vec<Value> {
+        self.get_operation().deref(ctx).operands().collect()
     }
 }
 

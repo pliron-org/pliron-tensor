@@ -17,9 +17,9 @@ use pliron::{
     derive::{attr_interface_impl, op_interface_impl},
     dyn_clone::clone_box,
     irbuild::{IRStatus, rewriter::Rewriter},
-    op::Op,
+    op::{Op, op_impls},
     operation::Operation,
-    opts::constants::ConstFoldInterface,
+    opts::{canonicalize::CanonicalizeInterface, constants::ConstFoldInterface},
     r#type::{TypeHandle, Typed},
     utils::{
         apfloat::{
@@ -34,7 +34,7 @@ use pliron_common_dialects::index::attributes::known_constant_index;
 use crate::{
     memref::{
         attributes::ShapedTypeHandle,
-        interface_impls::fold_dim,
+        interface_impls::{fold_dim, forward_dim_size},
         layout::{identity_strides, permute},
         op_interfaces::{ReductionOpInterface, TransposeOpInterface},
         type_interfaces::{DenseElementTypeHandle, Dimension},
@@ -42,6 +42,7 @@ use crate::{
     tensor::{
         attributes::{DenseElementsAttr, ReductionKindAttr},
         conversions::{ScalarCastKind, scalar_cast_kind},
+        op_interfaces::{ElementWiseBinaryTensorOpInterface, ElementWiseUnaryTensorOpInterface},
         ops::{
             AddOp, BatchMatMulOp, BroadcastOp, ConstantOp, DimOp, DivOp, ElementwiseCastOp, ExpOp,
             ExtractOp, ExtractSliceOp, GenerateOp, InsertSliceOp, MatMulOp, MaxOp, MinOp, MulOp,
@@ -98,6 +99,42 @@ impl ConstFoldInterface for DimOp {
         rewriter: &mut dyn Rewriter,
     ) -> IRStatus {
         self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+/// - `tensor.dim %t, %c` with a constant `%c` simplifies to the size obtained from `%t`'s
+///   [DynamicDimensionOperandsOp] impl.
+/// - `tensor.dim %r, %i`, where `%r` is the result of an elementwise op with first
+///   operand `%a`, canonicalizes to `tensor.dim %a, %i`.
+///
+/// [DynamicDimensionOperandsOp]: crate::memref::op_interfaces::DynamicDimensionOperandsOp
+#[op_interface_impl]
+impl CanonicalizeInterface for DimOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let source = self.get_source_tensor(ctx);
+        let dim_index = self.get_dimension_index(ctx);
+        if forward_dim_size(ctx, rewriter, self.get_operation(), source, dim_index)
+            == IRStatus::Changed
+        {
+            return IRStatus::Changed;
+        }
+
+        // The result of an elementwise op has the shape of its first operand,
+        // so query that operand instead.
+        let Some(def_op) = source.defining_op() else {
+            return IRStatus::Unchanged;
+        };
+        let def = Operation::get_op_dyn(def_op, ctx);
+        let keeps_shape = op_impls::<dyn ElementWiseBinaryTensorOpInterface>(&*def)
+            || op_impls::<dyn ElementWiseUnaryTensorOpInterface>(&*def)
+            || def.downcast_ref::<ElementwiseCastOp>().is_some();
+        if !keeps_shape {
+            return IRStatus::Unchanged;
+        }
+        let shape_source = def_op.deref(ctx).get_operand(0);
+        Operation::replace_operand(self.get_operation(), ctx, 0, shape_source);
+        rewriter.notify_operation_modified(ctx, self.get_operation());
+        IRStatus::Changed
     }
 }
 

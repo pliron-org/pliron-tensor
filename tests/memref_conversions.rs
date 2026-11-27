@@ -89,6 +89,11 @@ fn test_memref_dim() {
     let const_index = unsafe { lookup_fn::<fn() -> i64>(&jit, "test_memref_dim_const_index") };
     // Encoded return value = dim0 * 1000 + dim1 = 16 * 1000 + 32
     assert_eq!(const_index(), 16032);
+
+    // A constant index into a dynamic dimension must return the allocated size.
+    let dynamic_alloc =
+        unsafe { lookup_fn::<fn(i64) -> i64>(&jit, "test_memref_dim_dynamic_alloc") };
+    assert_eq!(dynamic_alloc(7), 7);
 }
 
 /// `memref.subview`, `memref.copy`, the `memref.copy + memref.subview +
