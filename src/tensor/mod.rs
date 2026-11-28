@@ -3,6 +3,7 @@
 
 //! Tensor dialect for Pliron.
 
+pub mod attr_interfaces;
 pub mod attributes;
 pub mod bufferize;
 pub mod conversions;

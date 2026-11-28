@@ -3,8 +3,14 @@
 
 //! Tensor types and related functionality.
 
+use pliron::attribute::{AttrObj, attr_cast};
+use pliron::common_traits::Verify;
+use pliron::context::Context;
 use pliron::derive::{pliron_type, type_interface_impl};
-use pliron::r#type::TypeHandle;
+use pliron::result::Result;
+use pliron::r#type::{Type, TypeHandle, TypedHandle};
+
+use crate::tensor::attr_interfaces::VerifiableTensorEncoding;
 
 use crate::memref::type_interfaces::{Dimension, MultiDimensionalType, ShapedType};
 
@@ -54,14 +60,58 @@ pub fn can_broadcast_to(source: &[Dimension], result: &[Dimension]) -> bool {
 /// Ranked tensor type.
 #[pliron_type(
     name = "tensor.ranked",
-    format = "`<` vec($shape, Char(`x`)) ` : ` $element_type `>`",
-    verifier = "succ",
-    generate_get = true
+    format = "`<` vec($shape, Char(`x`)) ` : ` $element_type opt($encoding, delimiters(`, `, ``)) `>`"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RankedTensorType {
     element_type: TypeHandle,
     shape: Vec<Dimension>,
+    encoding: Option<AttrObj>,
+}
+
+impl RankedTensorType {
+    /// Get a ranked tensor type.
+    pub fn get(
+        ctx: &Context,
+        element_type: TypeHandle,
+        shape: Vec<Dimension>,
+    ) -> TypedHandle<Self> {
+        Self::get_with_encoding(ctx, element_type, shape, None)
+    }
+
+    /// Get a ranked tensor type with an optional encoding.
+    pub fn get_with_encoding(
+        ctx: &Context,
+        element_type: TypeHandle,
+        shape: Vec<Dimension>,
+        encoding: Option<AttrObj>,
+    ) -> TypedHandle<Self> {
+        Self::instantiate(
+            Self {
+                element_type,
+                shape,
+                encoding,
+            },
+            ctx,
+        )
+    }
+
+    /// Get this tensor's encoding.
+    pub fn encoding(&self) -> Option<&AttrObj> {
+        self.encoding.as_ref()
+    }
+}
+
+impl Verify for RankedTensorType {
+    fn verify(&self, ctx: &Context) -> Result<()> {
+        if let Some(encoding) = &self.encoding {
+            encoding.verify(ctx)?;
+            if let Some(encoding) = attr_cast::<dyn VerifiableTensorEncoding>(&**encoding) {
+                encoding.verify_encoding(ctx, &self.shape, self.element_type)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[type_interface_impl]
