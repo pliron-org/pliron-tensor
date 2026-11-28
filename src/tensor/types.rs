@@ -3,8 +3,10 @@
 
 //! Tensor types and related functionality.
 
+use pliron::attribute::AttrObj;
+use pliron::context::Context;
 use pliron::derive::{pliron_type, type_interface_impl};
-use pliron::r#type::TypeHandle;
+use pliron::r#type::{Type, TypeHandle, TypedHandle};
 
 use crate::memref::type_interfaces::{Dimension, MultiDimensionalType, ShapedType};
 
@@ -54,14 +56,47 @@ pub fn can_broadcast_to(source: &[Dimension], result: &[Dimension]) -> bool {
 /// Ranked tensor type.
 #[pliron_type(
     name = "tensor.ranked",
-    format = "`<` vec($shape, Char(`x`)) ` : ` $element_type `>`",
-    verifier = "succ",
-    generate_get = true
+    format = "`<` vec($shape, Char(`x`)) ` : ` $element_type opt($encoding, delimiters(`, `, ``)) `>`",
+    verifier = "succ"
 )]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RankedTensorType {
     element_type: TypeHandle,
     shape: Vec<Dimension>,
+    encoding: Option<AttrObj>,
+}
+
+impl RankedTensorType {
+    /// Get a ranked tensor type.
+    pub fn get(
+        ctx: &Context,
+        element_type: TypeHandle,
+        shape: Vec<Dimension>,
+    ) -> TypedHandle<Self> {
+        Self::get_with_encoding(ctx, element_type, shape, None)
+    }
+
+    /// Get a ranked tensor type with an optional encoding.
+    pub fn get_with_encoding(
+        ctx: &Context,
+        element_type: TypeHandle,
+        shape: Vec<Dimension>,
+        encoding: Option<AttrObj>,
+    ) -> TypedHandle<Self> {
+        Self::instantiate(
+            Self {
+                element_type,
+                shape,
+                encoding,
+            },
+            ctx,
+        )
+    }
+
+    /// Get this tensor's encoding.
+    pub fn encoding(&self) -> Option<&AttrObj> {
+        self.encoding.as_ref()
+    }
 }
 
 #[type_interface_impl]
